@@ -9,6 +9,7 @@
 // CUDA compatibility macros
 #ifdef __CUDACC__
 #define MIST_HD __host__ __device__
+#include <cub/cub.cuh>
 #else
 #define MIST_HD
 #define __host__
@@ -455,6 +456,15 @@ __global__ void for_each_kernel(index_space_t<S> space, F func) {
         func(ndindex(space, n));
     }
 }
+
+// Map kernel for map_reduce
+template<std::size_t S, typename T, typename MapF>
+__global__ void map_kernel(index_space_t<S> space, MapF map, T* d_output) {
+    std::size_t n = blockIdx.x * blockDim.x + threadIdx.x;
+    if (n < size(space)) {
+        d_output[n] = map(ndindex(space, n));
+    }
+}
 #endif
 
 template<std::size_t S, typename F>
@@ -494,6 +504,102 @@ void for_each(const index_space_t<S>& space, F&& func, exec e) {
 template<std::size_t S, typename F>
 void for_each(const index_space_t<S>& space, F&& func) {
     for_each(space, std::forward<F>(func), exec::cpu);
+}
+
+// =============================================================================
+// Map-Reduce
+// =============================================================================
+
+template<std::size_t S, typename T, typename MapF, typename ReduceF>
+T map_reduce(const index_space_t<S>& space, T init, MapF&& map, ReduceF&& reduce_op, exec e) {
+    switch (e) {
+        case exec::cpu: {
+            T result = init;
+            for (std::size_t n = 0; n < size(space); ++n) {
+                result = reduce_op(result, map(ndindex(space, n)));
+            }
+            return result;
+        }
+        case exec::omp: {
+            #ifdef _OPENMP
+            T global_result = init;
+
+            #pragma omp parallel
+            {
+                T local_result = init;
+
+                #pragma omp for nowait
+                for (std::size_t n = 0; n < size(space); ++n) {
+                    local_result = reduce_op(local_result, map(ndindex(space, n)));
+                }
+
+                #pragma omp critical
+                {
+                    global_result = reduce_op(global_result, local_result);
+                }
+            }
+
+            return global_result;
+            #else
+            throw std::runtime_error("unsupported exec::omp");
+            #endif
+        }
+        case exec::gpu: {
+            #ifdef __CUDACC__
+            // Step 1: Map indices to values in device memory
+            std::size_t n = size(space);
+            T* d_mapped;
+            cudaMalloc(&d_mapped, n * sizeof(T));
+
+            // Launch map kernel
+            int blockSize = 256;
+            int numBlocks = (n + blockSize - 1) / blockSize;
+            map_kernel<<<numBlocks, blockSize>>>(space, map, d_mapped);
+            cudaDeviceSynchronize();
+
+            // Step 2: Use CUB to reduce the mapped values
+            T* d_result;
+            cudaMalloc(&d_result, sizeof(T));
+
+            void* d_temp_storage = nullptr;
+            std::size_t temp_storage_bytes = 0;
+
+            // Determine temporary storage requirements
+            cub::DeviceReduce::Reduce(
+                d_temp_storage, temp_storage_bytes,
+                d_mapped, d_result, n, reduce_op, init
+            );
+
+            // Allocate temporary storage
+            cudaMalloc(&d_temp_storage, temp_storage_bytes);
+
+            // Run reduction
+            cub::DeviceReduce::Reduce(
+                d_temp_storage, temp_storage_bytes,
+                d_mapped, d_result, n, reduce_op, init
+            );
+
+            // Copy result to host
+            T result;
+            cudaMemcpy(&result, d_result, sizeof(T), cudaMemcpyDeviceToHost);
+
+            // Cleanup
+            cudaFree(d_mapped);
+            cudaFree(d_result);
+            cudaFree(d_temp_storage);
+
+            return result;
+            #else
+            throw std::runtime_error("unsupported exec::gpu");
+            #endif
+        }
+    }
+}
+
+// Default: CPU execution
+template<std::size_t S, typename T, typename MapF, typename ReduceF>
+T map_reduce(const index_space_t<S>& space, T init, MapF&& map, ReduceF&& reduce_op) {
+    return map_reduce(space, init, std::forward<MapF>(map), std::forward<ReduceF>(reduce_op), exec::cpu);
 }
 
 } // namespace mist

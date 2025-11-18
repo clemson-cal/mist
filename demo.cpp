@@ -266,8 +266,47 @@ int main() {
     }
     std::cout << "\n";
     
+    // === Map-Reduce ===
+    std::cout << "19. Map-Reduce:\n";
+    std::cout << "Using map_reduce on 3x4 space:\n";
+
+    // Sum of all linear indices
+    auto sum_idx = map_reduce(small_space, 0,
+        [](ivec_t<2> idx) { return idx[0] * 4 + idx[1]; },  // map
+        [](int a, int b) { return a + b; }                  // reduce
+    );
+    std::cout << "Sum of linear indices: " << sum_idx << " (expected: 0+1+...+11 = 66)\n";
+
+    // Product of (index + 1) - using std::multiplies
+    auto prod = map_reduce(small_space, 1,
+        [](ivec_t<2> idx) { return idx[0] + idx[1] + 1; },
+        std::multiplies<int>{}
+    );
+    std::cout << "Product of (row+col+1): " << prod << "\n";
+
+    // Maximum linear index
+    auto max_idx = map_reduce(small_space, 0,
+        [](ivec_t<2> idx) { return idx[0] * 4 + idx[1]; },
+        [](int a, int b) { return std::max(a, b); }
+    );
+    std::cout << "Maximum linear index: " << max_idx << "\n";
+
+    // OpenMP map-reduce
+    std::cout << "OpenMP map-reduce: ";
+    try {
+        auto sum_omp = map_reduce(small_space, 0,
+            [](ivec_t<2> idx) { return idx[0] * 4 + idx[1]; },
+            std::plus<int>{},
+            exec::omp
+        );
+        std::cout << "SUCCESS (sum = " << sum_omp << ")\n";
+    } catch (const std::runtime_error& e) {
+        std::cout << "NOT AVAILABLE (" << e.what() << ")\n";
+    }
+    std::cout << "\n";
+
     // === Compile-time Evaluation ===
-    std::cout << "19. Compile-time Evaluation:\n";
+    std::cout << "20. Compile-time Evaluation:\n";
     constexpr auto cv1 = dvec(1.0, 2.0, 3.0);
     constexpr auto cv2 = dvec(4.0, 5.0, 6.0);
     constexpr auto csum = cv1 + cv2;
@@ -281,7 +320,7 @@ int main() {
     std::cout << "constexpr product([2, 3, 4]) = " << cvprod << "\n\n";
     
     // === Higher Dimensions ===
-    std::cout << "20. Higher Dimensions:\n";
+    std::cout << "21. Higher Dimensions:\n";
     auto v5d = dvec(1.0, 2.0, 3.0, 4.0, 5.0);
     auto scaled5d = v5d * 10.0;
     

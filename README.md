@@ -44,6 +44,13 @@ All data structures use overloaded free functions rather than member functions. 
     + Example: `for (auto index : space) { ... }` iterates through all valid indices
     + `for_each(space, func)` - execute `func(index)` for every index in the space
     + `for_each(space, func, exec_mode)` where `exec_mode` is one of `exec::cpu`, `exec::omp`, `exec::gpu`
+  * reductions
+    + `map_reduce(space, init, map, reduce_op)` - map-reduce over all indices
+    + `map_reduce(space, init, map, reduce_op, exec_mode)` - with specified execution policy
+    + `map` signature: `(ivec_t<S> index) -> T` - transforms index to value
+    + `reduce_op` signature: `(T, T) -> T` - binary associative reduction operator
+    + Example: `auto sum = map_reduce(space, 0, [&buf](auto idx) { return ndread(buf, space, idx); }, std::plus<>{});`
+    + Example: `auto max = map_reduce(space, -INF, [&buf](auto idx) { return ndread(buf, space, idx); }, [](auto a, auto b) { return std::max(a, b); });`
 
 ## Multi-dimensional indexing functions
 All indices are **absolute** (relative to the origin `[0, 0, ...]`). For example, with `_start = [5, 10]` and `_shape = [10, 20]`, valid indices range from `[5, 10]` to `[14, 29]` (i.e., `_start` to `_start + _shape - 1`).
