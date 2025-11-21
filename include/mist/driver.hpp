@@ -14,6 +14,7 @@
 #include <iostream>
 #include <fstream>
 #include "ascii_writer.hpp"
+#include "binary_writer.hpp"
 #include "serialize.hpp"
 
 namespace mist {
@@ -163,12 +164,27 @@ struct driver_state_t {
 
 namespace driver {
 
+// Output format: "ascii" or "binary"
+enum class output_format { ascii, binary };
+
+inline output_format parse_output_format(const std::string& str) {
+    if (str == "ascii") return output_format::ascii;
+    if (str == "binary") return output_format::binary;
+    throw std::runtime_error("output_format must be 'ascii' or 'binary'");
+}
+
+inline std::string output_format_extension(output_format fmt) {
+    return (fmt == output_format::binary) ? ".bin" : ".dat";
+}
+
 struct config_t {
     int rk_order = 2;
     double cfl = 0.4;
 
     double t_final = 1.0;
     int max_iter = -1;
+
+    std::string output_format = "ascii";  // "ascii" or "binary"
 
     double message_interval = 0.1;
     int message_interval_kind = 0;
@@ -192,6 +208,7 @@ struct config_t {
             field("cfl", cfl),
             field("t_final", t_final),
             field("max_iter", max_iter),
+            field("output_format", output_format),
             field("message_interval", message_interval),
             field("message_interval_kind", message_interval_kind),
             field("message_scheduling", message_scheduling),
@@ -213,6 +230,7 @@ struct config_t {
             field("cfl", cfl),
             field("t_final", t_final),
             field("max_iter", max_iter),
+            field("output_format", output_format),
             field("message_interval", message_interval),
             field("message_interval_kind", message_interval_kind),
             field("message_scheduling", message_scheduling),
@@ -263,15 +281,8 @@ inline void write_iteration_message(const std::string& message) {
     std::cout << message << std::endl;
 }
 
-template<Physics P>
-void write_checkpoint(int output_num, const typename P::state_t& state, const driver_state_t& driver_state) {
-    char filename[64];
-    std::snprintf(filename, sizeof(filename), "chkpt.%04d.dat", output_num);
-    std::ofstream file(filename);
-    ascii_writer writer(file);
-
-    writer.begin_group("checkpoint");
-
+template<typename WriterT>
+void write_checkpoint_impl(WriterT& writer, const driver_state_t& driver_state) {
     writer.begin_group("driver_state");
     writer.write_scalar("iteration", driver_state.iteration);
     writer.write_scalar("message_count", driver_state.message_count);
@@ -283,27 +294,59 @@ void write_checkpoint(int output_num, const typename P::state_t& state, const dr
     writer.write_scalar("next_products_time", driver_state.next_products_time);
     writer.write_scalar("next_timeseries_time", driver_state.next_timeseries_time);
     writer.end_group();
+}
 
-    serialize(writer, "state", state);
-
-    // Write timeseries data
+template<typename WriterT>
+void write_timeseries_impl(WriterT& writer, const driver_state_t& driver_state) {
     writer.begin_group("timeseries");
     for (const auto& [name, values] : driver_state.timeseries_data) {
         writer.write_array(name.c_str(), values);
     }
     writer.end_group();
-
-    writer.end_group();
 }
 
 template<Physics P>
-void write_products(int output_num, const typename P::state_t& state, const typename P::product_t& product) {
+void write_checkpoint(int output_num, const typename P::state_t& state, 
+                      const driver_state_t& driver_state, driver::output_format fmt) {
     char filename[64];
-    std::snprintf(filename, sizeof(filename), "prods.%04d.dat", output_num);
-    std::ofstream file(filename);
-    ascii_writer writer(file);
+    const char* ext = (fmt == driver::output_format::binary) ? "bin" : "dat";
+    std::snprintf(filename, sizeof(filename), "chkpt.%04d.%s", output_num, ext);
 
-    serialize(writer, "products", product);
+    if (fmt == driver::output_format::binary) {
+        std::ofstream file(filename, std::ios::binary);
+        binary_writer writer(file);
+        writer.begin_group("checkpoint");
+        write_checkpoint_impl(writer, driver_state);
+        serialize(writer, "state", state);
+        write_timeseries_impl(writer, driver_state);
+        writer.end_group();
+    } else {
+        std::ofstream file(filename);
+        ascii_writer writer(file);
+        writer.begin_group("checkpoint");
+        write_checkpoint_impl(writer, driver_state);
+        serialize(writer, "state", state);
+        write_timeseries_impl(writer, driver_state);
+        writer.end_group();
+    }
+}
+
+template<Physics P>
+void write_products(int output_num, const typename P::state_t& state, 
+                    const typename P::product_t& product, driver::output_format fmt) {
+    char filename[64];
+    const char* ext = (fmt == driver::output_format::binary) ? "bin" : "dat";
+    std::snprintf(filename, sizeof(filename), "prods.%04d.%s", output_num, ext);
+
+    if (fmt == driver::output_format::binary) {
+        std::ofstream file(filename, std::ios::binary);
+        binary_writer writer(file);
+        serialize(writer, "products", product);
+    } else {
+        std::ofstream file(filename);
+        ascii_writer writer(file);
+        serialize(writer, "products", product);
+    }
 }
 
 
@@ -402,6 +445,9 @@ typename P::state_t run(const config<P>& cfg, driver_state_t& driver_state) {
             last_message_iteration = driver_state.iteration;
         });
 
+    // Parse output format
+    auto fmt = driver::parse_output_format(drv.output_format);
+
     // Checkpoint output
     auto checkpoint_output = scheduled_output<state_t>(
         drv.checkpoint_interval,
@@ -410,7 +456,7 @@ typename P::state_t run(const config<P>& cfg, driver_state_t& driver_state) {
         &driver_state.next_checkpoint_time,
         &driver_state.checkpoint_count,
         [&](const state_t& s) {
-            write_checkpoint<P>(driver_state.checkpoint_count, s, driver_state);
+            write_checkpoint<P>(driver_state.checkpoint_count, s, driver_state, fmt);
         });
 
     // Product output
@@ -421,7 +467,7 @@ typename P::state_t run(const config<P>& cfg, driver_state_t& driver_state) {
         &driver_state.next_products_time,
         &driver_state.products_count,
         [&](const state_t& s) {
-            write_products<P>(driver_state.products_count, s, get_product(phys, s));
+            write_products<P>(driver_state.products_count, s, get_product(phys, s), fmt);
         });
 
     // Timeseries output
