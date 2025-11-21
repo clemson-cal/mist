@@ -266,7 +266,7 @@ inline void write_iteration_message(const std::string& message) {
 template<Physics P>
 void write_checkpoint(int output_num, const typename P::state_t& state, const driver_state_t& driver_state) {
     char filename[64];
-    std::snprintf(filename, sizeof(filename), "chkpt.%04d.txt", output_num);
+    std::snprintf(filename, sizeof(filename), "chkpt.%04d.dat", output_num);
     std::ofstream file(filename);
     ascii_writer writer(file);
 
@@ -299,7 +299,7 @@ void write_checkpoint(int output_num, const typename P::state_t& state, const dr
 template<Physics P>
 void write_products(int output_num, const typename P::state_t& state, const typename P::product_t& product) {
     char filename[64];
-    std::snprintf(filename, sizeof(filename), "prods.%04d.txt", output_num);
+    std::snprintf(filename, sizeof(filename), "prods.%04d.dat", output_num);
     std::ofstream file(filename);
     ascii_writer writer(file);
 

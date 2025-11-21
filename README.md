@@ -351,7 +351,7 @@ Each scheduled output specifies an interval, a time kind, and a scheduling polic
 - Initial: `chkpt.0000{ext}` (written at simulation start)
 - Next: `chkpt.0001{ext}`, `chkpt.0002{ext}`, etc.
 - Number is checkpoint count, not iteration number
-- Extension determined by archive format (e.g., `.h5`, `.txt`, `.bin`)
+- Extension determined by archive format (e.g., `.h5`, `.dat`, `.bin`)
 
 ### 3. Product Files (Derived Quantities)
 **Purpose:** Write derived/diagnostic quantities for analysis  
@@ -373,7 +373,7 @@ Each scheduled output specifies an interval, a time kind, and a scheduling polic
 - Initial: `prods.0000{ext}` (written at `t=0`)
 - Next: `prods.0001{ext}`, `prods.0002{ext}`, etc.
 - Number is product output count, not iteration number
-- Extension determined by archive format (e.g., `.h5`, `.txt`, `.bin`)
+- Extension determined by archive format (e.g., `.h5`, `.dat`, `.bin`)
 
 ### 4. Timeseries Data (Scalar Diagnostics)
 **Purpose:** Record scalar diagnostics over time (total energy, mass, extrema, etc.)  
@@ -405,7 +405,7 @@ Each scheduled output specifies an interval, a time kind, and a scheduling polic
 **Output behavior:**
 - No numbered output files (unlike products/checkpoints)
 - Single file that is overwritten/updated with each sample
-- Extension determined by archive format (e.g., `timeseries.h5`, `timeseries.txt`, `timeseries.bin`)
+- Extension determined by archive format (e.g., `timeseries.h5`, `timeseries.dat`, `timeseries.bin`)
 - Timeseries data persisted in checkpoint files along with driver state
 
 ## Timestep and Termination
@@ -674,7 +674,7 @@ Deserialization is strict - all fields defined in `fields()` must be present in 
 
 ```cpp
 simulation_state_t state;
-ascii_reader ar(std::ifstream("state.txt"));
+ascii_reader ar(std::ifstream("state.dat"));
 deserialize(ar, "simulation_state", state);
 // Throws exception if any field is missing
 ```
@@ -688,11 +688,11 @@ deserialize(ar, "simulation_state", state);
 **ASCII (human-readable):**
 ```cpp
 // Writing
-ascii_writer aw(std::ofstream("state.txt"));
+ascii_writer aw(std::ofstream("state.dat"));
 serialize(aw, "state", state);
 
 // Reading
-ascii_reader ar(std::ifstream("state.txt"));
+ascii_reader ar(std::ifstream("state.dat"));
 deserialize(ar, "state", state);
 ```
 
@@ -739,7 +739,7 @@ struct ascii_t {
     using reader = ascii_reader;
     using writer = ascii_writer;
 
-    static constexpr const char* extension = ".txt";
+    static constexpr const char* extension = ".dat";
 
     static writer make_writer(const std::string& filename);
     static reader make_reader(const std::string& filename);
@@ -773,5 +773,5 @@ run<binary_t>(cfg, state); // Binary format
 
 The trait struct provides:
 - **Type aliases**: `reader` and `writer` types for this format
-- **File extension**: String literal for output filenames (e.g., ".h5", ".txt", ".bin")
+- **File extension**: String literal for output filenames (e.g., ".h5", ".dat", ".bin")
 - **Factory functions**: Construct reader/writer instances from filenames
