@@ -15,7 +15,7 @@ namespace mist {
 struct ascii_t {
     using writer = ascii_writer;
     using reader = ascii_reader;
-    static constexpr const char* extension = ".txt";
+    static constexpr const char* extension = ".dat";
 
     static writer make_writer(std::ostream& os) {
         return writer(os);
