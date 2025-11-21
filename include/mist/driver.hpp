@@ -13,7 +13,9 @@
 #include <iomanip>
 #include <iostream>
 #include <fstream>
+#include "ascii_reader.hpp"
 #include "ascii_writer.hpp"
+#include "binary_reader.hpp"
 #include "binary_writer.hpp"
 #include "serialize.hpp"
 
@@ -96,67 +98,186 @@ inline scheduling_policy parse_scheduling_policy(const std::string& str) {
 }
 
 // =============================================================================
+// Scheduled output config and state
+// =============================================================================
+
+namespace driver {
+
+struct scheduled_output_config {
+    double interval = 1.0;
+    int interval_kind = 0;
+    std::string scheduling = "nearest";
+
+    auto fields() const {
+        return std::make_tuple(
+            field("interval", interval),
+            field("interval_kind", interval_kind),
+            field("scheduling", scheduling)
+        );
+    }
+
+    auto fields() {
+        return std::make_tuple(
+            field("interval", interval),
+            field("interval_kind", interval_kind),
+            field("scheduling", scheduling)
+        );
+    }
+};
+
+struct scheduled_output_state {
+    int count = 0;
+    double next_time = 0.0;
+
+    auto fields() const {
+        return std::make_tuple(
+            field("count", count),
+            field("next_time", next_time)
+        );
+    }
+
+    auto fields() {
+        return std::make_tuple(
+            field("count", count),
+            field("next_time", next_time)
+        );
+    }
+};
+
+} // namespace driver
+
+// =============================================================================
 // Scheduled output abstraction
 // =============================================================================
 
 template<typename StateT>
 class scheduled_output {
 public:
-    double interval;
-    int interval_kind;
-    scheduling_policy policy;
-    double* next_time;
-    int* count;
+    driver::scheduled_output_config config;
+    driver::scheduled_output_state* state;
     std::function<void(const StateT&)> callback;
 
+    scheduling_policy policy() const {
+        return parse_scheduling_policy(config.scheduling);
+    }
+
     void validate() const {
-        if (policy == scheduling_policy::exact && interval_kind != 0) {
+        if (policy() == scheduling_policy::exact && config.interval_kind != 0) {
             throw std::runtime_error("exact scheduling requires interval_kind = 0");
         }
     }
 
     template<typename RKStepFn>
-    void handle_exact_output(double t0, double t1, const StateT& state, RKStepFn&& rk_step) {
-        if (policy == scheduling_policy::exact && interval_kind == 0) {
-            if (t0 < *next_time && t1 >= *next_time) {
-                auto state_exact = rk_step(state, *next_time - t0);
-                (*count)++;
-                *next_time += interval;
+    void handle_exact_output(double t0, double t1, const StateT& physics_state, RKStepFn&& rk_step) {
+        if (policy() == scheduling_policy::exact && config.interval_kind == 0) {
+            if (t0 < state->next_time && t1 >= state->next_time) {
+                auto state_exact = rk_step(physics_state, state->next_time - t0);
+                state->count++;
+                state->next_time += config.interval;
                 if (callback) callback(state_exact);
             }
         }
     }
 
     template<typename GetTimeFn>
-    void handle_nearest_output(const StateT& state, GetTimeFn&& get_time) {
-        if (policy == scheduling_policy::nearest) {
-            if (get_time(state, interval_kind) >= *next_time) {
-                (*count)++;
-                *next_time += interval;
-                if (callback) callback(state);
+    void handle_nearest_output(const StateT& physics_state, GetTimeFn&& get_time) {
+        if (policy() == scheduling_policy::nearest) {
+            if (get_time(physics_state, config.interval_kind) >= state->next_time) {
+                state->count++;
+                state->next_time += config.interval;
+                if (callback) callback(physics_state);
             }
         }
     }
 };
 
 // =============================================================================
+// Timeseries data container
+// =============================================================================
+
+namespace driver {
+
+struct timeseries_t {
+    std::vector<std::pair<std::string, std::vector<double>>> data;
+
+    // Custom serialization: write each column as a named array
+    template<typename WriterT>
+    void write(WriterT& writer) const {
+        for (const auto& [name, values] : data) {
+            writer.write_array(name.c_str(), values);
+        }
+    }
+
+    // Custom deserialization: read arrays until group ends
+    template<typename ReaderT>
+    void read(ReaderT& reader) {
+        data.clear();
+        while (!reader.at_group_end()) {
+            std::string name = reader.peek_identifier();
+            std::vector<double> values;
+            reader.read_array(name.c_str(), values);
+            data.push_back({name, std::move(values)});
+        }
+    }
+};
+
+} // namespace driver
+
+// Custom serialize/deserialize for timeseries_t
+template<typename A>
+void serialize(A& ar, const char* name, const driver::timeseries_t& value) {
+    ar.begin_group(name);
+    value.write(ar);
+    ar.end_group();
+}
+
+template<typename A>
+void deserialize(A& ar, const char* name, driver::timeseries_t& value) {
+    ar.begin_group(name);
+    value.read(ar);
+    ar.end_group();
+}
+
+// =============================================================================
 // Driver state
 // =============================================================================
 
-struct driver_state_t {
+namespace driver {
+
+struct state_t {
     int iteration = 0;
-    int message_count = 0;
-    int checkpoint_count = 0;
-    int products_count = 0;
-    int timeseries_count = 0;
 
-    double next_message_time = 0.0;
-    double next_checkpoint_time = 0.0;
-    double next_products_time = 0.0;
-    double next_timeseries_time = 0.0;
+    scheduled_output_state message_state;
+    scheduled_output_state checkpoint_state;
+    scheduled_output_state products_state;
+    scheduled_output_state timeseries_state;
 
-    std::vector<std::pair<std::string, std::vector<double>>> timeseries_data;
+    timeseries_t timeseries;
+
+    auto fields() const {
+        return std::make_tuple(
+            field("iteration", iteration),
+            field("message_state", message_state),
+            field("checkpoint_state", checkpoint_state),
+            field("products_state", products_state),
+            field("timeseries_state", timeseries_state),
+            field("timeseries", timeseries)
+        );
+    }
+
+    auto fields() {
+        return std::make_tuple(
+            field("iteration", iteration),
+            field("message_state", message_state),
+            field("checkpoint_state", checkpoint_state),
+            field("products_state", products_state),
+            field("timeseries_state", timeseries_state),
+            field("timeseries", timeseries)
+        );
+    }
 };
+
+} // namespace driver
 
 // =============================================================================
 // Driver configuration (physics-agnostic)
@@ -186,21 +307,10 @@ struct config_t {
 
     std::string output_format = "ascii";  // "ascii" or "binary"
 
-    double message_interval = 0.1;
-    int message_interval_kind = 0;
-    std::string message_scheduling = "nearest";
-
-    double checkpoint_interval = 1.0;
-    int checkpoint_interval_kind = 0;
-    std::string checkpoint_scheduling = "nearest";
-
-    double products_interval = 0.1;
-    int products_interval_kind = 0;
-    std::string products_scheduling = "exact";
-
-    double timeseries_interval = 0.01;
-    int timeseries_interval_kind = 0;
-    std::string timeseries_scheduling = "exact";
+    scheduled_output_config message{0.1, 0, "nearest"};
+    scheduled_output_config checkpoint{1.0, 0, "nearest"};
+    scheduled_output_config products{0.1, 0, "exact"};
+    scheduled_output_config timeseries{0.01, 0, "exact"};
 
     auto fields() const {
         return std::make_tuple(
@@ -209,18 +319,10 @@ struct config_t {
             field("t_final", t_final),
             field("max_iter", max_iter),
             field("output_format", output_format),
-            field("message_interval", message_interval),
-            field("message_interval_kind", message_interval_kind),
-            field("message_scheduling", message_scheduling),
-            field("checkpoint_interval", checkpoint_interval),
-            field("checkpoint_interval_kind", checkpoint_interval_kind),
-            field("checkpoint_scheduling", checkpoint_scheduling),
-            field("products_interval", products_interval),
-            field("products_interval_kind", products_interval_kind),
-            field("products_scheduling", products_scheduling),
-            field("timeseries_interval", timeseries_interval),
-            field("timeseries_interval_kind", timeseries_interval_kind),
-            field("timeseries_scheduling", timeseries_scheduling)
+            field("message", message),
+            field("checkpoint", checkpoint),
+            field("products", products),
+            field("timeseries", timeseries)
         );
     }
 
@@ -231,18 +333,10 @@ struct config_t {
             field("t_final", t_final),
             field("max_iter", max_iter),
             field("output_format", output_format),
-            field("message_interval", message_interval),
-            field("message_interval_kind", message_interval_kind),
-            field("message_scheduling", message_scheduling),
-            field("checkpoint_interval", checkpoint_interval),
-            field("checkpoint_interval_kind", checkpoint_interval_kind),
-            field("checkpoint_scheduling", checkpoint_scheduling),
-            field("products_interval", products_interval),
-            field("products_interval_kind", products_interval_kind),
-            field("products_scheduling", products_scheduling),
-            field("timeseries_interval", timeseries_interval),
-            field("timeseries_interval_kind", timeseries_interval_kind),
-            field("timeseries_scheduling", timeseries_scheduling)
+            field("message", message),
+            field("checkpoint", checkpoint),
+            field("products", products),
+            field("timeseries", timeseries)
         );
     }
 };
@@ -281,72 +375,39 @@ inline void write_iteration_message(const std::string& message) {
     std::cout << message << std::endl;
 }
 
-template<typename WriterT>
-void write_checkpoint_impl(WriterT& writer, const driver_state_t& driver_state) {
-    writer.begin_group("driver_state");
-    writer.write_scalar("iteration", driver_state.iteration);
-    writer.write_scalar("message_count", driver_state.message_count);
-    writer.write_scalar("checkpoint_count", driver_state.checkpoint_count);
-    writer.write_scalar("products_count", driver_state.products_count);
-    writer.write_scalar("timeseries_count", driver_state.timeseries_count);
-    writer.write_scalar("next_message_time", driver_state.next_message_time);
-    writer.write_scalar("next_checkpoint_time", driver_state.next_checkpoint_time);
-    writer.write_scalar("next_products_time", driver_state.next_products_time);
-    writer.write_scalar("next_timeseries_time", driver_state.next_timeseries_time);
+
+
+template<typename WriterT, Physics P>
+void write_checkpoint(WriterT& writer,
+                      const driver::config_t& driver_config,
+                      const driver::state_t& driver_state,
+                      const typename P::config_t& physics_config,
+                      const typename P::state_t& physics_state) {
+    writer.begin_group("checkpoint");
+    serialize(writer, "driver_config", driver_config);
+    serialize(writer, "driver_state", driver_state);
+    serialize(writer, "physics_config", physics_config);
+    serialize(writer, "physics_state", physics_state);
     writer.end_group();
 }
 
-template<typename WriterT>
-void write_timeseries_impl(WriterT& writer, const driver_state_t& driver_state) {
-    writer.begin_group("timeseries");
-    for (const auto& [name, values] : driver_state.timeseries_data) {
-        writer.write_array(name.c_str(), values);
-    }
-    writer.end_group();
+template<typename WriterT, Physics P>
+void write_products(WriterT& writer, const typename P::product_t& product) {
+    serialize(writer, "products", product);
 }
 
-template<Physics P>
-void write_checkpoint(int output_num, const typename P::state_t& state, 
-                      const driver_state_t& driver_state, driver::output_format fmt) {
-    char filename[64];
-    const char* ext = (fmt == driver::output_format::binary) ? "bin" : "dat";
-    std::snprintf(filename, sizeof(filename), "chkpt.%04d.%s", output_num, ext);
-
-    if (fmt == driver::output_format::binary) {
-        std::ofstream file(filename, std::ios::binary);
-        binary_writer writer(file);
-        writer.begin_group("checkpoint");
-        write_checkpoint_impl(writer, driver_state);
-        serialize(writer, "state", state);
-        write_timeseries_impl(writer, driver_state);
-        writer.end_group();
-    } else {
-        std::ofstream file(filename);
-        ascii_writer writer(file);
-        writer.begin_group("checkpoint");
-        write_checkpoint_impl(writer, driver_state);
-        serialize(writer, "state", state);
-        write_timeseries_impl(writer, driver_state);
-        writer.end_group();
-    }
-}
-
-template<Physics P>
-void write_products(int output_num, const typename P::state_t& state, 
-                    const typename P::product_t& product, driver::output_format fmt) {
-    char filename[64];
-    const char* ext = (fmt == driver::output_format::binary) ? "bin" : "dat";
-    std::snprintf(filename, sizeof(filename), "prods.%04d.%s", output_num, ext);
-
-    if (fmt == driver::output_format::binary) {
-        std::ofstream file(filename, std::ios::binary);
-        binary_writer writer(file);
-        serialize(writer, "products", product);
-    } else {
-        std::ofstream file(filename);
-        ascii_writer writer(file);
-        serialize(writer, "products", product);
-    }
+template<typename ReaderT, Physics P>
+void read_checkpoint(ReaderT& reader,
+                     driver::config_t& driver_config,
+                     typename P::config_t& physics_config,
+                     driver::state_t& driver_state,
+                     typename P::state_t& physics_state) {
+    reader.begin_group("checkpoint");
+    deserialize(reader, "driver_config", driver_config);
+    deserialize(reader, "driver_state", driver_state);
+    deserialize(reader, "physics_config", physics_config);
+    deserialize(reader, "physics_state", physics_state);
+    reader.end_group();
 }
 
 
@@ -356,20 +417,20 @@ void write_products(int output_num, const typename P::state_t& state,
 // =============================================================================
 
 inline void accumulate_timeseries_sample(
-    driver_state_t& driver_state,
+    driver::state_t& driver_state,
     const std::vector<std::pair<std::string, double>>& sample)
 {
     for (const auto& [name, value] : sample) {
         auto it = std::find_if(
-            driver_state.timeseries_data.begin(),
-            driver_state.timeseries_data.end(),
+            driver_state.timeseries.data.begin(),
+            driver_state.timeseries.data.end(),
             [&name](const auto& col) { return col.first == name; }
         );
 
-        if (it != driver_state.timeseries_data.end()) {
+        if (it != driver_state.timeseries.data.end()) {
             it->second.push_back(value);
         } else {
-            driver_state.timeseries_data.push_back({name, {value}});
+            driver_state.timeseries.data.push_back({name, {value}});
         }
     }
 }
@@ -384,41 +445,42 @@ inline double get_wall_time() {
 // =============================================================================
 
 template<Physics P>
-typename P::state_t run(const config<P>& cfg, driver_state_t& driver_state) {
+typename P::state_t run(
+    const driver::config_t& driver_config,
+    const typename P::config_t& physics_config,
+    driver::state_t& driver_state,
+    typename P::state_t physics_state)
+{
     using state_t = typename P::state_t;
-    const auto& drv = cfg.driver;
-    const auto& phys = cfg.physics;
 
     auto rk_step = [&](const state_t& s, double dt) -> state_t {
-        switch (drv.rk_order) {
-            case 1: return rk1_step<P>(phys, s, dt);
-            case 2: return rk2_step<P>(phys, s, dt);
-            case 3: return rk3_step<P>(phys, s, dt);
+        switch (driver_config.rk_order) {
+            case 1: return rk1_step<P>(physics_config, s, dt);
+            case 2: return rk2_step<P>(physics_config, s, dt);
+            case 3: return rk3_step<P>(physics_config, s, dt);
             default: throw std::runtime_error("rk_order must be 1, 2, or 3");
         }
     };
 
-    auto state = initial_state(phys);
-
     // Initialize scheduling on first run
     if (driver_state.iteration == 0) {
-        driver_state.next_message_time = drv.message_interval;
-        driver_state.next_checkpoint_time = drv.checkpoint_interval;
-        driver_state.next_products_time = drv.products_interval;
-        driver_state.next_timeseries_time = drv.timeseries_interval;
+        driver_state.message_state.next_time = driver_config.message.interval;
+        driver_state.checkpoint_state.next_time = driver_config.checkpoint.interval;
+        driver_state.products_state.next_time = driver_config.products.interval;
+        driver_state.timeseries_state.next_time = driver_config.timeseries.interval;
     }
 
     // Session state
     double last_message_wall_time = get_wall_time();
     int last_message_iteration = driver_state.iteration;
 
+    // Parse output format
+    auto fmt = driver::parse_output_format(driver_config.output_format);
+
     // Iteration message output
-    auto message_output = scheduled_output<state_t>(
-        drv.message_interval,
-        drv.message_interval_kind,
-        parse_scheduling_policy(drv.message_scheduling),
-        &driver_state.next_message_time,
-        &driver_state.message_count,
+    auto message_output = scheduled_output<state_t>{
+        driver_config.message,
+        &driver_state.message_state,
         [&](const state_t& s) {
             double wall_now = get_wall_time();
             double wall_elapsed = wall_now - last_message_wall_time;
@@ -443,43 +505,57 @@ typename P::state_t run(const config<P>& cfg, driver_state_t& driver_state) {
             write_iteration_message(oss.str());
             last_message_wall_time = wall_now;
             last_message_iteration = driver_state.iteration;
-        });
-
-    // Parse output format
-    auto fmt = driver::parse_output_format(drv.output_format);
+        }
+    };
 
     // Checkpoint output
-    auto checkpoint_output = scheduled_output<state_t>(
-        drv.checkpoint_interval,
-        drv.checkpoint_interval_kind,
-        parse_scheduling_policy(drv.checkpoint_scheduling),
-        &driver_state.next_checkpoint_time,
-        &driver_state.checkpoint_count,
+    auto checkpoint_output = scheduled_output<state_t>{
+        driver_config.checkpoint,
+        &driver_state.checkpoint_state,
         [&](const state_t& s) {
-            write_checkpoint<P>(driver_state.checkpoint_count, s, driver_state, fmt);
-        });
+            char filename[64];
+            const char* ext = (fmt == driver::output_format::binary) ? "bin" : "dat";
+            std::snprintf(filename, sizeof(filename), "chkpt.%04d.%s", driver_state.checkpoint_state.count, ext);
+            if (fmt == driver::output_format::binary) {
+                std::ofstream file(filename, std::ios::binary);
+                binary_writer writer(file);
+                write_checkpoint<binary_writer, P>(writer, driver_config, driver_state, physics_config, s);
+            } else {
+                std::ofstream file(filename);
+                ascii_writer writer(file);
+                write_checkpoint<ascii_writer, P>(writer, driver_config, driver_state, physics_config, s);
+            }
+        }
+    };
 
     // Product output
-    auto products_output = scheduled_output<state_t>(
-        drv.products_interval,
-        drv.products_interval_kind,
-        parse_scheduling_policy(drv.products_scheduling),
-        &driver_state.next_products_time,
-        &driver_state.products_count,
+    auto products_output = scheduled_output<state_t>{
+        driver_config.products,
+        &driver_state.products_state,
         [&](const state_t& s) {
-            write_products<P>(driver_state.products_count, s, get_product(phys, s), fmt);
-        });
+            char filename[64];
+            const char* ext = (fmt == driver::output_format::binary) ? "bin" : "dat";
+            std::snprintf(filename, sizeof(filename), "prods.%04d.%s", driver_state.products_state.count, ext);
+            if (fmt == driver::output_format::binary) {
+                std::ofstream file(filename, std::ios::binary);
+                binary_writer writer(file);
+                write_products<binary_writer, P>(writer, get_product(physics_config, s));
+            } else {
+                std::ofstream file(filename);
+                ascii_writer writer(file);
+                write_products<ascii_writer, P>(writer, get_product(physics_config, s));
+            }
+        }
+    };
 
     // Timeseries output
-    auto timeseries_output = scheduled_output<state_t>(
-        drv.timeseries_interval,
-        drv.timeseries_interval_kind,
-        parse_scheduling_policy(drv.timeseries_scheduling),
-        &driver_state.next_timeseries_time,
-        &driver_state.timeseries_count,
+    auto timeseries_output = scheduled_output<state_t>{
+        driver_config.timeseries,
+        &driver_state.timeseries_state,
         [&](const state_t& s) {
-            accumulate_timeseries_sample(driver_state, timeseries_sample(phys, s));
-        });
+            accumulate_timeseries_sample(driver_state, timeseries_sample(physics_config, s));
+        }
+    };
 
     // Collect outputs
     std::array<scheduled_output<state_t>, 4> outputs = {{
@@ -496,40 +572,94 @@ typename P::state_t run(const config<P>& cfg, driver_state_t& driver_state) {
     // Initial outputs at t=0
     if (driver_state.iteration == 0) {
         for (std::size_t i = 1; i < outputs.size(); ++i) {
-            outputs[i].callback(state);
+            outputs[i].callback(physics_state);
         }
     }
 
     // Main loop
     while (true) {
-        double t0 = get_time(state, 0);
+        double t0 = get_time(physics_state, 0);
 
-        if (t0 >= drv.t_final) break;
-        if (drv.max_iter > 0 && driver_state.iteration >= drv.max_iter) break;
+        if (t0 >= driver_config.t_final) break;
+        if (driver_config.max_iter > 0 && driver_state.iteration >= driver_config.max_iter) break;
 
-        double dt = drv.cfl * courant_time(phys, state);
+        double dt = driver_config.cfl * courant_time(physics_config, physics_state);
         double t1 = t0 + dt;
 
         for (auto& output : outputs) {
-            output.handle_exact_output(t0, t1, state, rk_step);
+            output.handle_exact_output(t0, t1, physics_state, rk_step);
         }
 
-        state = rk_step(state, dt);
+        physics_state = rk_step(physics_state, dt);
         driver_state.iteration++;
 
         for (auto& output : outputs) {
-            output.handle_nearest_output(state,
+            output.handle_nearest_output(physics_state,
                 [](const auto& s, int kind) { return get_time(s, kind); });
         }
     }
 
-    return state;
+    return physics_state;
 }
 
 template<Physics P>
 typename P::state_t run(const config<P>& cfg) {
-    driver_state_t driver_state;
-    return run(cfg, driver_state);
+    driver::state_t driver_state;
+    auto physics_state = initial_state(cfg.physics);
+    return run<P>(cfg.driver, cfg.physics, driver_state, physics_state);
+}
+
+template<Physics P>
+typename P::state_t run(int argc, const char* argv[]) {
+    if (argc < 2) {
+        throw std::runtime_error("usage: " + std::string(argv[0]) + " <config.cfg | checkpoint.dat | checkpoint.bin>");
+    }
+
+    std::string filename = argv[1];
+    
+    // Determine file type from extension
+    bool is_config = filename.size() >= 4 && filename.substr(filename.size() - 4) == ".cfg";
+    bool is_checkpoint = filename.size() >= 4 && 
+                         (filename.substr(filename.size() - 4) == ".dat" ||
+                          filename.substr(filename.size() - 4) == ".bin");
+
+    if (!is_config && !is_checkpoint) {
+        throw std::runtime_error("unrecognized file extension: " + filename + 
+                                 " (expected .cfg, .dat, or .bin)");
+    }
+
+    driver::config_t driver_config;
+    typename P::config_t physics_config;
+    driver::state_t driver_state;
+    typename P::state_t physics_state;
+
+    if (is_config) {
+        // Fresh start from config file
+        std::ifstream file(filename);
+        if (!file) throw std::runtime_error("cannot open config file: " + filename);
+        ascii_reader reader(file);
+        config<P> cfg;
+        deserialize(reader, "config", cfg);
+        driver_config = cfg.driver;
+        physics_config = cfg.physics;
+        physics_state = initial_state(physics_config);
+    } else {
+        // Restart from checkpoint
+        bool is_binary = filename.substr(filename.size() - 4) == ".bin";
+        if (is_binary) {
+            std::ifstream file(filename, std::ios::binary);
+            if (!file) throw std::runtime_error("cannot open checkpoint file: " + filename);
+            binary_reader reader(file);
+            read_checkpoint<binary_reader, P>(reader, driver_config, physics_config, driver_state, physics_state);
+        } else {
+            std::ifstream file(filename);
+            if (!file) throw std::runtime_error("cannot open checkpoint file: " + filename);
+            ascii_reader reader(file);
+            read_checkpoint<ascii_reader, P>(reader, driver_config, physics_config, driver_state, physics_state);
+        }
+    }
+
+    return run<P>(driver_config, physics_config, driver_state, physics_state);
 }
 
 } // namespace mist

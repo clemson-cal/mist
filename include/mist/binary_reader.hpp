@@ -260,6 +260,35 @@ public:
         end_group();
     }
 
+    // Check if we're at the end of the current group
+    // For binary format, we track field counts, so check if we've read all fields
+    bool at_group_end() {
+        // In binary format, we can peek at the next bytes to check for end
+        // For simplicity, we'll peek and check if next read would fail or hit end
+        if (!is_) return true;
+        std::streampos pos = is_.tellg();
+        if (pos == std::streampos(-1)) return true;
+        
+        // Try to peek at the next field name length
+        uint64_t length;
+        is_.read(reinterpret_cast<char*>(&length), sizeof(length));
+        bool at_end = !is_ || is_.eof();
+        
+        // Restore position
+        is_.clear();
+        is_.seekg(pos);
+        return at_end;
+    }
+
+    // Peek at the next field name without consuming it
+    std::string peek_identifier() {
+        ensure_header();
+        std::streampos pos = is_.tellg();
+        std::string name = read_name();
+        is_.seekg(pos);
+        return name;
+    }
+
 private:
     std::istream& is_;
     bool header_read_;

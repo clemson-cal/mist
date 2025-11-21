@@ -215,36 +215,14 @@ int main(int argc, char* argv[]) {
 
     std::cout << "=== 1D Linear Advection Demo (Mist Driver) ===\n\n";
 
-    // Setup configuration with defaults
-    config<advection_1d> cfg;
-
-    // Read config file if provided
-    if (argc > 1) {
-        std::ifstream file(argv[1]);
-        if (!file) {
-            std::cerr << "Error: cannot open config file '" << argv[1] << "'\n";
-            return 1;
-        }
-        try {
-            ascii_reader reader(file);
-            deserialize(reader, "config", cfg);
-        } catch (const std::exception& e) {
-            std::cerr << "Error parsing config: " << e.what() << "\n";
-            return 1;
-        }
+    try {
+        auto final_state = run<advection_1d>(argc, const_cast<const char**>(argv));
+        std::cout << "\n=== Simulation Complete ===\n";
+        std::cout << "Final time: " << final_state.time << "\n";
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << "\n";
+        return 1;
     }
-
-    // Print configuration before running
-    std::cout << "Configuration:\n";
-    ascii_writer writer(std::cout);
-    serialize(writer, "config", cfg);
-    std::cout << "\n";
-
-    // Run simulation
-    auto final_state = run(cfg);
-
-    std::cout << "\n=== Simulation Complete ===\n";
-    std::cout << "Final time: " << final_state.time << "\n";
 
     return 0;
 }

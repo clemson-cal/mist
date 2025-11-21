@@ -179,6 +179,21 @@ public:
         end_group();
     }
 
+    // Check if we're at the end of the current group (next char is '}')
+    bool at_group_end() {
+        skip_whitespace_and_comments();
+        return peek_char() == '}';
+    }
+
+    // Peek at the next identifier without consuming it
+    std::string peek_identifier() {
+        skip_whitespace_and_comments();
+        std::streampos start_pos = is_.tellg();
+        std::string result = read_identifier();
+        is_.seekg(start_pos);
+        return result;
+    }
+
     // =========================================================================
     // Count anonymous groups inside a named group (for compound vectors)
     // =========================================================================
