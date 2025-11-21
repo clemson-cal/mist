@@ -886,9 +886,9 @@ class BinaryWriter:
 def load(source: Union[str, Path, TextIO, BinaryIO]) -> dict:
     """Load an archive file into a nested dictionary.
 
-    Format is auto-detected by file extension:
-    - .bin: Binary format
-    - .cfg, .dat, or other: ASCII format
+    Format is auto-detected by:
+    - File extension (.bin for binary) for path strings
+    - File mode ('b' in mode) for file objects
 
     Args:
         source: File path (str or Path) or file-like object
@@ -900,13 +900,24 @@ def load(source: Union[str, Path, TextIO, BinaryIO]) -> dict:
         config = ma.load("config.cfg")
         checkpoint = ma.load("chkpt.0000.dat")
         binary_data = ma.load("data.bin")
+
+        # Also works with file objects
+        with open("data.bin", "rb") as f:
+            data = ma.load(f)
     """
-    # Check for binary extension
+    # For path strings, detect by extension
     if isinstance(source, (str, Path)):
         path = Path(source)
         if path.suffix == ".bin":
             with BinaryReader(source) as reader:
                 return reader.read_all()
+        with AsciiReader(source) as reader:
+            return reader.read_all()
+
+    # For file objects, detect by mode
+    if hasattr(source, 'mode') and 'b' in source.mode:
+        with BinaryReader(source) as reader:
+            return reader.read_all()
 
     with AsciiReader(source) as reader:
         return reader.read_all()

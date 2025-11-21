@@ -11,6 +11,7 @@ examples/config-reader/config-reader
 
 # Output data files
 *.dat
+*.bin
 *.h5
 *.hdf5
 *.log
@@ -29,6 +30,9 @@ install_manifest.txt
 *.swo
 *~
 .DS_Store
+
+# Python virtual env
+.venv
 
 # Compilation database
 compile_commands.json
