@@ -2,7 +2,7 @@
 
 A lightweight C++20 header-only library for deploy-anywhere array transformations and physics simulations.
 
-Mist is an evolution of [Vapor](https://github.com/clemson-cal/vapor), a library with similar goals for computational astrophysics.
+Mist is an evolution of [Vapor](https://github.com/clemson-cal/vapor), a library with similar goals for HPC physics applications.
 
 ## Features
 
@@ -296,15 +296,17 @@ Each scheduled output specifies an interval, a time kind, and a scheduling polic
 - `std::string checkpoint_scheduling` - Scheduling policy: "nearest" or "exact" (default: "nearest")
   - If `"exact"`: requires `checkpoint_interval_kind = 0`
 
-**Output Function:** Driver calls `write_checkpoint<P>(output_num, state, driver_state)`
-- User must implement this template function for their physics type `P`
-- Must write both `state` and `driver_state` to enable restarts
-- The `driver_state` parameter contains all internal driver state needed for restart (iteration counts, next output times, accumulated timeseries data)
+**Output Function:** Driver uses the archive format specified via template parameter
+- Driver constructs filename: `chkpt.{:04d}{extension}` where extension comes from archive traits
+- Driver creates writer via `Archive::make_writer(filename)`
+- Driver serializes both `state` and `driver_state` using `serialize()`
+- The `driver_state` contains all internal driver state needed for restart (iteration counts, next output times, accumulated timeseries data)
 
 **Output numbering:** 
-- Initial: `chkpt.0000.h5` (written at simulation start)
-- Next: `chkpt.0001.h5`, `chkpt.0002.h5`, etc.
+- Initial: `chkpt.0000{ext}` (written at simulation start)
+- Next: `chkpt.0001{ext}`, `chkpt.0002{ext}`, etc.
 - Number is checkpoint count, not iteration number
+- Extension determined by archive format (e.g., `.h5`, `.txt`, `.bin`)
 
 ### 3. Product Files (Derived Quantities)
 **Purpose:** Write derived/diagnostic quantities for analysis  
@@ -316,14 +318,17 @@ Each scheduled output specifies an interval, a time kind, and a scheduling polic
 - `std::string products_scheduling` - Scheduling policy: "nearest" or "exact" (default: "exact")
   - If `"exact"`: requires `products_interval_kind = 0`
 
-**Output Function:** Driver calls `write_products<P>(output_num, state, product)`
-- User must implement this template function for their physics type `P`
-- `product` is computed by the driver via `get_product(cfg.physics, state)`
+**Output Function:** Driver uses the archive format specified via template parameter
+- Driver constructs filename: `prods.{:04d}{extension}` where extension comes from archive traits
+- Driver creates writer via `Archive::make_writer(filename)`
+- Driver computes `product` via `get_product(cfg.physics, state)`
+- Driver serializes `product` using `serialize()`
 
 **Output numbering:**
-- Initial: `prods.0000.h5` (written at `t=0`)
-- Next: `prods.0001.h5`, `prods.0002.h5`, etc.
+- Initial: `prods.0000{ext}` (written at `t=0`)
+- Next: `prods.0001{ext}`, `prods.0002{ext}`, etc.
 - Number is product output count, not iteration number
+- Extension determined by archive format (e.g., `.h5`, `.txt`, `.bin`)
 
 ### 4. Timeseries Data (Scalar Diagnostics)
 **Purpose:** Record scalar diagnostics over time (total energy, mass, extrema, etc.)  
@@ -346,16 +351,17 @@ Each scheduled output specifies an interval, a time kind, and a scheduling polic
 - All measurements are accumulated in `driver_state.timeseries_data`
 - Data persists across sessions (saved in checkpoints)
 
-**Output Function:** Driver calls `write_timeseries(timeseries_data)`
-- User must implement this function
-- Receives the entire accumulated timeseries data: `std::vector<std::pair<std::string, std::vector<double>>>`
-- Called after each new sample is added
-- Typically writes/updates a single file (e.g., `timeseries.dat` or `timeseries.h5`)
+**Output Function:** Driver uses the archive format specified via template parameter
+- Driver constructs filename: `timeseries{extension}` where extension comes from archive traits
+- Driver creates writer via `Archive::make_writer(filename)`
+- Driver serializes the entire accumulated timeseries data using `serialize()`
+- Timeseries data structure: `std::vector<std::pair<std::string, std::vector<double>>>`
 
 **Output behavior:**
 - No numbered output files (unlike products/checkpoints)
-- Single timeseries data structure that grows throughout the run
-- Persisted in checkpoint files along with driver state
+- Single file that is overwritten/updated with each sample
+- Extension determined by archive format (e.g., `timeseries.h5`, `timeseries.txt`, `timeseries.bin`)
+- Timeseries data persisted in checkpoint files along with driver state
 
 ## Timestep and Termination
 
@@ -364,3 +370,341 @@ The driver uses adaptive timesteps from `courant_time(cfg, state)` multiplied by
 2. `iteration >= max_iter` (if `max_iter > 0`)
 
 The timestep is never adjusted to hit `t_final` exactly - the simulation simply stops when the termination condition is met. Exact-policy outputs must use `time_kind = 0`.
+
+# Serialization
+
+The `mist/serialize.hpp` provides a lightweight, modular serialization framework for writing and reading simulation data. The framework is format-agnostic and supports ASCII, binary, and HDF5 output through a unified interface.
+
+## Design Philosophy
+
+- **Format-agnostic**: Core serialization logic is independent of output format
+- **Type-driven**: Uses C++20 concepts to dispatch based on type traits
+- **Composable**: Complex types serialize recursively through their components
+- **Strict validation**: All fields must be present during deserialization (no optional fields)
+- **Consistent with Mist patterns**: Free functions, public underscore-prefixed members
+
+## Core Interface
+
+Two primary entry points:
+
+```cpp
+// Serialize object to archive
+template<Archive A, typename T>
+void serialize(A& archive, const char* name, const T& obj);
+
+// Deserialize object from archive
+template<Archive A, typename T>
+void deserialize(A& archive, const char* name, T& obj);
+```
+
+## Archive Concept
+
+An archive is any type that can read/write primitive data and supports hierarchical structure:
+
+```cpp
+template<typename A>
+concept Archive = requires(A& ar, const char* name, double value) {
+    { ar.write_scalar(name, value) } -> std::same_as<void>;
+    { ar.read_scalar(name, value) } -> std::same_as<void>;
+    { ar.write_array(name, ptr, size) } -> std::same_as<void>;
+    { ar.read_array(name, ptr, size) } -> std::same_as<void>;
+    { ar.enter_group(name) } -> std::same_as<void>;
+    { ar.exit_group() } -> std::same_as<void>;
+};
+```
+
+**Archive implementations:**
+- `ascii_writer` / `ascii_reader` - Human-readable text format
+- `binary_writer` / `binary_reader` - Compact binary format
+- `hdf5_writer` / `hdf5_reader` - HDF5 hierarchical data format
+
+## Serializable Types
+
+The framework automatically handles:
+
+1. **Scalars**: `int`, `float`, `double`, and other arithmetic types
+2. **Static vectors**: `vec_t<T, N>` where `T` is arithmetic
+3. **Dynamic vectors**: `std::vector<T>` where `T` is serializable
+4. **User-defined types**: Any type with `serialize_fields()` method
+
+## Making Types Serializable
+
+Define both const and non-const versions of `serialize_fields()`:
+
+```cpp
+struct particle_t {
+    vec_t<double, 3> position;
+    vec_t<double, 3> velocity;
+    double mass;
+    
+    auto serialize_fields() const {
+        return std::make_tuple(
+            field("position", position),
+            field("velocity", velocity),
+            field("mass", mass)
+        );
+    }
+    
+    auto serialize_fields() {
+        return std::make_tuple(
+            field("position", position),
+            field("velocity", velocity),
+            field("mass", mass)
+        );
+    }
+};
+```
+
+The const version is used for writing, the non-const version for reading.
+
+## ASCII Format Specification
+
+The ASCII archive produces human-readable output with the following formatting rules:
+
+### Formatting Rules
+
+1. **Scalars**: `name = value`
+   ```
+   time = 1.234
+   iteration = 42
+   ```
+
+2. **Static vectors** (`vec_t<T, N>`): Inline comma-separated arrays
+   ```
+   position = [0.1, 0.2, 0.15]
+   velocity = [1.5, -0.3, 0.0]
+   ```
+
+3. **Dynamic vectors of scalars** (`std::vector<T>` where `T` is arithmetic): Inline comma-separated arrays
+   ```
+   scalar_field = [300.0, 305.2, 298.5, 302.1]
+   ```
+
+4. **Dynamic vectors of compounds** (`std::vector<T>` where `T` is user-defined): Multi-line blocks
+   ```
+   particles {
+       {
+           position = [0.1, 0.2, 0.15]
+           velocity = [1.5, -0.3, 0.0]
+           density = 1.2
+           pressure = 101325.0
+       }
+       {
+           position = [0.8, 0.7, 0.25]
+           velocity = [-0.5, 0.8, 0.2]
+           density = 1.1
+           pressure = 98000.0
+       }
+   }
+   ```
+
+5. **Nested structures**: Multi-line with indentation
+   ```
+   grid {
+       resolution = [64, 64, 32]
+       domain_min = [0.0, 0.0, 0.0]
+       domain_max = [1.0, 1.0, 0.5]
+   }
+   ```
+
+### Delimiter Rules
+
+- **Commas**: Used inside `[ ]` brackets for array elements
+- **Newlines**: Used inside `{ }` braces for fields and blocks
+- **No commas**: Between struct blocks or field definitions
+- **Indentation**: Each nesting level adds one indentation level
+
+### Complete Example
+
+```cpp
+struct grid_config_t {
+    vec_t<int, 3> resolution;
+    vec_t<double, 3> domain_min;
+    vec_t<double, 3> domain_max;
+    
+    auto serialize_fields() const {
+        return std::make_tuple(
+            field("resolution", resolution),
+            field("domain_min", domain_min),
+            field("domain_max", domain_max)
+        );
+    }
+    
+    auto serialize_fields() {
+        return std::make_tuple(
+            field("resolution", resolution),
+            field("domain_min", domain_min),
+            field("domain_max", domain_max)
+        );
+    }
+};
+
+struct simulation_state_t {
+    double time;
+    int iteration;
+    grid_config_t grid;
+    std::vector<particle_t> particles;
+    std::vector<double> scalar_field;
+
+    auto serialize_fields() const {
+        return std::make_tuple(
+            field("time", time),
+            field("iteration", iteration),
+            field("grid", grid),
+            field("particles", particles),
+            field("scalar_field", scalar_field)
+        );
+    }
+
+    auto serialize_fields() {
+        return std::make_tuple(
+            field("time", time),
+            field("iteration", iteration),
+            field("grid", grid),
+            field("particles", particles),
+            field("scalar_field", scalar_field)
+        );
+    }
+};
+
+// Serialize to ASCII
+simulation_state_t state{...};
+ascii_writer ar(std::cout);
+serialize(ar, "simulation_state", state);
+```
+
+**Output:**
+```
+simulation_state {
+    time = 1.234
+    iteration = 42
+    grid {
+        resolution = [64, 64, 32]
+        domain_min = [0.0, 0.0, 0.0]
+        domain_max = [1.0, 1.0, 0.5]
+    }
+    particles {
+        {
+            position = [0.1, 0.2, 0.15]
+            velocity = [1.5, -0.3, 0.0]
+            density = 1.2
+            pressure = 101325.0
+        }
+        {
+            position = [0.8, 0.7, 0.25]
+            velocity = [-0.5, 0.8, 0.2]
+            density = 1.1
+            pressure = 98000.0
+        }
+    }
+    scalar_field = [300.0, 305.2, 298.5, 302.1]
+}
+```
+
+## Deserialization
+
+Deserialization is strict - all fields defined in `serialize_fields()` must be present in the input:
+
+```cpp
+simulation_state_t state;
+ascii_reader ar(std::ifstream("state.txt"));
+deserialize(ar, "simulation_state", state);
+// Throws exception if any field is missing
+```
+
+**Error handling:**
+- Missing field: `Error: Field 'velocity' not found in group 'particles/0'`
+- Missing group: `Error: Field 'grid' not found in group 'simulation_state'`
+
+## Usage with Different Archive Types
+
+**ASCII (human-readable):**
+```cpp
+// Writing
+ascii_writer aw(std::ofstream("state.txt"));
+serialize(aw, "state", state);
+
+// Reading
+ascii_reader ar(std::ifstream("state.txt"));
+deserialize(ar, "state", state);
+```
+
+**Binary (compact):**
+```cpp
+// Writing
+binary_writer bw(std::ofstream("state.bin", std::ios::binary));
+serialize(bw, "state", state);
+
+// Reading
+binary_reader br(std::ifstream("state.bin", std::ios::binary));
+deserialize(br, "state", state);
+```
+
+**HDF5 (hierarchical):**
+```cpp
+// Writing
+hdf5_writer hw("state.h5");
+serialize(hw, "state", state);
+
+// Reading
+hdf5_reader hr("state.h5");
+deserialize(hr, "state", state);
+```
+
+All three formats use the same `serialize()` / `deserialize()` interface - only the archive type changes.
+
+## Archive Format Traits
+
+For integration with the driver library, archive formats are defined via trait structs that provide type information and factory functions:
+
+```cpp
+struct hdf5_t {
+    using reader = hdf5_reader;
+    using writer = hdf5_writer;
+    
+    static constexpr const char* extension = ".h5";
+    
+    static writer make_writer(const std::string& filename);
+    static reader make_reader(const std::string& filename);
+};
+
+struct ascii_t {
+    using reader = ascii_reader;
+    using writer = ascii_writer;
+
+    static constexpr const char* extension = ".txt";
+
+    static writer make_writer(const std::string& filename);
+    static reader make_reader(const std::string& filename);
+};
+
+struct binary_t {
+    using reader = binary_reader;
+    using writer = binary_writer;
+
+    static constexpr const char* extension = ".bin";
+
+    static writer make_writer(const std::string& filename);
+    static reader make_reader(const std::string& filename);
+};
+```
+
+These traits allow the driver to be parameterized by archive format:
+
+```cpp
+// Driver automatically uses correct file extensions and constructs archives
+template<typename Archive>
+void run(const driver_config& cfg, auto state) {
+    // Driver creates: chkpt.0000.h5, chkpt.0001.h5, etc.
+}
+
+// User selects format via template parameter
+run<hdf5_t>(cfg, state);   // HDF5 format
+run<ascii_t>(cfg, state);  // ASCII format
+run<binary_t>(cfg, state); // Binary format
+```
+
+The trait struct provides:
+- **Type aliases**: `reader` and `writer` types for this format
+- **File extension**: String literal for output filenames (e.g., ".h5", ".txt", ".bin")
+- **Factory functions**: Construct reader/writer instances from filenames
