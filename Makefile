@@ -7,12 +7,9 @@ examples:
 	$(MAKE) -C examples/config-reader
 
 tests:
-	@echo "Building tests..."
-	c++ -std=c++20 -Wall -Wextra -O2 -I include -o tests/test_serialize tests/test_serialize.cpp
-	@echo "Running tests..."
-	./tests/test_serialize
+	$(MAKE) -C tests
 
 clean:
 	$(MAKE) -C examples/advection-1d clean
 	$(MAKE) -C examples/config-reader clean
-	rm -f tests/test_serialize
+	$(MAKE) -C tests clean

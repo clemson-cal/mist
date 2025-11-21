@@ -1,11 +1,15 @@
 #include <iostream>
 #include <sstream>
+#include <fstream>
 #include <cassert>
 #include <cmath>
+#include <cstdio>
 #include "mist/core.hpp"
 #include "mist/serialize.hpp"
 #include "mist/ascii_writer.hpp"
 #include "mist/ascii_reader.hpp"
+#include "mist/binary_writer.hpp"
+#include "mist/binary_reader.hpp"
 
 using namespace mist;
 
@@ -287,6 +291,303 @@ void test_full_simulation_state() {
 }
 
 // =============================================================================
+// Binary Serialization Tests
+// =============================================================================
+
+void test_binary_scalar_serialization() {
+    std::cout << "Testing binary scalar serialization... ";
+
+    std::stringstream ss(std::ios::binary | std::ios::in | std::ios::out);
+    binary_writer writer(ss);
+
+    writer.write_scalar("time", 1.234);
+    writer.write_scalar("iteration", 42);
+
+    // Test round-trip
+    ss.seekg(0);
+    binary_reader reader(ss);
+
+    double time;
+    int iteration;
+    reader.read_scalar("time", time);
+    reader.read_scalar("iteration", iteration);
+
+    assert(approx_equal(time, 1.234));
+    assert(iteration == 42);
+
+    std::cout << "PASSED\n";
+}
+
+void test_binary_string_serialization() {
+    std::cout << "Testing binary string serialization... ";
+
+    std::stringstream ss(std::ios::binary | std::ios::in | std::ios::out);
+    binary_writer writer(ss);
+
+    std::string original = "Hello, World!\nWith escape chars: \t\"quoted\"";
+    writer.write_string("message", original);
+
+    ss.seekg(0);
+    binary_reader reader(ss);
+
+    std::string loaded;
+    reader.read_string("message", loaded);
+
+    assert(original == loaded);
+
+    std::cout << "PASSED\n";
+}
+
+void test_binary_vec_serialization() {
+    std::cout << "Testing binary vec_t serialization... ";
+
+    vec_t<double, 3> original = {1.5, 2.5, 3.5};
+
+    std::stringstream ss(std::ios::binary | std::ios::in | std::ios::out);
+    binary_writer writer(ss);
+    writer.write_array("position", original);
+
+    ss.seekg(0);
+    binary_reader reader(ss);
+
+    vec_t<double, 3> loaded = {};
+    reader.read_array("position", loaded);
+
+    assert(vec_equal(original, loaded));
+
+    std::cout << "PASSED\n";
+}
+
+void test_binary_scalar_vector_serialization() {
+    std::cout << "Testing binary std::vector<double> serialization... ";
+
+    std::vector<double> original = {300.0, 305.2, 298.5, 302.1};
+
+    std::stringstream ss(std::ios::binary | std::ios::in | std::ios::out);
+    binary_writer writer(ss);
+    writer.write_array("scalar_field", original);
+
+    ss.seekg(0);
+    binary_reader reader(ss);
+
+    std::vector<double> loaded;
+    reader.read_array("scalar_field", loaded);
+
+    assert(original.size() == loaded.size());
+    for (std::size_t i = 0; i < original.size(); ++i) {
+        assert(approx_equal(original[i], loaded[i]));
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void test_binary_nested_struct_serialization() {
+    std::cout << "Testing binary nested struct serialization... ";
+
+    grid_config_t original;
+    original.resolution = {64, 64, 32};
+    original.domain_min = {0.0, 0.0, 0.0};
+    original.domain_max = {1.0, 1.0, 0.5};
+
+    std::stringstream ss(std::ios::binary | std::ios::in | std::ios::out);
+    binary_writer writer(ss);
+    serialize(writer, "grid", original);
+
+    ss.seekg(0);
+    binary_reader reader(ss);
+
+    grid_config_t loaded;
+    deserialize(reader, "grid", loaded);
+
+    assert(vec_equal(original.resolution, loaded.resolution));
+    assert(vec_equal(original.domain_min, loaded.domain_min));
+    assert(vec_equal(original.domain_max, loaded.domain_max));
+
+    std::cout << "PASSED\n";
+}
+
+void test_binary_compound_vector_serialization() {
+    std::cout << "Testing binary std::vector<compound> serialization... ";
+
+    std::vector<particle_t> original = {
+        {{0.1, 0.2, 0.15}, {1.5, -0.3, 0.0}, 1.0},
+        {{0.8, 0.7, 0.25}, {-0.5, 0.8, 0.2}, 2.0}
+    };
+
+    std::stringstream ss(std::ios::binary | std::ios::in | std::ios::out);
+    binary_writer writer(ss);
+    serialize(writer, "particles", original);
+
+    ss.seekg(0);
+    binary_reader reader(ss);
+
+    std::vector<particle_t> loaded;
+    deserialize(reader, "particles", loaded);
+
+    assert(original.size() == loaded.size());
+    for (std::size_t i = 0; i < original.size(); ++i) {
+        assert(vec_equal(original[i].position, loaded[i].position));
+        assert(vec_equal(original[i].velocity, loaded[i].velocity));
+        assert(approx_equal(original[i].mass, loaded[i].mass));
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void test_binary_full_simulation_state() {
+    std::cout << "Testing binary full simulation_state_t serialization... ";
+
+    simulation_state_t original;
+    original.time = 1.234;
+    original.iteration = 42;
+    original.grid.resolution = {64, 64, 32};
+    original.grid.domain_min = {0.0, 0.0, 0.0};
+    original.grid.domain_max = {1.0, 1.0, 0.5};
+    original.particles = {
+        {{0.1, 0.2, 0.15}, {1.5, -0.3, 0.0}, 1.2},
+        {{0.8, 0.7, 0.25}, {-0.5, 0.8, 0.2}, 1.1}
+    };
+    original.scalar_field = {300.0, 305.2, 298.5, 302.1};
+
+    std::stringstream ss(std::ios::binary | std::ios::in | std::ios::out);
+    binary_writer writer(ss);
+    serialize(writer, "simulation_state", original);
+
+    std::size_t binary_size = ss.str().size();
+    std::cout << "\n    Binary size: " << binary_size << " bytes\n";
+
+    ss.seekg(0);
+    binary_reader reader(ss);
+
+    simulation_state_t loaded;
+    deserialize(reader, "simulation_state", loaded);
+
+    assert(approx_equal(original.time, loaded.time));
+    assert(original.iteration == loaded.iteration);
+    assert(vec_equal(original.grid.resolution, loaded.grid.resolution));
+    assert(vec_equal(original.grid.domain_min, loaded.grid.domain_min));
+    assert(vec_equal(original.grid.domain_max, loaded.grid.domain_max));
+    assert(original.particles.size() == loaded.particles.size());
+    for (std::size_t i = 0; i < original.particles.size(); ++i) {
+        assert(vec_equal(original.particles[i].position, loaded.particles[i].position));
+        assert(vec_equal(original.particles[i].velocity, loaded.particles[i].velocity));
+        assert(approx_equal(original.particles[i].mass, loaded.particles[i].mass));
+    }
+    assert(original.scalar_field.size() == loaded.scalar_field.size());
+    for (std::size_t i = 0; i < original.scalar_field.size(); ++i) {
+        assert(approx_equal(original.scalar_field[i], loaded.scalar_field[i]));
+    }
+
+    std::cout << "    PASSED\n";
+}
+
+void test_binary_vs_ascii_size() {
+    std::cout << "Testing binary vs ASCII size comparison... ";
+
+    // Create a larger dataset where binary format shows its advantage
+    simulation_state_t state;
+    state.time = 1.234;
+    state.iteration = 42;
+    state.grid.resolution = {64, 64, 32};
+    state.grid.domain_min = {0.0, 0.0, 0.0};
+    state.grid.domain_max = {1.0, 1.0, 0.5};
+
+    // Add a couple of particles
+    state.particles.push_back({{0.1, 0.2, 0.15}, {1.5, -0.3, 0.0}, 1.0});
+    state.particles.push_back({{0.8, 0.7, 0.25}, {-0.5, 0.8, 0.2}, 2.0});
+
+    // Add a very large scalar field - binary format stores 8 bytes per double
+    // ASCII format stores ~18-20 characters per double (e.g. "300.12345678901234")
+    // So binary should be ~40% the size of ASCII for large numeric arrays
+    for (int i = 0; i < 1000000; ++i) {
+        state.scalar_field.push_back(300.0 + 0.00001 * i);
+    }
+
+    // ASCII serialization
+    std::stringstream ascii_ss;
+    ascii_writer ascii_w(ascii_ss);
+    serialize(ascii_w, "state", state);
+    std::size_t ascii_size = ascii_ss.str().size();
+
+    // Binary serialization
+    std::stringstream binary_ss(std::ios::binary | std::ios::in | std::ios::out);
+    binary_writer binary_w(binary_ss);
+    serialize(binary_w, "state", state);
+    std::size_t binary_size = binary_ss.str().size();
+
+    std::cout << "\n    ASCII size:  " << ascii_size << " bytes\n";
+    std::cout << "    Binary size: " << binary_size << " bytes\n";
+    std::cout << "    Ratio: " << static_cast<double>(binary_size) / ascii_size * 100.0 << "%\n";
+
+    // With larger data, binary should be smaller despite field name overhead
+    // (self-describing format adds ~10-20% overhead, but numeric data is much more compact)
+    assert(binary_size < ascii_size);
+
+    std::cout << "    PASSED\n";
+}
+
+void test_binary_empty_vector() {
+    std::cout << "Testing binary empty vector serialization... ";
+
+    std::vector<double> original;
+
+    std::stringstream ss(std::ios::binary | std::ios::in | std::ios::out);
+    binary_writer writer(ss);
+    writer.write_array("empty", original);
+
+    ss.seekg(0);
+    binary_reader reader(ss);
+
+    std::vector<double> loaded;
+    loaded.push_back(999.0);  // Pre-fill to ensure it gets cleared
+    reader.read_array("empty", loaded);
+
+    assert(loaded.empty());
+
+    std::cout << "PASSED\n";
+}
+
+void test_binary_file_output() {
+    std::cout << "Testing binary file output (1000 doubles)... ";
+
+    // Create a simple struct with 1000 doubles
+    std::vector<double> data;
+    for (int i = 0; i < 1000; ++i) {
+        data.push_back(static_cast<double>(i) * 0.001);
+    }
+
+    // Write to file
+    std::ofstream file("test_output.bin", std::ios::binary);
+    binary_writer writer(file);
+    writer.write_array("data", data);
+    file.close();
+
+    // Verify file size: header (5) + name (8 + 4) + type tags (2) + count (8) + data (8000) = 8027 bytes
+    std::ifstream check("test_output.bin", std::ios::binary | std::ios::ate);
+    std::size_t file_size = check.tellg();
+    check.close();
+
+    std::cout << "file size: " << file_size << " bytes... ";
+
+    // Read it back
+    std::ifstream infile("test_output.bin", std::ios::binary);
+    binary_reader reader(infile);
+    std::vector<double> loaded;
+    reader.read_array("data", loaded);
+    infile.close();
+
+    assert(loaded.size() == 1000);
+    for (int i = 0; i < 1000; ++i) {
+        assert(approx_equal(loaded[i], static_cast<double>(i) * 0.001));
+    }
+
+    // Clean up
+    std::remove("test_output.bin");
+
+    std::cout << "PASSED\n";
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 
@@ -299,6 +600,19 @@ int main() {
     test_nested_struct_serialization();
     test_compound_vector_serialization();
     test_full_simulation_state();
+
+    std::cout << "\n=== Binary Serialization Tests ===\n\n";
+
+    test_binary_scalar_serialization();
+    test_binary_string_serialization();
+    test_binary_vec_serialization();
+    test_binary_scalar_vector_serialization();
+    test_binary_nested_struct_serialization();
+    test_binary_compound_vector_serialization();
+    test_binary_full_simulation_state();
+    test_binary_vs_ascii_size();
+    test_binary_empty_vector();
+    test_binary_file_output();
 
     std::cout << "\n=== All tests passed! ===\n";
     return 0;

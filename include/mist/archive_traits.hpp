@@ -4,6 +4,8 @@
 #include <string>
 #include "ascii_writer.hpp"
 #include "ascii_reader.hpp"
+#include "binary_writer.hpp"
+#include "binary_reader.hpp"
 
 namespace mist {
 
@@ -26,12 +28,19 @@ struct ascii_t {
     }
 };
 
-// Binary format (compact) - placeholder for future implementation
+// Binary format (compact)
 struct binary_t {
-    // Forward declaration - implementation would go in binary_writer.hpp/binary_reader.hpp
-    // using writer = binary_writer;
-    // using reader = binary_reader;
+    using writer = binary_writer;
+    using reader = binary_reader;
     static constexpr const char* extension = ".bin";
+
+    static writer make_writer(std::ostream& os) {
+        return writer(os);
+    }
+
+    static reader make_reader(std::istream& is) {
+        return reader(is);
+    }
 };
 
 // HDF5 format (hierarchical) - placeholder for future implementation

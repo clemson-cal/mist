@@ -186,7 +186,7 @@ void serialize(A& ar, const char* name, const std::vector<T>& value) {
 template<ArchiveWriter A, typename T>
     requires HasConstFields<T>
 void serialize(A& ar, const char* name, const std::vector<T>& value) {
-    ar.begin_group(name);
+    ar.begin_list(name);
     for (const auto& elem : value) {
         ar.begin_group();
         std::apply([&ar](auto&&... fields) {
@@ -194,7 +194,7 @@ void serialize(A& ar, const char* name, const std::vector<T>& value) {
         }, elem.fields());
         ar.end_group();
     }
-    ar.end_group();
+    ar.end_list();
 }
 
 // Compound types with fields()
@@ -243,7 +243,7 @@ template<ArchiveReader A, typename T>
     requires HasFields<T>
 void deserialize(A& ar, const char* name, std::vector<T>& value) {
     std::size_t count = ar.count_groups(name);
-    ar.begin_group(name);
+    ar.begin_list(name);
     value.resize(count);
     for (auto& elem : value) {
         ar.begin_group();
@@ -252,7 +252,7 @@ void deserialize(A& ar, const char* name, std::vector<T>& value) {
         }, elem.fields());
         ar.end_group();
     }
-    ar.end_group();
+    ar.end_list();
 }
 
 // Compound types with fields()

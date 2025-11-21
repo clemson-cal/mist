@@ -90,6 +90,16 @@ public:
         os_ << "}\n";
     }
 
+    // List operations (for vectors of compound types)
+    // In ASCII format, lists are identical to groups
+    void begin_list(const char* name) {
+        begin_group(name);
+    }
+
+    void end_list() {
+        end_group();
+    }
+
 private:
     std::ostream& os_;
     int indent_size_;
