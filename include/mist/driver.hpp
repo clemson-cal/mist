@@ -197,44 +197,29 @@ public:
 
 namespace driver {
 
-struct timeseries_t {
-    std::vector<std::pair<std::string, std::vector<double>>> data;
-
-    // Custom serialization: write each column as a named array
-    template<typename WriterT>
-    void write(WriterT& writer) const {
-        for (const auto& [name, values] : data) {
-            writer.write_array(name.c_str(), values);
-        }
-    }
-
-    // Custom deserialization: read arrays until group ends
-    template<typename ReaderT>
-    void read(ReaderT& reader) {
-        data.clear();
-        while (!reader.at_group_end()) {
-            std::string name = reader.peek_identifier();
-            std::vector<double> values;
-            reader.read_array(name.c_str(), values);
-            data.push_back({name, std::move(values)});
-        }
-    }
-};
+using timeseries_t = std::vector<std::pair<std::string, std::vector<double>>>;
 
 } // namespace driver
 
-// Custom serialize/deserialize for timeseries_t
 template<typename A>
 void serialize(A& ar, const char* name, const driver::timeseries_t& value) {
     ar.begin_group(name);
-    value.write(ar);
+    for (const auto& [col_name, values] : value) {
+        ar.write_array(col_name.c_str(), values);
+    }
     ar.end_group();
 }
 
 template<typename A>
 void deserialize(A& ar, const char* name, driver::timeseries_t& value) {
     ar.begin_group(name);
-    value.read(ar);
+    value.clear();
+    while (!ar.at_group_end()) {
+        std::string col_name = ar.peek_identifier();
+        std::vector<double> values;
+        ar.read_array(col_name.c_str(), values);
+        value.push_back({col_name, std::move(values)});
+    }
     ar.end_group();
 }
 
@@ -375,8 +360,6 @@ inline void write_iteration_message(const std::string& message) {
     std::cout << message << std::endl;
 }
 
-
-
 template<typename WriterT, Physics P>
 void write_checkpoint(WriterT& writer,
                       const driver::config_t& driver_config,
@@ -410,8 +393,6 @@ void read_checkpoint(ReaderT& reader,
     reader.end_group();
 }
 
-
-
 // =============================================================================
 // Helpers
 // =============================================================================
@@ -422,15 +403,15 @@ inline void accumulate_timeseries_sample(
 {
     for (const auto& [name, value] : sample) {
         auto it = std::find_if(
-            driver_state.timeseries.data.begin(),
-            driver_state.timeseries.data.end(),
+            driver_state.timeseries.begin(),
+            driver_state.timeseries.end(),
             [&name](const auto& col) { return col.first == name; }
         );
 
-        if (it != driver_state.timeseries.data.end()) {
+        if (it != driver_state.timeseries.end()) {
             it->second.push_back(value);
         } else {
-            driver_state.timeseries.data.push_back({name, {value}});
+            driver_state.timeseries.push_back({name, {value}});
         }
     }
 }
@@ -616,15 +597,15 @@ typename P::state_t run(int argc, const char* argv[]) {
     }
 
     std::string filename = argv[1];
-    
+
     // Determine file type from extension
     bool is_config = filename.size() >= 4 && filename.substr(filename.size() - 4) == ".cfg";
-    bool is_checkpoint = filename.size() >= 4 && 
+    bool is_checkpoint = filename.size() >= 4 &&
                          (filename.substr(filename.size() - 4) == ".dat" ||
                           filename.substr(filename.size() - 4) == ".bin");
 
     if (!is_config && !is_checkpoint) {
-        throw std::runtime_error("unrecognized file extension: " + filename + 
+        throw std::runtime_error("unrecognized file extension: " + filename +
                                  " (expected .cfg, .dat, or .bin)");
     }
 
