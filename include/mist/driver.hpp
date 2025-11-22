@@ -353,6 +353,36 @@ struct config {
 };
 
 // =============================================================================
+// Program state (driver + physics config and state)
+// =============================================================================
+
+template<Physics P>
+struct program {
+    driver::config_t driver_config;
+    typename P::config_t physics_config;
+    driver::state_t driver_state;
+    typename P::state_t physics_state;
+
+    auto fields() const {
+        return std::make_tuple(
+            field("driver_config", driver_config),
+            field("physics_config", physics_config),
+            field("driver_state", driver_state),
+            field("physics_state", physics_state)
+        );
+    }
+
+    auto fields() {
+        return std::make_tuple(
+            field("driver_config", driver_config),
+            field("physics_config", physics_config),
+            field("driver_state", driver_state),
+            field("physics_state", physics_state)
+        );
+    }
+};
+
+// =============================================================================
 // Output functions
 // =============================================================================
 
@@ -361,17 +391,8 @@ inline void write_iteration_message(const std::string& message) {
 }
 
 template<typename WriterT, Physics P>
-void write_checkpoint(WriterT& writer,
-                      const driver::config_t& driver_config,
-                      const driver::state_t& driver_state,
-                      const typename P::config_t& physics_config,
-                      const typename P::state_t& physics_state) {
-    writer.begin_group("checkpoint");
-    serialize(writer, "driver_config", driver_config);
-    serialize(writer, "driver_state", driver_state);
-    serialize(writer, "physics_config", physics_config);
-    serialize(writer, "physics_state", physics_state);
-    writer.end_group();
+void write_checkpoint(WriterT& writer, const program<P>& prog) {
+    serialize(writer, "checkpoint", prog);
 }
 
 template<typename WriterT, Physics P>
@@ -380,17 +401,8 @@ void write_products(WriterT& writer, const typename P::product_t& product) {
 }
 
 template<typename ReaderT, Physics P>
-void read_checkpoint(ReaderT& reader,
-                     driver::config_t& driver_config,
-                     typename P::config_t& physics_config,
-                     driver::state_t& driver_state,
-                     typename P::state_t& physics_state) {
-    reader.begin_group("checkpoint");
-    deserialize(reader, "driver_config", driver_config);
-    deserialize(reader, "driver_state", driver_state);
-    deserialize(reader, "physics_config", physics_config);
-    deserialize(reader, "physics_state", physics_state);
-    reader.end_group();
+void read_checkpoint(ReaderT& reader, program<P>& prog) {
+    deserialize(reader, "checkpoint", prog);
 }
 
 // =============================================================================
@@ -497,14 +509,15 @@ typename P::state_t run(
             char filename[64];
             const char* ext = (fmt == driver::output_format::binary) ? "bin" : "dat";
             std::snprintf(filename, sizeof(filename), "chkpt.%04d.%s", driver_state.checkpoint_state.count, ext);
+            program<P> prog{driver_config, physics_config, driver_state, s};
             if (fmt == driver::output_format::binary) {
                 std::ofstream file(filename, std::ios::binary);
                 binary_writer writer(file);
-                write_checkpoint<binary_writer, P>(writer, driver_config, driver_state, physics_config, s);
+                write_checkpoint<binary_writer, P>(writer, prog);
             } else {
                 std::ofstream file(filename);
                 ascii_writer writer(file);
-                write_checkpoint<ascii_writer, P>(writer, driver_config, driver_state, physics_config, s);
+                write_checkpoint<ascii_writer, P>(writer, prog);
             }
         }
     };
@@ -609,10 +622,7 @@ typename P::state_t run(int argc, const char* argv[]) {
                                  " (expected .cfg, .dat, or .bin)");
     }
 
-    driver::config_t driver_config;
-    typename P::config_t physics_config;
-    driver::state_t driver_state;
-    typename P::state_t physics_state;
+    program<P> prog;
 
     if (is_config) {
         // Fresh start from config file
@@ -621,9 +631,9 @@ typename P::state_t run(int argc, const char* argv[]) {
         ascii_reader reader(file);
         config<P> cfg;
         deserialize(reader, "config", cfg);
-        driver_config = cfg.driver;
-        physics_config = cfg.physics;
-        physics_state = initial_state(physics_config);
+        prog.driver_config = cfg.driver;
+        prog.physics_config = cfg.physics;
+        prog.physics_state = initial_state(prog.physics_config);
     } else {
         // Restart from checkpoint
         bool is_binary = filename.substr(filename.size() - 4) == ".bin";
@@ -631,16 +641,16 @@ typename P::state_t run(int argc, const char* argv[]) {
             std::ifstream file(filename, std::ios::binary);
             if (!file) throw std::runtime_error("cannot open checkpoint file: " + filename);
             binary_reader reader(file);
-            read_checkpoint<binary_reader, P>(reader, driver_config, physics_config, driver_state, physics_state);
+            read_checkpoint<binary_reader, P>(reader, prog);
         } else {
             std::ifstream file(filename);
             if (!file) throw std::runtime_error("cannot open checkpoint file: " + filename);
             ascii_reader reader(file);
-            read_checkpoint<ascii_reader, P>(reader, driver_config, physics_config, driver_state, physics_state);
+            read_checkpoint<ascii_reader, P>(reader, prog);
         }
     }
 
-    return run<P>(driver_config, physics_config, driver_state, physics_state);
+    return run<P>(prog.driver_config, prog.physics_config, prog.driver_state, prog.physics_state);
 }
 
 } // namespace mist
