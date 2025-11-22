@@ -75,9 +75,9 @@ typename P::state_t rk2_step(
     const typename P::state_t& s0,
     double dt)
 {
-    auto s1 = euler_step(cfg, s0, dt);
-    auto s2 = euler_step(cfg, s1, dt);
-    return average(s0, s2, 0.5);
+    auto s1 = average(s0, euler_step(cfg, s0, dt), 1.0);
+    auto s2 = average(s0, euler_step(cfg, s1, dt), 0.5);
+    return s2;
 }
 
 template<Physics P>
@@ -86,10 +86,10 @@ typename P::state_t rk3_step(
     const typename P::state_t& s0,
     double dt)
 {
-    auto s1 = euler_step(cfg, s0, dt);
-    auto s2 = euler_step(cfg, s1, dt);
-    auto s3 = euler_step(cfg, average(s0, s2, 0.25), dt);
-    return average(s0, s3, 2.0 / 3.0);
+    auto s1 = average(s0, euler_step(cfg, s0, dt), 1.0);
+    auto s2 = average(s0, euler_step(cfg, s1, dt), 0.25);
+    auto s3 = average(s0, euler_step(cfg, s2, dt), 2.0 / 3.0);
+    return s3;
 }
 
 // =============================================================================
