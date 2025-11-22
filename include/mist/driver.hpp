@@ -353,31 +353,49 @@ struct config {
 };
 
 // =============================================================================
-// Program state (driver + physics config and state)
+// Combined state (driver + physics)
 // =============================================================================
 
 template<Physics P>
-struct program {
-    driver::config_t driver_config;
-    typename P::config_t physics_config;
-    driver::state_t driver_state;
-    typename P::state_t physics_state;
+struct state {
+    driver::state_t driver;
+    typename P::state_t physics;
 
     auto fields() const {
         return std::make_tuple(
-            field("driver_config", driver_config),
-            field("physics_config", physics_config),
-            field("driver_state", driver_state),
-            field("physics_state", physics_state)
+            field("driver", driver),
+            field("physics", physics)
         );
     }
 
     auto fields() {
         return std::make_tuple(
-            field("driver_config", driver_config),
-            field("physics_config", physics_config),
-            field("driver_state", driver_state),
-            field("physics_state", physics_state)
+            field("driver", driver),
+            field("physics", physics)
+        );
+    }
+};
+
+// =============================================================================
+// Program (config + state)
+// =============================================================================
+
+template<Physics P>
+struct program {
+    config<P> config;
+    state<P> state;
+
+    auto fields() const {
+        return std::make_tuple(
+            field("config", config),
+            field("state", state)
+        );
+    }
+
+    auto fields() {
+        return std::make_tuple(
+            field("config", config),
+            field("state", state)
         );
     }
 };
@@ -440,14 +458,14 @@ inline double get_wall_time() {
 template<Physics P>
 typename P::state_t run(program<P>& prog)
 {
-    using state_t = typename P::state_t;
-    
-    auto& driver_config = prog.driver_config;
-    auto& physics_config = prog.physics_config;
-    auto& driver_state = prog.driver_state;
-    auto& physics_state = prog.physics_state;
+    using physics_state_t = typename P::state_t;
 
-    auto rk_step = [&](const state_t& s, double dt) -> state_t {
+    auto& driver_config = prog.config.driver;
+    auto& physics_config = prog.config.physics;
+    auto& driver_state = prog.state.driver;
+    auto& physics_state = prog.state.physics;
+
+    auto rk_step = [&](const physics_state_t& s, double dt) -> physics_state_t {
         switch (driver_config.rk_order) {
             case 1: return rk1_step<P>(physics_config, s, dt);
             case 2: return rk2_step<P>(physics_config, s, dt);
@@ -472,10 +490,10 @@ typename P::state_t run(program<P>& prog)
     auto fmt = driver::parse_output_format(driver_config.output_format);
 
     // Iteration message output
-    auto message_output = scheduled_output<state_t>{
+    auto message_output = scheduled_output<physics_state_t>{
         driver_config.message,
         &driver_state.message_state,
-        [&](const state_t& s) {
+        [&](const physics_state_t& s) {
             double wall_now = get_wall_time();
             double wall_elapsed = wall_now - last_message_wall_time;
             int iter_elapsed = driver_state.iteration - last_message_iteration;
@@ -503,14 +521,14 @@ typename P::state_t run(program<P>& prog)
     };
 
     // Checkpoint output
-    auto checkpoint_output = scheduled_output<state_t>{
+    auto checkpoint_output = scheduled_output<physics_state_t>{
         driver_config.checkpoint,
         &driver_state.checkpoint_state,
-        [&](const state_t& s) {
+        [&](const physics_state_t& s) {
             char filename[64];
             const char* ext = (fmt == driver::output_format::binary) ? "bin" : "dat";
             std::snprintf(filename, sizeof(filename), "chkpt.%04d.%s", driver_state.checkpoint_state.count, ext);
-            program<P> prog{driver_config, physics_config, driver_state, s};
+            program<P> prog{{driver_config, physics_config}, {driver_state, s}};
             if (fmt == driver::output_format::binary) {
                 std::ofstream file(filename, std::ios::binary);
                 binary_writer writer(file);
@@ -524,10 +542,10 @@ typename P::state_t run(program<P>& prog)
     };
 
     // Product output
-    auto products_output = scheduled_output<state_t>{
+    auto products_output = scheduled_output<physics_state_t>{
         driver_config.products,
         &driver_state.products_state,
-        [&](const state_t& s) {
+        [&](const physics_state_t& s) {
             char filename[64];
             const char* ext = (fmt == driver::output_format::binary) ? "bin" : "dat";
             std::snprintf(filename, sizeof(filename), "prods.%04d.%s", driver_state.products_state.count, ext);
@@ -544,16 +562,16 @@ typename P::state_t run(program<P>& prog)
     };
 
     // Timeseries output
-    auto timeseries_output = scheduled_output<state_t>{
+    auto timeseries_output = scheduled_output<physics_state_t>{
         driver_config.timeseries,
         &driver_state.timeseries_state,
-        [&](const state_t& s) {
+        [&](const physics_state_t& s) {
             accumulate_timeseries_sample(driver_state, timeseries_sample(physics_config, s));
         }
     };
 
     // Collect outputs
-    std::array<scheduled_output<state_t>, 4> outputs = {{
+    std::array<scheduled_output<physics_state_t>, 4> outputs = {{
         message_output,
         checkpoint_output,
         products_output,
@@ -600,14 +618,13 @@ typename P::state_t run(program<P>& prog)
 template<Physics P>
 typename P::state_t run(const config<P>& cfg) {
     program<P> prog;
-    prog.driver_config = cfg.driver;
-    prog.physics_config = cfg.physics;
-    prog.physics_state = initial_state(prog.physics_config);
+    prog.config = cfg;
+    prog.state.physics = initial_state(prog.config.physics);
     return run<P>(prog);
 }
 
 template<Physics P>
-typename P::state_t run(int argc, const char* argv[]) {
+typename P::state_t run(int argc, const char** argv) {
     if (argc < 2) {
         throw std::runtime_error("usage: " + std::string(argv[0]) + " <config.cfg | checkpoint.dat | checkpoint.bin>");
     }
@@ -632,11 +649,8 @@ typename P::state_t run(int argc, const char* argv[]) {
         std::ifstream file(filename);
         if (!file) throw std::runtime_error("cannot open config file: " + filename);
         ascii_reader reader(file);
-        config<P> cfg;
-        deserialize(reader, "config", cfg);
-        prog.driver_config = cfg.driver;
-        prog.physics_config = cfg.physics;
-        prog.physics_state = initial_state(prog.physics_config);
+        deserialize(reader, "config", prog.config);
+        prog.state.physics = initial_state(prog.config.physics);
     } else {
         // Restart from checkpoint
         bool is_binary = filename.substr(filename.size() - 4) == ".bin";

@@ -210,13 +210,13 @@ auto timeseries_sample(
 // Main driver
 // =============================================================================
 
-int main(int argc, char* argv[]) {
+int main(int argc, const char** argv) {
     static_assert(Physics<advection_1d>, "advection_1d must satisfy Physics concept");
 
     std::cout << "=== 1D Linear Advection Demo (Mist Driver) ===\n\n";
 
     try {
-        auto final_state = run<advection_1d>(argc, const_cast<const char**>(argv));
+        auto final_state = run<advection_1d>(argc, argv);
         std::cout << "\n=== Simulation Complete ===\n";
         std::cout << "Final time: " << final_state.time << "\n";
     } catch (const std::exception& e) {
