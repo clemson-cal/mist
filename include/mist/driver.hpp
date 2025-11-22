@@ -49,6 +49,15 @@ concept Physics = requires(
 } && HasConstFields<typename P::state_t>
   && HasConstFields<typename P::product_t>;
 
+// Optional validation function
+template<typename P>
+concept HasValidate = requires(
+    const typename P::config_t& cfg,
+    const typename P::state_t& s
+) {
+    { validate(cfg, s) } -> std::same_as<void>;
+};
+
 // =============================================================================
 // Time integrators
 // =============================================================================
@@ -464,6 +473,11 @@ typename P::state_t run(program<P>& prog)
     auto& physics_config = prog.config.physics;
     auto& driver_state = prog.state.driver;
     auto& physics_state = prog.state.physics;
+
+    // Validate config+state if physics module provides validate()
+    if constexpr (HasValidate<P>) {
+        validate(physics_config, physics_state);
+    }
 
     auto rk_step = [&](const physics_state_t& s, double dt) -> physics_state_t {
         switch (driver_config.rk_order) {
