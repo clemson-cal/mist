@@ -438,13 +438,14 @@ inline double get_wall_time() {
 // =============================================================================
 
 template<Physics P>
-typename P::state_t run(
-    const driver::config_t& driver_config,
-    const typename P::config_t& physics_config,
-    driver::state_t& driver_state,
-    typename P::state_t physics_state)
+typename P::state_t run(program<P>& prog)
 {
     using state_t = typename P::state_t;
+    
+    auto& driver_config = prog.driver_config;
+    auto& physics_config = prog.physics_config;
+    auto& driver_state = prog.driver_state;
+    auto& physics_state = prog.physics_state;
 
     auto rk_step = [&](const state_t& s, double dt) -> state_t {
         switch (driver_config.rk_order) {
@@ -598,9 +599,11 @@ typename P::state_t run(
 
 template<Physics P>
 typename P::state_t run(const config<P>& cfg) {
-    driver::state_t driver_state;
-    auto physics_state = initial_state(cfg.physics);
-    return run<P>(cfg.driver, cfg.physics, driver_state, physics_state);
+    program<P> prog;
+    prog.driver_config = cfg.driver;
+    prog.physics_config = cfg.physics;
+    prog.physics_state = initial_state(prog.physics_config);
+    return run<P>(prog);
 }
 
 template<Physics P>
@@ -650,7 +653,7 @@ typename P::state_t run(int argc, const char* argv[]) {
         }
     }
 
-    return run<P>(prog.driver_config, prog.physics_config, prog.driver_state, prog.physics_state);
+    return run<P>(prog);
 }
 
 } // namespace mist
