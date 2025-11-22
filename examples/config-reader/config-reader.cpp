@@ -1,6 +1,8 @@
 #include <iostream>
 #include <fstream>
 #include <cstdlib>
+#include <stdexcept>
+#include <type_traits>
 #include "mist/core.hpp"
 #include "mist/serialize.hpp"
 #include "mist/ascii_reader.hpp"
@@ -9,12 +11,34 @@
 using namespace mist;
 
 // =============================================================================
+// Boundary condition enum with ADL string conversion
+// =============================================================================
+
+enum class boundary_condition { periodic, outflow, reflecting };
+
+inline const char* to_string(boundary_condition bc) {
+    switch (bc) {
+        case boundary_condition::periodic: return "periodic";
+        case boundary_condition::outflow: return "outflow";
+        case boundary_condition::reflecting: return "reflecting";
+    }
+    return "unknown";
+}
+
+inline boundary_condition from_string(std::type_identity<boundary_condition>, const std::string& s) {
+    if (s == "periodic") return boundary_condition::periodic;
+    if (s == "outflow") return boundary_condition::outflow;
+    if (s == "reflecting") return boundary_condition::reflecting;
+    throw std::runtime_error("invalid boundary_condition: " + s);
+}
+
+// =============================================================================
 // Nested configuration structures
 // =============================================================================
 
 struct boundary_t {
-    int type;                    // 0=periodic, 1=outflow, 2=reflecting
-    double value;                // boundary value (if applicable)
+    boundary_condition type = boundary_condition::periodic;
+    double value = 0.0;                // boundary value (if applicable)
 
     auto fields() const {
         return std::make_tuple(
@@ -204,6 +228,20 @@ int main(int argc, char* argv[]) {
         // Output the configuration using ascii_writer
         ascii_writer writer(std::cout);
         serialize(writer, "config", config);
+
+        // Demo: use set() to override fields by path
+        std::cout << "\n========================================\n";
+        std::cout << "Demonstrating set() function:\n";
+        std::cout << "========================================\n\n";
+
+        set(config, "t_final", "20.0");
+        set(config, "physics.gamma", "1.33");
+        set(config, "mesh.boundary_lo.type", "reflecting");
+
+        std::cout << "After overrides:\n";
+        std::cout << "  t_final = " << config.t_final << "\n";
+        std::cout << "  physics.gamma = " << config.physics.gamma << "\n";
+        std::cout << "  mesh.boundary_lo.type = " << to_string(config.mesh.boundary_lo.type) << "\n";
 
     } catch (const std::exception& e) {
         std::cerr << "Error parsing config: " << e.what() << "\n";

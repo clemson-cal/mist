@@ -198,9 +198,7 @@ struct state_t {
 
 **Timeseries Data (`driver::timeseries_t`):**
 ```cpp
-struct timeseries_t {
-    std::vector<std::pair<std::string, std::vector<double>>> data;
-};
+using timeseries_t = std::vector<std::pair<std::string, std::vector<double>>>;
 ```
 - Structure: vector of (column_name, values) pairs
 - Each column has a name (string) and all samples for that column (vector<double>)
@@ -511,6 +509,42 @@ The framework automatically handles:
 4. **Dynamic vectors**: `std::vector<T>` where `T` is serializable
 5. **User-defined types**: Any type with `fields()` method
 
+## Enum Serialization
+
+Enums can be serialized as strings by providing ADL `to_string` and `from_string` functions:
+
+```cpp
+enum class boundary_condition { periodic, outflow, reflecting };
+
+// ADL to_string: converts enum to string for serialization
+inline const char* to_string(boundary_condition bc) {
+    switch (bc) {
+        case boundary_condition::periodic: return "periodic";
+        case boundary_condition::outflow: return "outflow";
+        case boundary_condition::reflecting: return "reflecting";
+    }
+    return "unknown";
+}
+
+// ADL from_string: converts string to enum for deserialization
+inline boundary_condition from_string(std::type_identity<boundary_condition>, const std::string& s) {
+    if (s == "periodic") return boundary_condition::periodic;
+    if (s == "outflow") return boundary_condition::outflow;
+    if (s == "reflecting") return boundary_condition::reflecting;
+    throw std::runtime_error("invalid boundary_condition: " + s);
+}
+```
+
+With these functions defined, the enum serializes as a quoted string:
+```
+boundary {
+    type = "periodic"
+    value = 0.0
+}
+```
+
+The `HasEnumStrings` concept detects whether a type has these ADL functions available.
+
 ## Making Types Serializable
 
 Define both const and non-const versions of `fields()`:
@@ -742,6 +776,34 @@ deserialize(hr, "state", state);
 ```
 
 All three formats use the same `serialize()` / `deserialize()` interface - only the archive type changes.
+
+## Config Field Setter
+
+The `set()` function allows modifying struct fields by dot-separated path, useful for command-line overrides on restart:
+
+```cpp
+// Signature
+template<HasFields T>
+void set(T& obj, const std::string& path, const std::string& value);
+
+// Usage
+config_t config;
+set(config, "t_final", "20.0");                    // set scalar
+set(config, "physics.gamma", "1.33");              // nested field
+set(config, "mesh.boundary.type", "reflecting");   // enum field (uses from_string)
+```
+
+Supported target types:
+- Arithmetic types: `int`, `long`, `float`, `double`, etc.
+- `bool`: accepts "true", "1" for true; anything else is false
+- `std::string`: assigned directly
+- Enums with `HasEnumStrings`: uses `from_string()` for conversion
+- Nested structs with `HasFields`: recursively traverses path
+
+Throws `std::runtime_error` if:
+- Field path does not exist
+- Target type is not supported
+- Enum string conversion fails
 
 ## Archive Format Traits
 

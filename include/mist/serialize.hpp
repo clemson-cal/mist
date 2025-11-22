@@ -78,6 +78,17 @@ concept HasConstFields = requires(const T t) {
 };
 
 // =============================================================================
+// Enum string conversion via ADL
+// =============================================================================
+
+// Concept to detect if a type has ADL to_string/from_string for enum conversion
+template<typename E>
+concept HasEnumStrings = std::is_enum_v<E> && requires(E e, const std::string& s) {
+    { to_string(e) } -> std::convertible_to<const char*>;
+    { from_string(std::type_identity<E>{}, s) } -> std::same_as<E>;
+};
+
+// =============================================================================
 // Archive concepts
 // =============================================================================
 
@@ -111,6 +122,10 @@ void serialize(A& ar, const char* name, const T& value);
 template<ArchiveWriter A>
 void serialize(A& ar, const char* name, const std::string& value);
 
+template<ArchiveWriter A, typename E>
+    requires HasEnumStrings<E>
+void serialize(A& ar, const char* name, const E& value);
+
 template<ArchiveWriter A, typename T, std::size_t N>
 void serialize(A& ar, const char* name, const vec_t<T, N>& value);
 
@@ -136,6 +151,10 @@ void deserialize(A& ar, const char* name, T& value);
 
 template<ArchiveReader A>
 void deserialize(A& ar, const char* name, std::string& value);
+
+template<ArchiveReader A, typename E>
+    requires HasEnumStrings<E>
+void deserialize(A& ar, const char* name, E& value);
 
 template<ArchiveReader A, typename T, std::size_t N>
 void deserialize(A& ar, const char* name, vec_t<T, N>& value);
@@ -167,6 +186,13 @@ void serialize(A& ar, const char* name, const T& value) {
 template<ArchiveWriter A>
 void serialize(A& ar, const char* name, const std::string& value) {
     ar.write_string(name, value);
+}
+
+// Enums with ADL to_string/from_string
+template<ArchiveWriter A, typename E>
+    requires HasEnumStrings<E>
+void serialize(A& ar, const char* name, const E& value) {
+    ar.write_string(name, to_string(value));
 }
 
 // vec_t<T, N>
@@ -225,6 +251,15 @@ void deserialize(A& ar, const char* name, std::string& value) {
     ar.read_string(name, value);
 }
 
+// Enums with ADL to_string/from_string
+template<ArchiveReader A, typename E>
+    requires HasEnumStrings<E>
+void deserialize(A& ar, const char* name, E& value) {
+    std::string str;
+    ar.read_string(name, str);
+    value = from_string(std::type_identity<E>{}, str);
+}
+
 // vec_t<T, N>
 template<ArchiveReader A, typename T, std::size_t N>
 void deserialize(A& ar, const char* name, vec_t<T, N>& value) {
@@ -264,6 +299,96 @@ void deserialize(A& ar, const char* name, T& value) {
         (deserialize(ar, fields.name, fields.value), ...);
     }, value.fields());
     ar.end_group();
+}
+
+// =============================================================================
+// Config field setter by path
+// =============================================================================
+
+namespace detail {
+
+// Helper to parse string to target type
+template<typename T>
+void parse_and_assign(T& target, const std::string& value) {
+    if constexpr (std::is_same_v<T, int>) {
+        target = std::stoi(value);
+    } else if constexpr (std::is_same_v<T, long>) {
+        target = std::stol(value);
+    } else if constexpr (std::is_same_v<T, long long>) {
+        target = std::stoll(value);
+    } else if constexpr (std::is_same_v<T, unsigned int> || std::is_same_v<T, unsigned long>) {
+        target = std::stoul(value);
+    } else if constexpr (std::is_same_v<T, float>) {
+        target = std::stof(value);
+    } else if constexpr (std::is_same_v<T, double>) {
+        target = std::stod(value);
+    } else if constexpr (std::is_same_v<T, bool>) {
+        target = (value == "true" || value == "1");
+    } else if constexpr (std::is_same_v<T, std::string>) {
+        target = value;
+    } else if constexpr (HasEnumStrings<T>) {
+        target = from_string(std::type_identity<T>{}, value);
+    } else {
+        throw std::runtime_error("unsupported type for set()");
+    }
+}
+
+// Forward declaration
+template<typename T>
+void set_impl(T& obj, const std::string& path, const std::string& value);
+
+// Set field on a leaf type (non-HasFields)
+template<typename T>
+void set_field(T& target, const std::string& rest, const std::string& value) {
+    if (rest.empty()) {
+        parse_and_assign(target, value);
+    } else if constexpr (HasFields<T>) {
+        set_impl(target, rest, value);
+    } else {
+        throw std::runtime_error("cannot descend into '" + rest + "': not a struct");
+    }
+}
+
+// Helper to try setting a field if name matches
+template<typename T>
+void try_set_field(const char* name, T& target, const std::string& key, 
+                   const std::string& rest, const std::string& value, bool& found) {
+    if (!found && std::string(name) == key) {
+        set_field(target, rest, value);
+        found = true;
+    }
+}
+
+// Set field by path on a HasFields type
+template<typename T>
+void set_impl(T& obj, const std::string& path, const std::string& value) {
+    auto dot = path.find('.');
+    std::string key = path.substr(0, dot);
+    std::string rest = (dot != std::string::npos) ? path.substr(dot + 1) : "";
+
+    bool found = false;
+    std::apply([&](auto&&... field) {
+        (try_set_field(field.name, field.value, key, rest, value, found), ...);
+    }, obj.fields());
+
+    if (!found) {
+        throw std::runtime_error("field not found: " + key);
+    }
+}
+
+} // namespace detail
+
+/**
+ * Set a field in a struct by dot-separated path.
+ * 
+ * Example:
+ *   set(config, "physics.gamma", "1.33");
+ *   set(config, "driver.t_final", "2.0");
+ *   set(config, "mesh.boundary", "periodic");  // enum with to_string/from_string
+ */
+template<HasFields T>
+void set(T& obj, const std::string& path, const std::string& value) {
+    detail::set_impl(obj, path, value);
 }
 
 } // namespace mist
