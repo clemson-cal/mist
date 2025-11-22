@@ -626,7 +626,8 @@ typename P::state_t run(const config<P>& cfg) {
 template<Physics P>
 typename P::state_t run(int argc, const char** argv) {
     if (argc < 2) {
-        throw std::runtime_error("usage: " + std::string(argv[0]) + " <config.cfg | checkpoint.dat | checkpoint.bin>");
+        throw std::runtime_error("usage: " + std::string(argv[0]) + 
+            " <config.cfg | checkpoint.dat | checkpoint.bin> [key=value ...]");
     }
 
     std::string filename = argv[1];
@@ -665,6 +666,18 @@ typename P::state_t run(int argc, const char** argv) {
             ascii_reader reader(file);
             read_checkpoint<ascii_reader, P>(reader, prog);
         }
+    }
+
+    // Apply command-line config overrides
+    for (int i = 2; i < argc; ++i) {
+        std::string arg = argv[i];
+        auto eq = arg.find('=');
+        if (eq == std::string::npos) {
+            throw std::runtime_error("invalid override (expected key=value): " + arg);
+        }
+        std::string key = arg.substr(0, eq);
+        std::string value = arg.substr(eq + 1);
+        set(prog.config, key, value);
     }
 
     return run<P>(prog);
