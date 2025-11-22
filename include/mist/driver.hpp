@@ -100,10 +100,18 @@ typename P::state_t rk3_step(
 
 enum class scheduling_policy { nearest, exact };
 
-inline scheduling_policy parse_scheduling_policy(const std::string& str) {
-    if (str == "exact") return scheduling_policy::exact;
+inline const char* to_string(scheduling_policy p) {
+    switch (p) {
+        case scheduling_policy::nearest: return "nearest";
+        case scheduling_policy::exact: return "exact";
+    }
+    return "unknown";
+}
+
+inline scheduling_policy from_string(std::type_identity<scheduling_policy>, const std::string& str) {
     if (str == "nearest") return scheduling_policy::nearest;
-    throw std::runtime_error("scheduling policy must be 'exact' or 'nearest'");
+    if (str == "exact") return scheduling_policy::exact;
+    throw std::runtime_error("scheduling_policy must be 'nearest' or 'exact'");
 }
 
 // =============================================================================
@@ -115,7 +123,7 @@ namespace driver {
 struct scheduled_output_config {
     double interval = 1.0;
     int interval_kind = 0;
-    std::string scheduling = "nearest";
+    scheduling_policy scheduling = scheduling_policy::nearest;
 
     auto fields() const {
         return std::make_tuple(
@@ -167,7 +175,7 @@ public:
     std::function<void(const StateT&)> callback;
 
     scheduling_policy policy() const {
-        return parse_scheduling_policy(config.scheduling);
+        return config.scheduling;
     }
 
     void validate() const {
@@ -279,16 +287,23 @@ struct state_t {
 
 namespace driver {
 
-// Output format: "ascii" or "binary"
 enum class output_format { ascii, binary };
 
-inline output_format parse_output_format(const std::string& str) {
+inline const char* to_string(output_format fmt) {
+    switch (fmt) {
+        case output_format::ascii: return "ascii";
+        case output_format::binary: return "binary";
+    }
+    return "unknown";
+}
+
+inline output_format from_string(std::type_identity<output_format>, const std::string& str) {
     if (str == "ascii") return output_format::ascii;
     if (str == "binary") return output_format::binary;
     throw std::runtime_error("output_format must be 'ascii' or 'binary'");
 }
 
-inline std::string output_format_extension(output_format fmt) {
+inline const char* output_format_extension(output_format fmt) {
     return (fmt == output_format::binary) ? ".bin" : ".dat";
 }
 
@@ -299,12 +314,12 @@ struct config_t {
     double t_final = 1.0;
     int max_iter = -1;
 
-    std::string output_format = "ascii";  // "ascii" or "binary"
+    output_format output_format = output_format::ascii;
 
-    scheduled_output_config message{0.1, 0, "nearest"};
-    scheduled_output_config checkpoint{1.0, 0, "nearest"};
-    scheduled_output_config products{0.1, 0, "exact"};
-    scheduled_output_config timeseries{0.01, 0, "exact"};
+    scheduled_output_config message{0.1, 0, scheduling_policy::nearest};
+    scheduled_output_config checkpoint{1.0, 0, scheduling_policy::nearest};
+    scheduled_output_config products{0.1, 0, scheduling_policy::exact};
+    scheduled_output_config timeseries{0.01, 0, scheduling_policy::exact};
 
     auto fields() const {
         return std::make_tuple(
@@ -501,7 +516,7 @@ typename P::state_t run(program<P>& prog)
     int last_message_iteration = driver_state.iteration;
 
     // Parse output format
-    auto fmt = driver::parse_output_format(driver_config.output_format);
+    auto fmt = driver_config.output_format;
 
     // Iteration message output
     auto message_output = scheduled_output<physics_state_t>{
