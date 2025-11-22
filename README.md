@@ -230,7 +230,7 @@ All scheduled outputs follow this uniform sequence:
 1. Trigger condition is met (exact or nearest policy)
 2. Increment output counter (e.g., `checkpoint_count++`)
 3. Advance next scheduled time (e.g., `next_checkpoint_time += interval`)
-4. Invoke checkpoint writer with state and updated driver_state
+4. Invoke checkpoint writer with the updated program state
 
 This ensures checkpoint writer always see the "post-output" driver state, which is what gets persisted.
 
@@ -379,16 +379,20 @@ Each scheduled output specifies an interval, a time kind, and a scheduling polic
 **Checkpoint file structure:**
 ```
 checkpoint {
-    driver_config { ... }   // Full driver configuration
-    driver_state { ... }    // Driver state including timeseries data
-    physics_config { ... }  // Full physics configuration
-    physics_state { ... }   // Physics state variables
+    config {
+        driver { ... }   // Full driver configuration
+        physics { ... }  // Full physics configuration
+    }
+    state {
+        driver { ... }   // Driver state including timeseries data
+        physics { ... }  // Physics state variables
+    }
 }
 ```
 
 **Output Function:** Driver creates writer and calls `write_checkpoint()`
 - Driver constructs filename: `chkpt.{:04d}.{ext}` where ext is "dat" or "bin"
-- Driver serializes `driver_config`, `driver_state`, `physics_config`, and `physics_state`
+- Driver serializes the `program<P>` struct containing config and state
 
 **Output numbering:** 
 - Initial: `chkpt.0000{ext}` (written at simulation start)
@@ -404,7 +408,7 @@ checkpoint {
 
 **Output Function:** Driver creates writer and calls `write_products()`
 - Driver constructs filename: `prods.{:04d}.{ext}` where ext is "dat" or "bin"
-- Driver computes `product` via `get_product(physics_config, state)`
+- Driver computes `product` via `get_product(config.physics, state.physics)`
 - Driver serializes `product` using `serialize()`
 
 **Output numbering:**
@@ -420,13 +424,13 @@ checkpoint {
 **Scheduling:** Configured via `driver::config_t::timeseries` (`scheduled_output_config`)
 
 **Data Collection:**
-- Driver calls `timeseries_sample(physics_config, state)` from physics module
+- Driver calls `timeseries_sample(config.physics, state.physics)` from physics module
 - Returns `std::vector<std::pair<std::string, double>>` with (column_name, value) pairs for this sample
 - For each (name, value) pair:
-  - If column `name` exists in `driver_state.timeseries.data`: append `value` to that column's vector
+  - If column `name` exists in `state.driver.timeseries`: append `value` to that column's vector
   - If column `name` is new: create new column with `value` as first entry
 - Column names do not need to be consistent across samples (columns can be added dynamically)
-- All measurements are accumulated in `driver_state.timeseries`
+- All measurements are accumulated in `state.driver.timeseries`
 - Data persists across sessions (saved in checkpoints)
 
 ## Timestep and Termination
@@ -846,7 +850,7 @@ These traits allow the driver to be parameterized by archive format:
 ```cpp
 // Driver automatically uses correct file extensions and constructs archives
 template<typename Archive, Physics P>
-void run(const config<P>& cfg, driver_state_t& state) {
+void run(program<P>& prog) {
     // Driver creates: chkpt.0000.h5, chkpt.0001.h5, etc.
 }
 
