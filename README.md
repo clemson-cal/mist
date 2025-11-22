@@ -781,6 +781,260 @@ deserialize(hr, "state", state);
 
 All three formats use the same `serialize()` / `deserialize()` interface - only the archive type changes.
 
+# NdArray
+
+The ndarray module provides a unified abstraction for multi-dimensional arrays. The key insight is that an array is fundamentally a mapping from indices to values—not necessarily backed by storage.
+
+## Design
+
+**Lazy arrays** are a pair `(index_space, f)` where `f: index -> value`. No memory is allocated; values are computed on demand. This enables:
+- Computed arrays without allocation
+- Lazy transformations that compose without materializing intermediates
+- Views and slices as index remapping
+
+**Cached arrays** are memory-backed, either owning their buffer or referencing external storage (like `mdspan`).
+
+**Taxonomy:**
+```
+NdArray
+├── lazy_t<S, F>         (space + callable)
+└── Cached
+    ├── cached_t<T, S>        (owning)
+    └── cached_view_t<T, S>   (non-owning)
+```
+
+All ndarray types support:
+- `space(a)` — the index space
+- `start(a)`, `shape(a)`, `size(a)` — delegates to `space(a)`
+- `a(idx)` or `at(a, idx)` — element access
+
+## Lazy Arrays
+
+Construct with `lazy(space, func)`:
+
+```cpp
+auto space = index_space(ivec(0, 0), uvec(100, 100));
+
+// Coordinate-based values
+auto coords = lazy(space, [] MIST_HD (ivec_t<2> idx) {
+    return idx[0] + idx[1];
+});
+
+// Initial conditions
+auto initial = lazy(space, [=] MIST_HD (ivec_t<2> idx) {
+    double x = idx[0] * dx;
+    double y = idx[1] * dy;
+    return exp(-x*x - y*y);
+});
+```
+
+## Cached Arrays
+
+**Memory locations:**
+- `memory::host` — CPU memory
+- `memory::device` — GPU memory (cudaMalloc)
+- `memory::managed` — Unified memory (cudaMallocManaged)
+
+**Owning vs non-owning:**
+- `cached_t` owns its buffer (move-only, no copy)
+- `cached_view_t` references external storage
+
+```cpp
+// Owning array
+cached_t<double, 2> arr(space, memory::host);
+arr(ivec(0, 0)) = 1.0;
+
+// View into existing buffer
+cached_view_t<double, 2> view(space, ptr);
+```
+
+## Operations
+
+### lazy
+
+Construct a lazy array from space and function:
+
+```cpp
+auto arr = lazy(space, [] MIST_HD (ivec_t<2> idx) { return ...; });
+```
+
+### map
+
+Transform elements lazily:
+
+```cpp
+auto doubled = map(arr, [](double x) { return 2.0 * x; });
+auto sqrts = map(arr, sqrt);
+```
+
+Lvalue sources are captured by pointer; rvalue sources are moved into captures:
+
+```cpp
+auto a = map(data, f);              // a references data
+auto b = map(std::move(data), f);   // b owns data
+```
+
+### cache
+
+Materialize any ndarray to memory:
+
+```cpp
+auto host_arr = cache(lazy_arr, memory::host, exec::cpu);
+auto device_arr = cache(lazy_arr, memory::device, exec::gpu);
+```
+
+For cached sources, uses bulk memcpy:
+
+```cpp
+auto device_copy = cache(host_arr, memory::device, exec::cpu);  // h2d
+auto host_copy = cache(device_arr, memory::host, exec::cpu);    // d2h
+```
+
+### extract
+
+Lazy view into a subregion:
+
+```cpp
+auto inner = index_space(ivec(1, 1), uvec(8, 8));
+auto sub = extract(arr, inner);
+```
+
+### insert
+
+Overlay one array onto another:
+
+```cpp
+auto updated = insert(arr, modified_subregion);
+```
+
+Indices in `space(modified_subregion)` read from it; others read from `arr`.
+
+## Vector-Valued Arrays
+
+For physics simulations storing `vec_t<T, N>` at each grid point (e.g., conserved variables), use `cached_vec_t` with explicit memory layout:
+
+```cpp
+enum class layout { aos, soa };
+
+template<typename T, std::size_t N, std::size_t S, layout L = layout::aos>
+struct cached_vec_t;
+```
+
+**Layouts:**
+- `layout::aos` — Array of Structures: `[v0.x, v0.y, v0.z, v1.x, v1.y, v1.z, ...]`
+- `layout::soa` — Structure of Arrays: `[v0.x, v1.x, v2.x, ...], [v0.y, v1.y, v2.y, ...], ...`
+
+SoA provides better GPU memory coalescing. AoS is the default.
+
+**Usage:**
+
+```cpp
+auto space = index_space(ivec(0, 0), uvec(100, 100));
+
+// AoS (default) — good for CPU
+cached_vec_t<double, 5, 2> cons(space, memory::host);
+cons(ivec(0, 0)) = dvec(1.0, 0.0, 0.0, 0.0, 2.5);
+vec_t<double, 5> u = cons(ivec(0, 0));
+
+// SoA — good for GPU
+cached_vec_t<double, 5, 2, layout::soa> cons_gpu(space, memory::device);
+```
+
+**Transparent access:**
+
+Both layouts use the same `operator()` syntax. AoS returns a reference; SoA returns a proxy that gathers on read and scatters on write:
+
+```cpp
+template<typename Arr>
+void fill_initial(Arr& arr) {
+    for (auto idx : space(arr)) {
+        arr(idx) = initial_state(idx);  // works for both layouts
+    }
+}
+```
+
+**Caching with layout:**
+
+```cpp
+auto device_arr = cache<layout::soa>(lazy_arr, memory::device, exec::gpu);
+auto host_arr = cache<layout::aos>(lazy_arr, memory::host, exec::cpu);
+```
+
+## Constructors
+
+| Function | Description |
+|----------|-------------|
+| `lazy(space, f)` | Lazy array from index space and function `f: index -> value` |
+| `zeros<T>(space)` | Constant zero |
+| `ones<T>(space)` | Constant one |
+| `fill<T>(space, value)` | Constant value |
+| `indices(space)` | Multi-dimensional index at each position (`ivec_t<S>`) |
+| `offsets(space)` | Flat offset at each position (`std::size_t`) |
+| `range(n)` | 1D integer sequence `[0, n)` |
+| `linspace(start, stop, n)` | 1D evenly spaced values, endpoint inclusive |
+| `linspace(start, stop, n, false)` | 1D evenly spaced values, endpoint exclusive |
+| `coords(space, origin, delta)` | Physical coordinates (`origin + idx * delta`, returns `dvec_t<S>`) |
+
+## Operators
+
+| Function | Description |
+|----------|-------------|
+| `map(a, f)` | Lazy element-wise transform `f: value -> value` |
+| `extract(a, subspace)` | Lazy view into subregion |
+| `insert(a, b)` | Lazy overlay of `b` onto `a` where `space(b) ⊆ space(a)` |
+| `cache(a, loc, exec)` | Materialize to memory |
+
+## Typical Patterns
+
+**Transform and materialize:**
+```cpp
+auto result = cache(map(data, transform), memory::host, exec::cpu);
+```
+
+**Extract, transform, insert:**
+```cpp
+auto inner = index_space(ivec(1, 1), uvec(n-2, n-2));
+auto result = cache(
+    insert(arr, map(extract(arr, inner), stencil_op)),
+    memory::host, exec::cpu
+);
+```
+
+**GPU computation:**
+```cpp
+auto device_data = cache(initial_conditions, memory::device, exec::gpu);
+auto result = cache(map(device_data, kernel_func), memory::device, exec::gpu);
+auto host_result = cache(result, memory::host, exec::cpu);  // d2h
+```
+
+## Safe Element Access
+
+`safe_at` handles host/device transfers automatically (expensive, use for debugging):
+
+```cpp
+cached_t<double, 2> device_arr(space, memory::device);
+safe_at(device_arr, ivec(0, 0)) = 3.14;           // h2d
+double val = safe_at(device_arr, ivec(0, 0));     // d2h
+```
+
+## Lifetime Management
+
+Lazy arrays from lvalue sources capture by pointer—the source must outlive the lazy array:
+
+```cpp
+cached_t<double, 2> data = ...;
+auto lazy = map(data, sqrt);  // lazy references data
+```
+
+For self-contained lazy arrays, pass rvalues:
+
+```cpp
+auto lazy = map(cache(other, memory::host, exec::cpu), sqrt);
+// cached_t moved into lazy's captures
+```
+
+Convention: lazy arrays are short-lived temporaries, materialized with `cache()` before storage.
+
 ## Config Field Setter
 
 The `set()` function allows modifying struct fields by dot-separated path, useful for command-line overrides on restart:
