@@ -46,8 +46,7 @@ concept Physics = requires(
     { get_time(s, kind) } -> std::same_as<double>;
     { zone_count(s) } -> std::same_as<std::size_t>;
     { timeseries_sample(cfg, s) } -> std::same_as<std::vector<std::pair<std::string, double>>>;
-} && HasConstFields<typename P::state_t>
-  && HasConstFields<typename P::product_t>;
+};
 
 template<typename P>
 concept HasValidate = requires(
