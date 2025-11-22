@@ -607,17 +607,9 @@ typename P::state_t run(program<P>& prog)
 }
 
 template<Physics P>
-typename P::state_t run(const config<P>& cfg) {
-    program<P> prog;
-    prog.config = cfg;
-    prog.state.physics = initial_state(prog.config.physics);
-    return run<P>(prog);
-}
-
-template<Physics P>
 typename P::state_t run(int argc, const char** argv) {
     if (argc < 2) {
-        throw std::runtime_error("usage: " + std::string(argv[0]) + 
+        throw std::runtime_error("usage: " + std::string(argv[0]) +
             " <config.cfg | checkpoint.dat | checkpoint.bin> [key=value ...]");
     }
 
