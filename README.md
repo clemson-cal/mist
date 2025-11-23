@@ -855,8 +855,8 @@ For restarts to work correctly, the driver maintains internal state that must be
 Each output type (message, checkpoint, products, timeseries) has:
 ```cpp
 struct scheduled_output_state {
-    int count = 0;        // Number of outputs emitted
-    double next_time = 0; // Next scheduled output time
+    int count = 0;          // Number of outputs emitted
+    double next_time = 0.0; // Next scheduled output time
 };
 ```
 
@@ -864,12 +864,10 @@ struct scheduled_output_state {
 ```cpp
 struct state_t {
     int iteration = 0;
-    
     scheduled_output_state message_state;
     scheduled_output_state checkpoint_state;
     scheduled_output_state products_state;
     scheduled_output_state timeseries_state;
-    
     timeseries_t timeseries;  // Accumulated timeseries data
 };
 ```
@@ -893,8 +891,8 @@ When writing checkpoints, the callback receives:
 - Driver state - from the driver (already updated to reflect this output)
 
 The driver state written to the checkpoint reflects the state **after** the output has occurred:
-- `checkpoint_count` has been incremented (this checkpoint's number)
-- `next_checkpoint_time` has been advanced (when the next checkpoint will occur)
+- `checkpoint_state.count` has been incremented (this checkpoint's number)
+- `checkpoint_state.next_time` has been advanced (when the next checkpoint will occur)
 
 This ensures that restarting from a checkpoint continues correctly without re-executing the same output.
 
@@ -906,8 +904,8 @@ This ensures that restarting from a checkpoint continues correctly without re-ex
 **Scheduled Output Execution Order:**
 All scheduled outputs follow this uniform sequence:
 1. Trigger condition is met (exact or nearest policy)
-2. Increment output counter (e.g., `checkpoint_count++`)
-3. Advance next scheduled time (e.g., `next_checkpoint_time += interval`)
+2. Increment output counter (e.g., `checkpoint_state.count++`)
+3. Advance next scheduled time (e.g., `checkpoint_state.next_time += interval`)
 4. Invoke checkpoint writer with the updated program state
 
 This ensures checkpoint writer always see the "post-output" driver state, which is what gets persisted.
@@ -915,7 +913,7 @@ This ensures checkpoint writer always see the "post-output" driver state, which 
 **Restart Behavior:**
 When restarting from a checkpoint:
 - Driver state is restored from the checkpoint file
-- Output counters continue from saved values (e.g., next checkpoint is `chkpt.0005.h5` if `checkpoint_count = 4`)
+- Output counters continue from saved values (e.g., next checkpoint is `chkpt.0005.h5` if `checkpoint_state.count = 4`)
 - Scheduled output times continue from saved values
 - Iteration count continues from saved value
 - Session state is initialized fresh (e.g., wall-clock timing resets for new session)
@@ -930,7 +928,7 @@ Each output type (message, checkpoint, products, timeseries) has:
 struct scheduled_output_config {
     double interval = 1.0;
     int interval_kind = 0;
-    std::string scheduling = "nearest";  // "nearest" or "exact"
+    scheduling_policy scheduling = scheduling_policy::nearest;
 };
 ```
 
@@ -941,12 +939,12 @@ struct config_t {
     double cfl = 0.4;
     double t_final = 1.0;
     int max_iter = -1;
-    std::string output_format = "ascii";  // "ascii" or "binary"
-    
-    scheduled_output_config message{0.1, 0, "nearest"};
-    scheduled_output_config checkpoint{1.0, 0, "nearest"};
-    scheduled_output_config products{0.1, 0, "exact"};
-    scheduled_output_config timeseries{0.01, 0, "exact"};
+    output_format output_format = output_format::ascii;
+
+    scheduled_output_config message{0.1, 0, scheduling_policy::nearest};
+    scheduled_output_config checkpoint{1.0, 0, scheduling_policy::nearest};
+    scheduled_output_config products{0.1, 0, scheduling_policy::exact};
+    scheduled_output_config timeseries{0.01, 0, scheduling_policy::exact};
 };
 ```
 
