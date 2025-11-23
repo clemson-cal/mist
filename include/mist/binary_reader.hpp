@@ -162,6 +162,40 @@ public:
     }
 
     // =========================================================================
+    // Bulk data (for ndarray)
+    // =========================================================================
+
+    template<typename T>
+        requires std::is_arithmetic_v<T>
+    void read_data(const char* name, T* ptr, std::size_t count) {
+        ensure_header();
+        verify_name(name);
+
+        uint8_t type_tag = read_type_tag();
+
+        if (in_anonymous_group_ == 0 && type_tag != binary_format::TYPE_ARRAY) {
+            throw std::runtime_error("Expected array type for field '" + std::string(name) + "'");
+        }
+
+        [[maybe_unused]] uint8_t elem_tag = read_type_tag();
+
+        uint64_t n;
+        read_raw(n);
+
+        if (n != count) {
+            throw std::runtime_error(
+                "Data size mismatch for field '" + std::string(name) +
+                "': expected " + std::to_string(count) + ", got " + std::to_string(n));
+        }
+
+        // Read raw bytes directly
+        is_.read(reinterpret_cast<char*>(ptr), static_cast<std::streamsize>(count * sizeof(T)));
+        if (!is_) {
+            throw std::runtime_error("Failed to read data for field '" + std::string(name) + "'");
+        }
+    }
+
+    // =========================================================================
     // Groups (named and anonymous)
     // =========================================================================
 

@@ -179,6 +179,16 @@ public:
         end_group();
     }
 
+    // =========================================================================
+    // Bulk data (for ndarray) - not implemented for ASCII
+    // =========================================================================
+
+    template<typename T>
+        requires std::is_arithmetic_v<T>
+    void read_data(const char* /*name*/, T* /*ptr*/, std::size_t /*count*/) {
+        throw std::runtime_error("read_data not implemented for ASCII format");
+    }
+
     // Check if we're at the end of the current group (next char is '}')
     bool at_group_end() {
         skip_whitespace_and_comments();

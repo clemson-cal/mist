@@ -49,14 +49,11 @@ namespace binary_format {
 
     template<typename T>
     constexpr uint8_t element_type_tag() {
-        if constexpr (std::is_same_v<T, int32_t> || (std::is_same_v<T, int> && sizeof(int) == 4)) {
-            return ELEM_INT32;
-        } else if constexpr (std::is_same_v<T, int64_t> || (std::is_same_v<T, long> && sizeof(long) == 8)) {
-            return ELEM_INT64;
-        } else if constexpr (std::is_floating_point_v<T>) {
+        if constexpr (std::is_floating_point_v<T>) {
             return ELEM_FLOAT64;
+        } else if constexpr (sizeof(T) <= 4) {
+            return ELEM_INT32;
         } else {
-            static_assert(std::is_arithmetic_v<T>, "Unsupported element type");
             return ELEM_INT64;
         }
     }
@@ -162,6 +159,25 @@ public:
         for (const auto& elem : value) {
             write_element(elem);
         }
+    }
+
+    // =========================================================================
+    // Bulk data (for ndarray)
+    // =========================================================================
+
+    template<typename T>
+        requires std::is_arithmetic_v<T>
+    void write_data(const char* name, const T* ptr, std::size_t count) {
+        ensure_header();
+        write_name(name);
+        write_type_tag(binary_format::TYPE_ARRAY);
+        write_type_tag(binary_format::element_type_tag<T>());
+
+        uint64_t n = count;
+        write_raw(n);
+
+        // Write raw bytes directly (no per-element conversion)
+        os_.write(reinterpret_cast<const char*>(ptr), static_cast<std::streamsize>(count * sizeof(T)));
     }
 
     // =========================================================================

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ostream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 #include <iomanip>
@@ -98,6 +99,16 @@ public:
 
     void end_list() {
         end_group();
+    }
+
+    // =========================================================================
+    // Bulk data (for ndarray) - not implemented for ASCII
+    // =========================================================================
+
+    template<typename T>
+        requires std::is_arithmetic_v<T>
+    void write_data(const char* /*name*/, const T* /*ptr*/, std::size_t /*count*/) {
+        throw std::runtime_error("write_data not implemented for ASCII format");
     }
 
 private:

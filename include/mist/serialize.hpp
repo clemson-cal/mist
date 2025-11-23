@@ -6,6 +6,7 @@
 #include <type_traits>
 #include <vector>
 #include "core.hpp"
+#include "ndarray.hpp"
 
 namespace mist {
 
@@ -141,6 +142,9 @@ template<ArchiveWriter A, typename T>
     requires HasConstFields<T>
 void serialize(A& ar, const char* name, const T& value);
 
+template<ArchiveWriter A, typename T, std::size_t S>
+void serialize(A& ar, const char* name, const cached_t<T, S>& value);
+
 // =============================================================================
 // Deserialize implementation (forward declarations)
 // =============================================================================
@@ -170,6 +174,9 @@ void deserialize(A& ar, const char* name, std::vector<T>& value);
 template<ArchiveReader A, typename T>
     requires HasFields<T>
 void deserialize(A& ar, const char* name, T& value);
+
+template<ArchiveReader A, typename T, std::size_t S>
+void deserialize(A& ar, const char* name, cached_t<T, S>& value);
 
 // =============================================================================
 // Serialize implementations
@@ -231,6 +238,20 @@ void serialize(A& ar, const char* name, const T& value) {
     std::apply([&ar](auto&&... fields) {
         (serialize(ar, fields.name, fields.value), ...);
     }, value.fields());
+    ar.end_group();
+}
+
+// cached_t<T, S> (ndarray)
+template<ArchiveWriter A, typename T, std::size_t S>
+void serialize(A& ar, const char* name, const cached_t<T, S>& arr) {
+    static_assert(std::is_arithmetic_v<T>, "cached_t serialization requires arithmetic element type");
+    if (location(arr) != memory::host) {
+        throw std::runtime_error("cached_t serialization requires host memory");
+    }
+    ar.begin_group(name);
+    serialize(ar, "start", start(arr));
+    serialize(ar, "shape", shape(arr));
+    ar.write_data("data", data(arr), size(arr));
     ar.end_group();
 }
 
@@ -298,6 +319,20 @@ void deserialize(A& ar, const char* name, T& value) {
     std::apply([&ar](auto&&... fields) {
         (deserialize(ar, fields.name, fields.value), ...);
     }, value.fields());
+    ar.end_group();
+}
+
+// cached_t<T, S> (ndarray)
+template<ArchiveReader A, typename T, std::size_t S>
+void deserialize(A& ar, const char* name, cached_t<T, S>& arr) {
+    static_assert(std::is_arithmetic_v<T>, "cached_t deserialization requires arithmetic element type");
+    ar.begin_group(name);
+    ivec_t<S> st;
+    uvec_t<S> sh;
+    deserialize(ar, "start", st);
+    deserialize(ar, "shape", sh);
+    arr = cached_t<T, S>(index_space(st, sh), memory::host);
+    ar.read_data("data", data(arr), size(arr));
     ar.end_group();
 }
 

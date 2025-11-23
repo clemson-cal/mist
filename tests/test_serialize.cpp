@@ -588,6 +588,175 @@ void test_binary_file_output() {
 }
 
 // =============================================================================
+// NdArray Serialization Tests
+// =============================================================================
+
+void test_binary_cached_1d_serialization() {
+    std::cout << "Testing binary cached_t<double, 1> serialization... ";
+
+    auto space = index_space(ivec(0), uvec(100u));
+    cached_t<double, 1> original(space, memory::host);
+
+    for (int i = 0; i < 100; ++i) {
+        original(ivec(i)) = static_cast<double>(i) * 0.5;
+    }
+
+    std::stringstream ss(std::ios::binary | std::ios::in | std::ios::out);
+    binary_writer writer(ss);
+    serialize(writer, "array", original);
+
+    ss.seekg(0);
+    binary_reader reader(ss);
+
+    cached_t<double, 1> loaded(index_space(ivec(0), uvec(1u)), memory::host);
+    deserialize(reader, "array", loaded);
+
+    assert(start(loaded) == start(original));
+    assert(shape(loaded) == shape(original));
+    for (int i = 0; i < 100; ++i) {
+        assert(approx_equal(loaded(ivec(i)), original(ivec(i))));
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void test_binary_cached_2d_serialization() {
+    std::cout << "Testing binary cached_t<double, 2> serialization... ";
+
+    auto space = index_space(ivec(0, 0), uvec(10u, 20u));
+    cached_t<double, 2> original(space, memory::host);
+
+    for (int i = 0; i < 10; ++i) {
+        for (int j = 0; j < 20; ++j) {
+            original(ivec(i, j)) = static_cast<double>(i * 20 + j);
+        }
+    }
+
+    std::stringstream ss(std::ios::binary | std::ios::in | std::ios::out);
+    binary_writer writer(ss);
+    serialize(writer, "grid", original);
+
+    ss.seekg(0);
+    binary_reader reader(ss);
+
+    cached_t<double, 2> loaded(index_space(ivec(0, 0), uvec(1u, 1u)), memory::host);
+    deserialize(reader, "grid", loaded);
+
+    assert(start(loaded) == start(original));
+    assert(shape(loaded) == shape(original));
+    for (int i = 0; i < 10; ++i) {
+        for (int j = 0; j < 20; ++j) {
+            assert(approx_equal(loaded(ivec(i, j)), original(ivec(i, j))));
+        }
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void test_binary_cached_3d_serialization() {
+    std::cout << "Testing binary cached_t<double, 3> serialization... ";
+
+    auto space = index_space(ivec(0, 0, 0), uvec(4u, 5u, 6u));
+    cached_t<double, 3> original(space, memory::host);
+
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < 5; ++j) {
+            for (int k = 0; k < 6; ++k) {
+                original(ivec(i, j, k)) = static_cast<double>(i * 30 + j * 6 + k);
+            }
+        }
+    }
+
+    std::stringstream ss(std::ios::binary | std::ios::in | std::ios::out);
+    binary_writer writer(ss);
+    serialize(writer, "volume", original);
+
+    ss.seekg(0);
+    binary_reader reader(ss);
+
+    cached_t<double, 3> loaded(index_space(ivec(0, 0, 0), uvec(1u, 1u, 1u)), memory::host);
+    deserialize(reader, "volume", loaded);
+
+    assert(start(loaded) == start(original));
+    assert(shape(loaded) == shape(original));
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < 5; ++j) {
+            for (int k = 0; k < 6; ++k) {
+                assert(approx_equal(loaded(ivec(i, j, k)), original(ivec(i, j, k))));
+            }
+        }
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void test_binary_cached_nonzero_start() {
+    std::cout << "Testing binary cached_t with non-zero start... ";
+
+    auto space = index_space(ivec(-5, 10), uvec(10u, 20u));
+    cached_t<double, 2> original(space, memory::host);
+
+    for (int i = -5; i < 5; ++i) {
+        for (int j = 10; j < 30; ++j) {
+            original(ivec(i, j)) = static_cast<double>(i * 100 + j);
+        }
+    }
+
+    std::stringstream ss(std::ios::binary | std::ios::in | std::ios::out);
+    binary_writer writer(ss);
+    serialize(writer, "offset_grid", original);
+
+    ss.seekg(0);
+    binary_reader reader(ss);
+
+    cached_t<double, 2> loaded(index_space(ivec(0, 0), uvec(1u, 1u)), memory::host);
+    deserialize(reader, "offset_grid", loaded);
+
+    assert(start(loaded) == start(original));
+    assert(shape(loaded) == shape(original));
+    for (int i = -5; i < 5; ++i) {
+        for (int j = 10; j < 30; ++j) {
+            assert(approx_equal(loaded(ivec(i, j)), original(ivec(i, j))));
+        }
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void test_binary_cached_int_type() {
+    std::cout << "Testing binary cached_t<int, 2> serialization... ";
+
+    auto space = index_space(ivec(0, 0), uvec(5u, 5u));
+    cached_t<int, 2> original(space, memory::host);
+
+    for (int i = 0; i < 5; ++i) {
+        for (int j = 0; j < 5; ++j) {
+            original(ivec(i, j)) = i * 10 + j;
+        }
+    }
+
+    std::stringstream ss(std::ios::binary | std::ios::in | std::ios::out);
+    binary_writer writer(ss);
+    serialize(writer, "int_grid", original);
+
+    ss.seekg(0);
+    binary_reader reader(ss);
+
+    cached_t<int, 2> loaded(index_space(ivec(0, 0), uvec(1u, 1u)), memory::host);
+    deserialize(reader, "int_grid", loaded);
+
+    assert(start(loaded) == start(original));
+    assert(shape(loaded) == shape(original));
+    for (int i = 0; i < 5; ++i) {
+        for (int j = 0; j < 5; ++j) {
+            assert(loaded(ivec(i, j)) == original(ivec(i, j)));
+        }
+    }
+
+    std::cout << "PASSED\n";
+}
+
+// =============================================================================
 // Main
 // =============================================================================
 
@@ -613,6 +782,14 @@ int main() {
     test_binary_vs_ascii_size();
     test_binary_empty_vector();
     test_binary_file_output();
+
+    std::cout << "\n=== NdArray Serialization Tests ===\n\n";
+
+    test_binary_cached_1d_serialization();
+    test_binary_cached_2d_serialization();
+    test_binary_cached_3d_serialization();
+    test_binary_cached_nonzero_start();
+    test_binary_cached_int_type();
 
     std::cout << "\n=== All tests passed! ===\n";
     return 0;
