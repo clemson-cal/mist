@@ -808,311 +808,248 @@ The trait struct provides:
 
 # Driver
 
-The `mist-driver.hpp` provides a generic time-stepping driver for physics simulations. It manages the main loop, adaptive time-stepping, and scheduled outputs.
+The `mist/driver.hpp` provides an interactive time-stepping driver for physics simulations. The driver is a simple REPL (read-eval-print loop) that responds to manual commands for advancing time and generating outputs.
+
+**Current status:** The driver has no notion of scheduled outputs, automated termination conditions, or driver programs. It responds only to manual commands. Future enhancements will add driver programs to encode scheduled outputs and termination logic.
 
 ## Physics Concept
 
 Physics modules must satisfy the `Physics` concept by providing:
 
 **Required types:**
-- `config_t` - Runtime configuration (grid size, physical parameters, etc.)
-- `state_t` - Conservative state variables (density, momentum, energy, etc.). Must implement `fields()`.
-- `product_t` - Derived diagnostic quantities (velocity, pressure, etc.). Must implement `fields()`.
+- `config_t` - Runtime configuration including `rk_order` and `cfl`. Must implement `fields()`.
+- `initial_t` - Initial condition parameters. Must implement `fields()`.
+- `state_t` - Conservative state variables. Must implement `fields()`.
+- `product_t` - Derived diagnostic quantities.
+- `exec_context_t` - Execution context (combines config, initial, and any runtime data).
 
 **Required functions:**
-- `initial_state(config_t) -> state_t` - Generate initial conditions
-- `euler_step(config_t, state_t, dt) -> state_t` - Single forward Euler step
-- `courant_time(config_t, state_t) -> double` - Maximum stable timestep
-- `average(state_t, state_t, alpha) -> state_t` - Convex combination: `(1-alpha)*s0 + alpha*s1`
-- `get_product(config_t, state_t) -> product_t` - Compute derived quantities
-- `get_time(state_t, kind) -> double` - Extract time from state
-  - `kind=0`: Raw simulation time (same units as `courant_time`)
-  - `kind=1, 2, ...`: Additional time variables (e.g., orbital phase, forward shock radius)
-  - Physics modules define one or more time kinds based on their needs
-  - **All time kinds must increase monotonically** during simulation
-  - **Must throw `std::out_of_range`** if `kind` is not valid for this physics module
-- `zone_count(state_t) -> std::size_t` - Number of computational zones (for performance metrics)
-- `timeseries_sample(config_t, state_t) -> std::vector<std::pair<std::string, double>>` - Compute timeseries measurements
-  - Returns a vector of (column_name, value) pairs
-  - Column names define the available timeseries measurements
-  - Order is preserved as defined by physics module
-  - Example: `{{"total_mass", 1.0}, {"total_energy", 2.5}, {"max_density", 10.3}}`
+- `default_physics_config(std::type_identity<P>) -> config_t` - Default physics configuration
+- `default_initial_config(std::type_identity<P>) -> initial_t` - Default initial configuration
+- `initial_state(exec_context_t) -> state_t` - Generate initial conditions
+- `courant_time(state_t, exec_context_t) -> double` - CFL-limited timestep
+- `zone_count(state_t, exec_context_t) -> size_t` - Number of computational zones
+- `names_of_time(std::type_identity<P>) -> vector<string>` - Available time variable names
+- `names_of_timeseries(std::type_identity<P>) -> vector<string>` - Available timeseries columns
+- `names_of_products(std::type_identity<P>) -> vector<string>` - Available product names
+- `get_time(state_t, string) -> double` - Get a time variable by name
+- `get_timeseries(config_t, initial_t, state_t, string) -> double` - Get a timeseries value by name
+- `get_product(state_t, string, exec_context_t) -> product_t` - Get a product by name
+- `advance(state_t&, dt, exec_context_t) -> void` - Advance state by timestep dt
 
-## Time Integrators
+## Program Structure
 
-The driver provides Strong Stability Preserving (SSP) Runge-Kutta methods:
-- `rk1_step` - Forward Euler (1st order)
-- `rk2_step` - SSP-RK2 (2nd order)
-- `rk3_step` - SSP-RK3 (3rd order)
-
-Selected via `driver::config_t::rk_order` (1, 2, or 3).
-
-## Driver State
-
-For restarts to work correctly, the driver maintains internal state that must be persisted alongside the physics state in checkpoint files.
-
-**Scheduled Output State:**
-Each output type (message, checkpoint, products, timeseries) has:
-```cpp
-struct scheduled_output_state {
-    int count = 0;          // Number of outputs emitted
-    double next_time = 0.0; // Next scheduled output time
-};
-```
-
-**Driver State (`driver::state_t`):**
-```cpp
-struct state_t {
-    int iteration = 0;
-    scheduled_output_state message_state;
-    scheduled_output_state checkpoint_state;
-    scheduled_output_state products_state;
-    scheduled_output_state timeseries_state;
-    timeseries_t timeseries;  // Accumulated timeseries data
-};
-```
-
-**Timeseries Data (`driver::timeseries_t`):**
-```cpp
-using timeseries_t = std::vector<std::pair<std::string, std::vector<double>>>;
-```
-- Structure: vector of (column_name, values) pairs
-- Each column has a name (string) and all samples for that column (vector<double>)
-- Column names and order are defined by the physics module's `timeseries_sample()` function
-- When a new sample is taken, one value is appended to each column's vector
-- Persisted across sessions so timeseries data accumulates throughout the entire run
-
-**Session State (not persisted, lifetime of executable):**
-- `double last_message_wall_time` - Wall-clock time of last message (for Mzps calculation between messages)
-
-**Checkpoint Structure:**
-When writing checkpoints, the callback receives:
-- Physics `state_t` - from the physics module
-- Driver state - from the driver (already updated to reflect this output)
-
-The driver state written to the checkpoint reflects the state **after** the output has occurred:
-- `checkpoint_state.count` has been incremented (this checkpoint's number)
-- `checkpoint_state.next_time` has been advanced (when the next checkpoint will occur)
-
-This ensures that restarting from a checkpoint continues correctly without re-executing the same output.
-
-**Terminology:**
-- **Run**: A simulation that may have been stopped and restarted any number of times
-- **Session**: A single execution of the program (lifetime of executable)
-- A run may consist of multiple sessions via checkpointing and restart
-
-**Scheduled Output Execution Order:**
-All scheduled outputs follow this uniform sequence:
-1. Trigger condition is met (exact or nearest policy)
-2. Increment output counter (e.g., `checkpoint_state.count++`)
-3. Advance next scheduled time (e.g., `checkpoint_state.next_time += interval`)
-4. Invoke checkpoint writer with the updated program state
-
-This ensures checkpoint writer always see the "post-output" driver state, which is what gets persisted.
-
-**Restart Behavior:**
-When restarting from a checkpoint:
-- Driver state is restored from the checkpoint file
-- Output counters continue from saved values (e.g., next checkpoint is `chkpt.0005.h5` if `checkpoint_state.count = 4`)
-- Scheduled output times continue from saved values
-- Iteration count continues from saved value
-- Session state is initialized fresh (e.g., wall-clock timing resets for new session)
-
-## Configuration Structure
-
-The driver uses a two-level configuration structure separating driver settings from physics settings:
-
-**Scheduled Output Config:**
-Each output type (message, checkpoint, products, timeseries) has:
-```cpp
-struct scheduled_output_config {
-    double interval = 1.0;
-    int interval_kind = 0;
-    scheduling_policy scheduling = scheduling_policy::nearest;
-};
-```
-
-**Driver Config (`driver::config_t`):**
-```cpp
-struct config_t {
-    int rk_order = 2;
-    double cfl = 0.4;
-    double t_final = 1.0;
-    int max_iter = -1;
-    output_format output_format = output_format::ascii;
-
-    scheduled_output_config message{0.1, 0, scheduling_policy::nearest};
-    scheduled_output_config checkpoint{1.0, 0, scheduling_policy::nearest};
-    scheduled_output_config products{0.1, 0, scheduling_policy::exact};
-    scheduled_output_config timeseries{0.01, 0, scheduling_policy::exact};
-};
-```
-
-**Combined Config:**
 ```cpp
 template<Physics P>
-struct config {
-    driver::config_t driver;
-    typename P::config_t physics;
+struct program_t {
+    typename P::config_t physics;                  // Physics configuration
+    typename P::initial_t initial;                 // Initial condition parameters
+    std::optional<typename P::state_t> physics_state;  // Physics state (null until init)
+    driver::state_t driver_state;                  // Driver state
 };
 ```
 
-**Config file format:**
+The driver maintains its own state (output format, file counters, timeseries data, repeating commands). Physics parameters live in the physics module.
+
+## Time Integration
+
+Time integration is handled by the physics module's `advance()` function. The physics module is responsible for implementing its own time-stepping scheme (e.g., SSP Runge-Kutta methods). The `mist/runge_kutta.hpp` header provides utilities for implementing RK methods:
+
+- Order 1: Forward Euler
+- Order 2: SSP-RK2
+- Order 3: SSP-RK3
+
+## Interactive Commands
+
+The driver provides a GNU readline-enabled REPL with the following commands:
+
+**Stepping:**
+- `n++` - Advance 1 iteration
+- `n += 10` - Advance 10 iterations
+- `n -> 1000` - Advance to iteration 1000
+- `t += 10.0` - Advance time by exactly 10.0
+- `t -> 20.0` - Advance to exactly time 20.0
+- `orbit += 3.0` - Advance until orbit increases by at least 3.0
+- `orbit -> 60.0` - Advance until orbit reaches at least 60.0
+
+**Configuration:**
+- `set output=ascii` - Set output format (ascii|binary|hdf5)
+- `set physics key=val ...` - Set physics config parameters
+- `set initial key=val ...` - Set initial data parameters (only when state is null)
+- `select products [prod1 ...]` - Select products (no args = all)
+- `select timeseries [col1 ...]` - Select timeseries columns (no args = all)
+- `clear timeseries` - Clear timeseries data
+
+**State management:**
+- `init` - Generate initial state from config
+- `reset` - Reset driver and clear physics state
+- `load <file>` - Load configuration data or a checkpoint file
+
+**Sampling:**
+- `do timeseries` - Record timeseries sample
+
+**File I/O:**
+- `write timeseries [file]` - Write timeseries to file
+- `write checkpoint [file]` - Write checkpoint to file
+- `write products [file]` - Write products to file
+- `write message <text>` - Write custom message to stdout
+
+**Recurring commands:**
+- `repeat <interval> <unit> <cmd>` - Execute command every interval ('do' or 'write')
+- `repeat list` - List active recurring commands
+- `repeat clear` - Clear all recurring commands
+
+**Information:**
+- `show all` - Show all state information
+- `show physics` - Show physics configuration
+- `show initial` - Show initial configuration
+- `show products` - Show available and selected products
+- `show timeseries` - Show timeseries data
+- `show driver` - Show driver state (including repeating tasks)
+- `help` - Show this help
+- `stop | quit | q` - Exit simulation
+
+## Example Session
+
 ```
-config {
-    driver {
-        rk_order = 3
-        cfl = 0.5
-        t_final = 2.0
-        output_format = "ascii"
-        message {
-            interval = 0.1
-            interval_kind = 0
-            scheduling = "nearest"
-        }
-        checkpoint {
-            interval = 1.0
-            interval_kind = 0
-            scheduling = "nearest"
-        }
-        products {
-            interval = 0.1
-            interval_kind = 0
-            scheduling = "exact"
-        }
-        timeseries {
-            interval = 0.01
-            interval_kind = 0
-            scheduling = "exact"
-        }
-    }
-    physics {
-        // Physics-specific settings
-    }
+$ ./advection-1d-decomp
+
+Type 'help' for available commands
+> show physics
+physics {
+    rk_order = 2
+    cfl = 0.4
+    num_zones = 200
+    domain_length = 1.0
+    advection_velocity = 1.0
+}
+> init
+[000000] t=0.00000
+> select timeseries t x_com momentum
+> n += 5
+[000005] t=0.0100 Mzps=3.465
+> do timeseries
+> t -> 1.0
+[000500] t=1.0000 Mzps=2.954
+> do timeseries
+> write timeseries data.dat
+Wrote data.dat
+> write checkpoint
+Wrote checkpoint.0000.dat
+> stop
+```
+
+## Output Files
+
+**Checkpoints:** `chkpt.NNNN.dat` - Full program state including:
+- Physics configuration
+- Physics state
+- Iteration counter
+- Driver state (output format, file counters, timeseries data)
+
+**Products:** `prods.NNNN.dat` - Derived quantities from `get_product()`
+
+**Timeseries:** User-specified file (e.g., `data.txt` or `data.bin`) - Uses serialization framework:
+- Respects `set output=ascii|binary` format setting
+- ASCII format: nested structure with columns list and data map
+- Binary format: compact binary encoding
+
+Checkpoint and products file numbering increments with each manual output command (not tied to iteration count).
+
+## Timeseries Workflow
+
+1. **Select columns**: `select timeseries col1 col2 col3`
+   - Specifies which physics-provided diagnostics to track
+   - Columns must exist in `timeseries_sample()` output
+   - Column ordering in output is alphabetical (std::map ordering)
+
+2. **Record samples**: `do timeseries`
+   - Calls `timeseries_sample(config, state)` from physics module
+   - Extracts only the selected columns
+   - Appends values to the timeseries data structure
+   - Throws error if selected column is missing from physics output
+
+3. **Write to file**: `write timeseries filename.dat`
+   - Uses the serialization framework (respects output format setting)
+   - Can be called multiple times with different filenames
+
+4. **Clear data**: `clear timeseries`
+   - Clears accumulated timeseries data
+   - Use before `select timeseries` to start fresh
+
+5. **Persistence**: Timeseries data is saved in checkpoints
+   - On restart, timeseries accumulation continues from checkpoint state
+   - Use `clear timeseries` then `select timeseries` after restart to begin fresh
+
+## Example Physics Module
+
+```cpp
+struct my_physics {
+    struct config_t {
+        int rk_order = 2;
+        double cfl = 0.4;
+        // ... physics-specific parameters
+
+        auto fields() const { return std::make_tuple(
+            field("rk_order", rk_order),
+            field("cfl", cfl),
+            // ... other fields
+        );}
+
+        auto fields() { /* same */ }
+    };
+
+    struct state_t {
+        std::vector<double> conserved;
+        double time;
+
+        auto fields() const { return std::make_tuple(
+            field("conserved", conserved),
+            field("time", time)
+        );}
+
+        auto fields() { /* same */ }
+    };
+
+    struct product_t {
+        // ... derived quantities
+        auto fields() const { /* ... */ }
+        auto fields() { /* ... */ }
+    };
+};
+
+// Required free functions
+auto default_config(std::type_identity<my_physics>) -> my_physics::config_t;
+auto initial_state(const my_physics::config_t&, double t) -> my_physics::state_t;
+auto courant_time(const my_physics::config_t&, const my_physics::state_t&) -> double;
+void rk_step(const my_physics::config_t&, my_physics::state_t&,
+             const my_physics::state_t&, double dt, double alpha);
+auto copy(const my_physics::state_t&) -> my_physics::state_t;
+auto get_product(const my_physics::config_t&, const my_physics::state_t&) -> my_physics::product_t;
+auto get_named_times(const my_physics::state_t&) -> std::vector<std::pair<std::string, double>>;
+auto zone_count(const my_physics::state_t&) -> std::size_t;
+auto timeseries_sample(const my_physics::config_t&, const my_physics::state_t&)
+    -> std::vector<std::pair<std::string, double>>;
+```
+
+## Main Function
+
+```cpp
+int main() {
+    mist::program_t<my_physics> prog;
+    prog.physics = default_physics_config(std::type_identity<my_physics>{});
+    prog.initial = default_initial_config(std::type_identity<my_physics>{});
+
+    auto final_state = mist::run(prog);
+    return 0;
 }
 ```
 
-## Scheduled Outputs
+## Future: Driver Programs
 
-The driver manages four types of scheduled output. Each output type can be scheduled based on any time kind defined by the physics module (via `get_time(state, kind)`), allowing outputs to recur at (semi-)regular intervals of different time variables.
+The current driver responds only to manual commands. A future enhancement will add driver programs that encode:
+- Target times and termination conditions
+- Scheduled output policies (messages, checkpoints, products, timeseries)
+- Restart behavior
 
-**Time Kind Conventions:**
-- `kind=0`: Raw simulation time (same units as `courant_time` returns)
-- `kind=1+`: Physics-specific time variables (e.g. orbital phase, forward shock radius)
-
-**Scheduling Policies:**
-
-Each scheduled output has a policy determining how the driver hits output times:
-
-- **Nearest**: Output occurs at the nearest iteration after the scheduled time
-  - Driver checks after each step: if `time >= next_output`, trigger output and advance schedule
-  - Output times may drift slightly past exact multiples of `dt_output`
-  - Lower overhead, doesn't constrain timestep
-  - Use for: checkpoints, diagnostics where exact timing isn't critical
-
-- **Exact**: Driver generates output at precisely the scheduled time
-  - When `time < next_output < time + dt`, creates a throw-away state advanced exactly to `next_output`
-  - The throw-away state is used only for output; simulation continues from the original state
-  - Guarantees outputs at exact multiples: `t = 0, dt_output, 2*dt_output, ...`
-  - **Requires `time_kind = 0`** (raw simulation time) - cannot use exact scheduling with other time kinds
-  - Higher overhead (extra RK step per output), but ensures exact timing
-  - Use for: products, timeseries where exact timing is needed for analysis
-
-Each scheduled output specifies an interval, a time kind, and a scheduling policy.
-
-### 1. Iteration Messages (Console/Logging)
-**Purpose:** Lightweight progress monitoring with performance metrics  
-**Trigger:** Any time kind  
-**Content:** Compact status (iteration, times, timestep, performance)  
-**Scheduling:** Configured via `driver::config_t::message` (`scheduled_output_config`)
-
-**Performance Measurement:**
-- Driver measures **wall-clock time** between iteration messages
-- Reports performance in **Mzps** (million zone-updates per second)
-- Calculation: `Mzps = (iterations × zone_count(state)) / (wall_seconds × 1e6)`
-- Requires `zone_count(state)` from physics interface
-- Messages are written **after** timestep, so first message includes valid Mzps
-
-**Message Format:**
-```
-[001234] t=3.14159 (1:0.5000 2:0.1233) Mzps=170.123
-```
-- `[001234]` - 6-digit zero-padded iteration number
-- `t=3.14159` - Raw simulation time (kind=0) with 5 decimal places
-- `(1:0.5000 2:0.1233)` - Additional time kinds with 4 decimal places
-- `Mzps=170.123` - Performance metric with 3 decimal places
-
-**Output Function:** Driver calls `write_iteration_message(message_string)`
-- Default implementation prints to stdout
-- User can override by defining their own implementation
-
-### 2. Checkpoints (State Persistence)
-**Purpose:** Save full simulation state for restart/recovery  
-**Trigger:** Any time kind  
-**Content:** Complete simulation state for restart  
-**Scheduling:** Configured via `driver::config_t::checkpoint` (`scheduled_output_config`)
-
-**Checkpoint file structure:**
-```
-checkpoint {
-    config {
-        driver { ... }   // Full driver configuration
-        physics { ... }  // Full physics configuration
-    }
-    state {
-        driver { ... }   // Driver state including timeseries data
-        physics { ... }  // Physics state variables
-    }
-}
-```
-
-**Output Function:** Driver creates writer and calls `write_checkpoint()`
-- Driver constructs filename: `chkpt.{:04d}.{ext}` where ext is "dat" or "bin"
-- Driver serializes the `program<P>` struct containing config and state
-
-**Output numbering:** 
-- Initial: `chkpt.0000{ext}` (written at simulation start)
-- Next: `chkpt.0001{ext}`, `chkpt.0002{ext}`, etc.
-- Number is checkpoint count, not iteration number
-- Extension determined by archive format (e.g., `.h5`, `.dat`, `.bin`)
-
-### 3. Product Files (Derived Quantities)
-**Purpose:** Write derived/diagnostic quantities for analysis  
-**Trigger:** Any time kind  
-**Content:** `product_t` from `get_product(cfg, state)`  
-**Scheduling:** Configured via `driver::config_t::products` (`scheduled_output_config`)
-
-**Output Function:** Driver creates writer and calls `write_products()`
-- Driver constructs filename: `prods.{:04d}.{ext}` where ext is "dat" or "bin"
-- Driver computes `product` via `get_product(config.physics, state.physics)`
-- Driver serializes `product` using `serialize()`
-
-**Output numbering:**
-- Initial: `prods.0000{ext}` (written at `t=0`)
-- Next: `prods.0001{ext}`, `prods.0002{ext}`, etc.
-- Number is product output count, not iteration number
-- Extension determined by archive format (e.g., `.h5`, `.dat`, `.bin`)
-
-### 4. Timeseries Data (Scalar Diagnostics)
-**Purpose:** Record scalar diagnostics over time (total energy, mass, extrema, etc.)  
-**Trigger:** Any time kind  
-**Content:** User-defined scalar measurements (all type `double`)  
-**Scheduling:** Configured via `driver::config_t::timeseries` (`scheduled_output_config`)
-
-**Data Collection:**
-- Driver calls `timeseries_sample(config.physics, state.physics)` from physics module
-- Returns `std::vector<std::pair<std::string, double>>` with (column_name, value) pairs for this sample
-- For each (name, value) pair:
-  - If column `name` exists in `state.driver.timeseries`: append `value` to that column's vector
-  - If column `name` is new: create new column with `value` as first entry
-- Column names do not need to be consistent across samples (columns can be added dynamically)
-- All measurements are accumulated in `state.driver.timeseries`
-- Data persists across sessions (saved in checkpoints)
-
-## Timestep and Termination
-
-The driver uses adaptive timesteps from `courant_time(cfg, state)` multiplied by the CFL factor. The simulation terminates when:
-1. `t >= t_final`, or
-2. `iteration >= max_iter` (if `max_iter > 0`)
-
-The timestep is never adjusted to hit `t_final` exactly - the simulation simply stops when the termination condition is met. Exact-policy outputs must use `time_kind = 0`.
+This will enable automated runs while preserving the current interactive mode for debugging.

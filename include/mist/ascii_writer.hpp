@@ -38,6 +38,11 @@ public:
         os_ << name << " = \"" << escape_string(value) << "\"\n";
     }
 
+    void write_string(const std::string& value) {
+        write_indent();
+        os_ << "\"" << escape_string(value) << "\"\n";
+    }
+
     // =========================================================================
     // Arrays (fixed-size vec_t)
     // =========================================================================
@@ -102,13 +107,19 @@ public:
     }
 
     // =========================================================================
-    // Bulk data (for ndarray) - not implemented for ASCII
+    // Bulk data (for ndarray)
     // =========================================================================
 
     template<typename T>
         requires std::is_arithmetic_v<T>
-    void write_data(const char* /*name*/, const T* /*ptr*/, std::size_t /*count*/) {
-        throw std::runtime_error("write_data not implemented for ASCII format");
+    void write_data(const char* name, const T* ptr, std::size_t count) {
+        write_indent();
+        os_ << name << " = [";
+        for (std::size_t i = 0; i < count; ++i) {
+            if (i > 0) os_ << ", ";
+            os_ << format_value(ptr[i]);
+        }
+        os_ << "]\n";
     }
 
 private:

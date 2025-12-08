@@ -4,289 +4,162 @@
 #include <array>
 #include <chrono>
 #include <concepts>
+#include <cstdlib>
 #include <fstream>
 #include <functional>
 #include <iomanip>
 #include <iostream>
+#include <map>
+#include <queue>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <unistd.h>
 #include <utility>
 #include <vector>
+#include <readline/history.h>
+#include <readline/readline.h>
 #include "ascii_reader.hpp"
 #include "ascii_writer.hpp"
 #include "binary_reader.hpp"
 #include "binary_writer.hpp"
 #include "serialize.hpp"
 
-namespace mist {
+// =============================================================================
+// Physics Concept
+// =============================================================================
 
-// =============================================================================
-// Physics concept
-// =============================================================================
+namespace mist {
 
 template<typename P>
 concept Physics = requires(
     typename P::config_t cfg,
+    typename P::initial_t ini,
     typename P::state_t s,
     typename P::product_t p,
-    double dt,
-    double alpha,
-    int kind
-) {
+    const typename P::exec_context_t& ctx,
+    double dt) {
     typename P::config_t;
+    typename P::initial_t;
     typename P::state_t;
     typename P::product_t;
+    typename P::exec_context_t;
 
-    { initial_state(cfg) } -> std::same_as<typename P::state_t>;
-    { euler_step(cfg, s, dt) } -> std::same_as<typename P::state_t>;
-    { courant_time(cfg, s) } -> std::same_as<double>;
-    { average(s, s, alpha) } -> std::same_as<typename P::state_t>;
-    { get_product(cfg, s) } -> std::same_as<typename P::product_t>;
-    { get_time(s, kind) } -> std::same_as<double>;
-    { zone_count(s) } -> std::same_as<std::size_t>;
-    { timeseries_sample(cfg, s) } -> std::same_as<std::vector<std::pair<std::string, double>>>;
+    { default_physics_config(std::type_identity<P>{}) } -> std::same_as<typename P::config_t>;
+    { default_initial_config(std::type_identity<P>{}) } -> std::same_as<typename P::initial_t>;
+    { initial_state(ctx) } -> std::same_as<typename P::state_t>;
+    { courant_time(s, ctx) } -> std::same_as<double>;
+    { zone_count(s, ctx) } -> std::same_as<std::size_t>;
+
+    // Uniform interface for discovery
+    { names_of_time(std::type_identity<P>{}) } -> std::same_as<std::vector<std::string>>;
+    { names_of_timeseries(std::type_identity<P>{}) } -> std::same_as<std::vector<std::string>>;
+    { names_of_products(std::type_identity<P>{}) } -> std::same_as<std::vector<std::string>>;
+
+    // Uniform interface for access
+    { get_time(s, std::string{}) } -> std::same_as<double>;
+    { get_timeseries(cfg, ini, s, std::string{}) } -> std::same_as<double>;
+    { get_product(s, std::string{}, ctx) } -> std::same_as<typename P::product_t>;
+
+    // Time-stepping with execution context
+    { advance(s, dt, ctx) } -> std::same_as<void>;
 };
 
-template<typename P>
-concept HasValidate = requires(
-    const typename P::config_t& cfg,
-    const typename P::state_t& s
-) {
-    { validate(cfg, s) } -> std::same_as<void>;
-};
-
 // =============================================================================
-// Time integrators
-// =============================================================================
-
-template<Physics P>
-typename P::state_t rk1_step(
-    const typename P::config_t& cfg,
-    const typename P::state_t& s0,
-    double dt)
-{
-    return euler_step(cfg, s0, dt);
-}
-
-template<Physics P>
-typename P::state_t rk2_step(
-    const typename P::config_t& cfg,
-    const typename P::state_t& s0,
-    double dt)
-{
-    auto s1 = average(s0, euler_step(cfg, s0, dt), 1.0);
-    auto s2 = average(s0, euler_step(cfg, s1, dt), 0.5);
-    return s2;
-}
-
-template<Physics P>
-typename P::state_t rk3_step(
-    const typename P::config_t& cfg,
-    const typename P::state_t& s0,
-    double dt)
-{
-    auto s1 = average(s0, euler_step(cfg, s0, dt), 1.0);
-    auto s2 = average(s0, euler_step(cfg, s1, dt), 0.25);
-    auto s3 = average(s0, euler_step(cfg, s2, dt), 2.0 / 3.0);
-    return s3;
-}
-
-// =============================================================================
-// Driver types
+// Driver state and output format
 // =============================================================================
 
 namespace driver {
 
-// -----------------------------------------------------------------------------
-// Enums
-// -----------------------------------------------------------------------------
-
-enum class scheduling_policy { nearest, exact };
-
-inline const char* to_string(scheduling_policy p) {
-    switch (p) {
-        case scheduling_policy::nearest: return "nearest";
-        case scheduling_policy::exact: return "exact";
-    }
-    return "unknown";
-}
-
-inline scheduling_policy from_string(std::type_identity<scheduling_policy>, const std::string& str) {
-    if (str == "nearest") return scheduling_policy::nearest;
-    if (str == "exact") return scheduling_policy::exact;
-    throw std::runtime_error("scheduling_policy must be 'nearest' or 'exact'");
-}
-
-enum class output_format { ascii, binary };
+enum class output_format {
+    ascii,
+    binary,
+    hdf5
+};
 
 inline const char* to_string(output_format fmt) {
     switch (fmt) {
         case output_format::ascii: return "ascii";
         case output_format::binary: return "binary";
+        case output_format::hdf5: return "hdf5";
     }
     return "unknown";
 }
 
-inline output_format from_string(std::type_identity<output_format>, const std::string& str) {
-    if (str == "ascii") return output_format::ascii;
-    if (str == "binary") return output_format::binary;
-    throw std::runtime_error("output_format must be 'ascii' or 'binary'");
+inline output_format from_string(std::type_identity<output_format>, const std::string& s) {
+    if (s == "ascii") return output_format::ascii;
+    if (s == "binary") return output_format::binary;
+    if (s == "hdf5") return output_format::hdf5;
+    throw std::runtime_error("unknown output format: " + s);
 }
 
-inline const char* extension(output_format fmt) {
-    return (fmt == output_format::binary) ? ".bin" : ".dat";
+[[nodiscard]] inline output_format infer_format_from_filename(std::string_view filename) {
+    if (filename.ends_with(".dat") || filename.ends_with(".cfg")) return output_format::ascii;
+    if (filename.ends_with(".bin")) return output_format::binary;
+    if (filename.ends_with(".h5")) return output_format::hdf5;
+    throw std::runtime_error(std::string("cannot infer format from filename extension: ") + std::string(filename));
 }
 
-// -----------------------------------------------------------------------------
-// Scheduled output config and state
-// -----------------------------------------------------------------------------
+using timeseries_t = std::map<std::string, std::vector<double>>;
 
-struct scheduled_output_config {
-    double interval = 1.0;
-    int interval_kind = 0;
-    scheduling_policy scheduling = scheduling_policy::nearest;
+struct recurring_command_t {
+    double interval = 0.0;
+    std::string unit;
+    std::string sub_command;
+    double last_executed = 0.0;
 
     auto fields() const {
         return std::make_tuple(
             field("interval", interval),
-            field("interval_kind", interval_kind),
-            field("scheduling", scheduling)
+            field("unit", unit),
+            field("sub_command", sub_command),
+            field("last_executed", last_executed)
         );
     }
 
     auto fields() {
         return std::make_tuple(
             field("interval", interval),
-            field("interval_kind", interval_kind),
-            field("scheduling", scheduling)
-        );
-    }
-};
-
-struct scheduled_output_state {
-    int count = 0;
-    double next_time = 0.0;
-
-    auto fields() const {
-        return std::make_tuple(
-            field("count", count),
-            field("next_time", next_time)
-        );
-    }
-
-    auto fields() {
-        return std::make_tuple(
-            field("count", count),
-            field("next_time", next_time)
-        );
-    }
-};
-
-// -----------------------------------------------------------------------------
-// Timeseries
-// -----------------------------------------------------------------------------
-
-using timeseries_t = std::vector<std::pair<std::string, std::vector<double>>>;
-
-} // namespace driver
-
-template<typename A>
-void serialize(A& ar, const char* name, const driver::timeseries_t& value) {
-    ar.begin_group(name);
-    for (const auto& [col_name, values] : value) {
-        ar.write_array(col_name.c_str(), values);
-    }
-    ar.end_group();
-}
-
-template<typename A>
-void deserialize(A& ar, const char* name, driver::timeseries_t& value) {
-    ar.begin_group(name);
-    value.clear();
-    while (!ar.at_group_end()) {
-        std::string col_name = ar.peek_identifier();
-        std::vector<double> values;
-        ar.read_array(col_name.c_str(), values);
-        value.push_back({col_name, std::move(values)});
-    }
-    ar.end_group();
-}
-
-// -----------------------------------------------------------------------------
-// Driver config and state
-// -----------------------------------------------------------------------------
-
-namespace driver {
-
-struct config_t {
-    int rk_order = 2;
-    double cfl = 0.4;
-    double t_final = 1.0;
-    int max_iter = -1;
-    output_format output_format = output_format::ascii;
-
-    scheduled_output_config message{0.1, 0, scheduling_policy::nearest};
-    scheduled_output_config checkpoint{1.0, 0, scheduling_policy::nearest};
-    scheduled_output_config products{0.1, 0, scheduling_policy::exact};
-    scheduled_output_config timeseries{0.01, 0, scheduling_policy::exact};
-
-    auto fields() const {
-        return std::make_tuple(
-            field("rk_order", rk_order),
-            field("cfl", cfl),
-            field("t_final", t_final),
-            field("max_iter", max_iter),
-            field("output_format", output_format),
-            field("message", message),
-            field("checkpoint", checkpoint),
-            field("products", products),
-            field("timeseries", timeseries)
-        );
-    }
-
-    auto fields() {
-        return std::make_tuple(
-            field("rk_order", rk_order),
-            field("cfl", cfl),
-            field("t_final", t_final),
-            field("max_iter", max_iter),
-            field("output_format", output_format),
-            field("message", message),
-            field("checkpoint", checkpoint),
-            field("products", products),
-            field("timeseries", timeseries)
+            field("unit", unit),
+            field("sub_command", sub_command),
+            field("last_executed", last_executed)
         );
     }
 };
 
 struct state_t {
+    output_format format = output_format::ascii;
     int iteration = 0;
-    scheduled_output_state message_state;
-    scheduled_output_state checkpoint_state;
-    scheduled_output_state products_state;
-    scheduled_output_state timeseries_state;
+    int checkpoint_count = 0;
+    int products_count = 0;
+    int timeseries_count = 0;
     timeseries_t timeseries;
+    std::vector<recurring_command_t> recurring_commands;
+    std::vector<std::string> selected_products;
 
     auto fields() const {
         return std::make_tuple(
+            field("format", format),
             field("iteration", iteration),
-            field("message_state", message_state),
-            field("checkpoint_state", checkpoint_state),
-            field("products_state", products_state),
-            field("timeseries_state", timeseries_state),
-            field("timeseries", timeseries)
+            field("checkpoint_count", checkpoint_count),
+            field("products_count", products_count),
+            field("timeseries_count", timeseries_count),
+            field("timeseries", timeseries),
+            field("recurring_commands", recurring_commands),
+            field("selected_products", selected_products)
         );
     }
 
     auto fields() {
         return std::make_tuple(
+            field("format", format),
             field("iteration", iteration),
-            field("message_state", message_state),
-            field("checkpoint_state", checkpoint_state),
-            field("products_state", products_state),
-            field("timeseries_state", timeseries_state),
-            field("timeseries", timeseries)
+            field("checkpoint_count", checkpoint_count),
+            field("products_count", products_count),
+            field("timeseries_count", timeseries_count),
+            field("timeseries", timeseries),
+            field("recurring_commands", recurring_commands),
+            field("selected_products", selected_products)
         );
     }
 };
@@ -294,368 +167,1476 @@ struct state_t {
 } // namespace driver
 
 // =============================================================================
-// Combined types (config, state, program)
+// Program type
 // =============================================================================
 
 template<Physics P>
-struct config {
-    driver::config_t driver;
+struct program_t {
     typename P::config_t physics;
+    typename P::initial_t initial;
+    std::optional<typename P::state_t> physics_state;
+    driver::state_t driver_state;
 
     auto fields() const {
         return std::make_tuple(
-            field("driver", driver),
-            field("physics", physics)
+            field("physics", physics),
+            field("initial", initial),
+            field("physics_state", physics_state),
+            field("driver_state", driver_state)
         );
     }
 
     auto fields() {
         return std::make_tuple(
-            field("driver", driver),
-            field("physics", physics)
+            field("physics", physics),
+            field("initial", initial),
+            field("physics_state", physics_state),
+            field("driver_state", driver_state)
         );
     }
 };
-
-template<Physics P>
-struct state {
-    driver::state_t driver;
-    typename P::state_t physics;
-
-    auto fields() const {
-        return std::make_tuple(
-            field("driver", driver),
-            field("physics", physics)
-        );
-    }
-
-    auto fields() {
-        return std::make_tuple(
-            field("driver", driver),
-            field("physics", physics)
-        );
-    }
-};
-
-template<Physics P>
-struct program {
-    config<P> config;
-    state<P> state;
-
-    auto fields() const {
-        return std::make_tuple(
-            field("config", config),
-            field("state", state)
-        );
-    }
-
-    auto fields() {
-        return std::make_tuple(
-            field("config", config),
-            field("state", state)
-        );
-    }
-};
-
-// =============================================================================
-// Scheduled output
-// =============================================================================
-
-template<typename StateT>
-class scheduled_output {
-public:
-    driver::scheduled_output_config config;
-    driver::scheduled_output_state* state;
-    std::function<void(const StateT&)> callback;
-
-    void validate() const {
-        if (config.scheduling == driver::scheduling_policy::exact && config.interval_kind != 0) {
-            throw std::runtime_error("exact scheduling requires interval_kind = 0");
-        }
-    }
-
-    template<typename RKStepFn>
-    void handle_exact_output(double t0, double t1, const StateT& physics_state, RKStepFn&& rk_step) {
-        if (config.scheduling == driver::scheduling_policy::exact) {
-            if (t0 < state->next_time && t1 >= state->next_time) {
-                auto state_exact = rk_step(physics_state, state->next_time - t0);
-                state->count++;
-                state->next_time += config.interval;
-                if (callback) callback(state_exact);
-            }
-        }
-    }
-
-    template<typename GetTimeFn>
-    void handle_nearest_output(const StateT& physics_state, GetTimeFn&& get_time) {
-        if (config.scheduling == driver::scheduling_policy::nearest) {
-            if (get_time(physics_state, config.interval_kind) >= state->next_time) {
-                state->count++;
-                state->next_time += config.interval;
-                if (callback) callback(physics_state);
-            }
-        }
-    }
-};
-
-// =============================================================================
-// I/O functions
-// =============================================================================
-
-inline void write_iteration_message(const std::string& message) {
-    std::cout << message << std::endl;
-}
-
-template<typename WriterT, Physics P>
-void write_checkpoint(WriterT& writer, const program<P>& prog) {
-    serialize(writer, "checkpoint", prog);
-}
-
-template<typename WriterT, Physics P>
-void write_products(WriterT& writer, const typename P::product_t& product) {
-    serialize(writer, "products", product);
-}
-
-template<typename ReaderT, Physics P>
-void read_checkpoint(ReaderT& reader, program<P>& prog) {
-    deserialize(reader, "checkpoint", prog);
-}
 
 // =============================================================================
 // Helpers
 // =============================================================================
 
-inline void accumulate_timeseries_sample(
-    driver::state_t& driver_state,
-    const std::vector<std::pair<std::string, double>>& sample)
-{
-    for (const auto& [name, value] : sample) {
-        auto it = std::find_if(
-            driver_state.timeseries.begin(),
-            driver_state.timeseries.end(),
-            [&name](const auto& col) { return col.first == name; }
-        );
-        if (it != driver_state.timeseries.end()) {
-            it->second.push_back(value);
-        } else {
-            driver_state.timeseries.push_back({name, {value}});
-        }
-    }
-}
-
-inline double get_wall_time() {
+[[nodiscard]] inline double get_wall_time() {
     using namespace std::chrono;
     return duration<double>(steady_clock::now().time_since_epoch()).count();
 }
 
+
 // =============================================================================
-// Main driver
+// Commands
+// =============================================================================
+
+struct command_t {
+    enum class type {
+        increment_n,      // n++, n += X
+        increment_var,    // t += X, orbit += X
+        target_n,         // n -> X
+        target_var,       // t -> X, orbit -> X
+        set_output,       // set output=ascii|binary
+        set_physics,      // set physics key1=val1 key2=val2 ...
+        set_initial,      // set initial key1=val1 key2=val2 ...
+        select_timeseries,// select timeseries col1 col2 ...
+        clear_timeseries, // clear timeseries
+        select_products,  // select products [prod1 prod2 ...]
+        clear_products,   // clear products
+        do_timeseries,    // do timeseries
+        write_timeseries, // write timeseries <filename>
+        write_checkpoint, // write checkpoint [filename]
+        write_products,   // write products [filename]
+        repeat_add,       // repeat <interval> <unit> <sub-command>
+        repeat_list,      // repeat list
+        repeat_clear,     // repeat clear
+        init,             // init
+        reset,            // reset
+        load,             // load <filename>
+        show_message,     // show iteration message
+        show_all,         // show (no args)
+        show_physics,     // show physics
+        show_initial,     // show initial
+        show_timeseries,  // show timeseries
+        show_products,    // show products
+        show_driver,      // show driver
+        help,             // help
+        stop,             // stop|quit|q
+        invalid
+    };
+    type cmd = type::invalid;
+    std::optional<int> int_value;
+    std::optional<double> double_value;
+    std::optional<std::string> string_value;
+    std::optional<std::string> var_name;
+    std::optional<std::vector<std::string>> string_list;
+    std::string error_msg;
+};
+
+[[nodiscard]] inline command_t parse_command(std::string_view input) {
+    auto iss = std::istringstream{std::string{input}};
+    auto first = std::string{};
+    iss >> first;
+
+    if (first.empty()) {
+        return {command_t::type::invalid, {}, {}, {}, {}, {}, "empty command"};
+    }
+
+    auto result = command_t{};
+
+    // n++ or n+=X or n->X
+    if (first == "n++" || first == "n") {
+        if (first == "n++") {
+            result.cmd = command_t::type::increment_n;
+            result.int_value = 1;
+        } else if (first == "n") {
+            auto op = std::string{};
+            iss >> op;
+            if (op == "+=") {
+                result.cmd = command_t::type::increment_n;
+                auto val = 0;
+                if (!(iss >> val)) {
+                    return {command_t::type::invalid, {}, {}, {}, {}, {}, "n += requires integer"};
+                }
+                result.int_value = val;
+            } else if (op == "->") {
+                result.cmd = command_t::type::target_n;
+                auto val = 0;
+                if (!(iss >> val)) {
+                    return {command_t::type::invalid, {}, {}, {}, {}, {}, "n -> requires integer"};
+                }
+                result.int_value = val;
+            }
+        }
+    }
+    // VAR += X or VAR -> X (t, orbit, etc.)
+    else if (input.find("+=") != std::string_view::npos || input.find("->") != std::string_view::npos) {
+        auto var_name = first;
+        auto op = std::string{};
+        iss >> op;
+        auto val = 0.0;
+        if (!(iss >> val)) {
+            return {command_t::type::invalid, {}, {}, {}, {}, {}, "operator requires numeric value"};
+        }
+        if (op == "+=") {
+            result.cmd = command_t::type::increment_var;
+            result.var_name = var_name;
+            result.double_value = val;
+        } else if (op == "->") {
+            result.cmd = command_t::type::target_var;
+            result.var_name = var_name;
+            result.double_value = val;
+        }
+    }
+    // set output=X | set physics key1=val1 key2=val2 ...
+    else if (first == "set") {
+        auto what = std::string{};
+        iss >> what;
+
+        // Check if this is "set physics key=val ..." or "set initial key=val ..."
+        if (what == "physics") {
+            result.cmd = command_t::type::set_physics;
+            // Collect all key=value pairs as a single string
+            auto pairs = std::string{};
+            std::getline(iss, pairs);
+            // Trim leading whitespace
+            if (const auto start = pairs.find_first_not_of(" \t"); start != std::string::npos) {
+                pairs = pairs.substr(start);
+            }
+            if (pairs.empty()) {
+                return {command_t::type::invalid, {}, {}, {}, {}, {}, "set physics requires key=value pairs"};
+            }
+            result.string_value = pairs;
+        } else if (what == "initial") {
+            result.cmd = command_t::type::set_initial;
+            // Collect all key=value pairs as a single string
+            auto pairs = std::string{};
+            std::getline(iss, pairs);
+            // Trim leading whitespace
+            if (const auto start = pairs.find_first_not_of(" \t"); start != std::string::npos) {
+                pairs = pairs.substr(start);
+            }
+            if (pairs.empty()) {
+                return {command_t::type::invalid, {}, {}, {}, {}, {}, "set initial requires key=value pairs"};
+            }
+            result.string_value = pairs;
+        } else {
+            // Parse as "set output=ascii" format
+            const auto eq = what.find('=');
+            if (eq == std::string::npos) {
+                return {command_t::type::invalid, {}, {}, {}, {}, {}, "set requires format: set key=value or set physics key1=val1 ..."};
+            }
+            const auto key = what.substr(0, eq);
+            const auto value = what.substr(eq + 1);
+            if (key == "output") {
+                result.cmd = command_t::type::set_output;
+                result.string_value = value;
+            } else {
+                return {command_t::type::invalid, {}, {}, {}, {}, {}, "unknown setting: " + key};
+            }
+        }
+    }
+    // select timeseries col1 col2 ... | select products [prod1 prod2 ...]
+    else if (first == "select") {
+        auto what = std::string{};
+        iss >> what;
+        if (what == "timeseries") {
+            result.cmd = command_t::type::select_timeseries;
+            auto columns = std::vector<std::string>{};
+            auto col = std::string{};
+            while (iss >> col) {
+                columns.push_back(col);
+            }
+            // Empty list is allowed (means all timeseries columns)
+            result.string_list = columns;
+        } else if (what == "products") {
+            result.cmd = command_t::type::select_products;
+            auto products = std::vector<std::string>{};
+            auto prod = std::string{};
+            while (iss >> prod) {
+                products.push_back(prod);
+            }
+            // Empty list is allowed (means all products)
+            result.string_list = products;
+        } else {
+            return {command_t::type::invalid, {}, {}, {}, {}, {}, "unknown: select " + what};
+        }
+    }
+    // clear timeseries | clear products | clear repeat [indexes]
+    else if (first == "clear") {
+        auto what = std::string{};
+        iss >> what;
+        if (what == "timeseries") {
+            result.cmd = command_t::type::clear_timeseries;
+        } else if (what == "products") {
+            result.cmd = command_t::type::clear_products;
+        } else if (what == "repeat") {
+            result.cmd = command_t::type::repeat_clear;
+            // Parse optional indices
+            auto indices = std::vector<std::string>{};
+            auto idx = std::string{};
+            while (iss >> idx) {
+                indices.push_back(idx);
+            }
+            result.string_list = indices;
+        } else {
+            return {command_t::type::invalid, {}, {}, {}, {}, {}, "unknown: clear " + what};
+        }
+    }
+    // do timeseries
+    else if (first == "do") {
+        auto action = std::string{};
+        iss >> action;
+        if (action == "timeseries") {
+            result.cmd = command_t::type::do_timeseries;
+        } else {
+            return {command_t::type::invalid, {}, {}, {}, {}, {}, "unknown action: do " + action};
+        }
+    }
+    // write checkpoint|products|timeseries|message [filename|text]
+    else if (first == "write") {
+        auto what = std::string{};
+        iss >> what;
+        if (what == "checkpoint") {
+            result.cmd = command_t::type::write_checkpoint;
+            auto filename = std::string{};
+            if (iss >> filename) {
+                result.string_value = filename;
+            }
+        } else if (what == "products") {
+            result.cmd = command_t::type::write_products;
+            auto filename = std::string{};
+            if (iss >> filename) {
+                result.string_value = filename;
+            }
+        } else if (what == "timeseries") {
+            result.cmd = command_t::type::write_timeseries;
+            auto filename = std::string{};
+            if (iss >> filename) {
+                result.string_value = filename;
+            }
+        } else if (what == "message") {
+            result.cmd = command_t::type::show_message;
+            auto message = std::string{};
+            std::getline(iss, message);
+            // Trim leading whitespace
+            if (const auto start = message.find_first_not_of(" \t"); start != std::string::npos) {
+                message = message.substr(start);
+            }
+            result.string_value = message;
+        } else {
+            return {command_t::type::invalid, {}, {}, {}, {}, {}, "write requires checkpoint, products, timeseries, or message"};
+        }
+    }
+    // load <filename>
+    else if (first == "load") {
+        auto filename = std::string{};
+        if (!(iss >> filename)) {
+            return {command_t::type::invalid, {}, {}, {}, {}, {}, "load requires filename"};
+        }
+        result.cmd = command_t::type::load;
+        result.string_value = filename;
+    }
+    // repeat <interval> <unit> <sub-command> | repeat list | repeat clear
+    else if (first == "repeat") {
+        auto action = std::string{};
+        iss >> action;
+        if (action == "list") {
+            result.cmd = command_t::type::repeat_list;
+        } else if (action == "clear") {
+            result.cmd = command_t::type::repeat_clear;
+        } else {
+            // Parse as: repeat <interval> <unit> <sub-command>
+            // action is actually the interval
+            auto interval = 0.0;
+            try {
+                interval = std::stod(action);
+            } catch (...) {
+                return {command_t::type::invalid, {}, {}, {}, {}, {}, "repeat requires numeric interval"};
+            }
+            auto unit = std::string{};
+            if (!(iss >> unit)) {
+                return {command_t::type::invalid, {}, {}, {}, {}, {}, "repeat requires time unit"};
+            }
+            // Rest of line is the sub-command
+            auto sub_command = std::string{};
+            std::getline(iss, sub_command);
+            // Trim leading whitespace
+            const auto start = sub_command.find_first_not_of(" \t");
+            if (start == std::string::npos || sub_command.empty()) {
+                return {command_t::type::invalid, {}, {}, {}, {}, {}, "repeat requires sub-command"};
+            }
+            sub_command = sub_command.substr(start);
+
+            // Validate sub-command: must start with "do" or "write"
+            // This prevents infinite recursion from nested repeat commands
+            auto sub_iss = std::istringstream{sub_command};
+            auto sub_first = std::string{};
+            sub_iss >> sub_first;
+            if (sub_first != "do" && sub_first != "write") {
+                return {command_t::type::invalid, {}, {}, {}, {}, {},
+                        "repeat sub-command must start with 'do' or 'write'"};
+            }
+
+            result.cmd = command_t::type::repeat_add;
+            result.double_value = interval;
+            result.var_name = unit;
+            result.string_value = sub_command;
+        }
+    }
+    // init
+    else if (first == "init") {
+        result.cmd = command_t::type::init;
+    }
+    // reset
+    else if (first == "reset") {
+        result.cmd = command_t::type::reset;
+    }
+    // show [physics|initial|timeseries|products|driver]
+    else if (first == "show") {
+        auto what = std::string{};
+        iss >> what;
+        if (what == "all") {
+            result.cmd = command_t::type::show_all;
+        } else if (what == "physics") {
+            result.cmd = command_t::type::show_physics;
+        } else if (what == "initial") {
+            result.cmd = command_t::type::show_initial;
+        } else if (what == "timeseries") {
+            result.cmd = command_t::type::show_timeseries;
+        } else if (what == "products") {
+            result.cmd = command_t::type::show_products;
+        } else if (what == "driver") {
+            result.cmd = command_t::type::show_driver;
+        } else {
+            return {command_t::type::invalid, {}, {}, {}, {}, {}, "show requires physics, initial, timeseries, products, driver, or no argument for all"};
+        }
+    }
+    // help
+    else if (first == "help") {
+        result.cmd = command_t::type::help;
+    }
+    // stop|quit|q
+    else if (first == "stop" || first == "quit" || first == "q") {
+        result.cmd = command_t::type::stop;
+    }
+    else {
+        return {command_t::type::invalid, {}, {}, {}, {}, {}, "unknown command: " + first};
+    }
+
+    return result;
+}
+
+inline const char* help_text = R"(
+  ---------------------------------------------------------------------------------------
+  Stepping
+  ---------------------------------------------------------------------------------------
+    n++                            - Advance by 1 iteration
+    n += 10                        - Advance by 10 iterations
+    n -> 1000                      - Advance to iteration 1000
+    t += 10.0                      - Advance time by exactly 10.0
+    t -> 20.0                      - Advance time to exactly 20.0
+    orbit += 3.0                   - Advance until orbit increases by at least 3.0
+    orbit -> 60.0                  - Advance until orbit reaches at least 60.0
+
+  ---------------------------------------------------------------------------------------
+  Configuration
+  ---------------------------------------------------------------------------------------
+    set output=ascii               - Set output format (ascii|binary|hdf5)
+    set physics key1=val1 ...      - Set physics config parameters
+    set initial key1=val1 ...      - Set initial data parameters (only when state is null)
+    select products [prod1 ...]    - Select products (no args = all)
+    select timeseries [col1 ...]   - Select timeseries columns (no args = all)
+    clear timeseries               - Clear timeseries data
+
+  ---------------------------------------------------------------------------------------
+  State management
+  ---------------------------------------------------------------------------------------
+    init                           - Generate initial state from config
+    reset                          - Reset driver and clear physics state
+    load <file>                    - Load configuation data or a checkpoint file
+                                     {checkpoint|physics|initial}.{dat|bin|h5}
+
+  ---------------------------------------------------------------------------------------
+  Sampling
+  ---------------------------------------------------------------------------------------
+    do timeseries                  - Record timeseries sample
+
+  ---------------------------------------------------------------------------------------
+  File I/O
+  ---------------------------------------------------------------------------------------
+    write timeseries [file]        - Write timeseries to file
+    write checkpoint [file]        - Write checkpoint to file
+    write products [file]          - Write products to file
+    write message <text>           - Write custom message to stdout
+
+  ---------------------------------------------------------------------------------------
+  Recurring commands
+  ---------------------------------------------------------------------------------------
+    repeat <interval> <unit> <cmd> - Execute command every interval ('do' or 'write')
+    repeat list                    - List active recurring commands
+    repeat clear                   - Clear all recurring commands
+
+  ---------------------------------------------------------------------------------------
+  Information
+  ---------------------------------------------------------------------------------------
+    show all                       - Show all
+    show physics                   - Show physics configuration
+    show initial                   - Show initial configuration
+    show products                  - Show available and selected products
+    show timeseries                - Show timeseries data
+    show driver                    - Show driver state (including repeating tasks)
+    help                           - Show this help
+    stop | quit | q                - Exit simulation
+)";
+
+inline void print_help() {
+    std::cout << "\n" << help_text << std::endl;
+}
+
+// =============================================================================
+// Driver class - executes commands, no direct I/O
 // =============================================================================
 
 template<Physics P>
-typename P::state_t run(program<P>& prog)
-{
-    using physics_state_t = typename P::state_t;
+class driver_t {
+    program_t<P>& prog;
+    typename P::exec_context_t exec_context;
+    std::ostream* out;
+    std::ostream* err;
 
-    auto& driver_config = prog.config.driver;
-    auto& physics_config = prog.config.physics;
-    auto& driver_state = prog.state.driver;
-    auto& physics_state = prog.state.physics;
+    // Performance tracking
+    double command_start_wall_time = 0.0;
+    int command_start_iteration = 0;
 
-    if constexpr (HasValidate<P>) {
-        validate(physics_config, physics_state);
+public:
+    explicit driver_t(program_t<P>& prog, std::ostream& out = std::cout, std::ostream& err = std::cerr)
+        : prog(prog), exec_context(prog.physics, prog.initial), out(&out), err(&err) {
+        command_start_wall_time = get_wall_time();
+        command_start_iteration = prog.driver_state.iteration;
     }
 
-    auto rk_step = [&](const physics_state_t& s, double dt) -> physics_state_t {
-        switch (driver_config.rk_order) {
-            case 1: return rk1_step<P>(physics_config, s, dt);
-            case 2: return rk2_step<P>(physics_config, s, dt);
-            case 3: return rk3_step<P>(physics_config, s, dt);
-            default: throw std::runtime_error("rk_order must be 1, 2, or 3");
-        }
-    };
+    // Execute a command - returns true to continue, false to stop
+    bool execute(const command_t& cmd);
 
-    if (driver_state.iteration == 0) {
-        driver_state.message_state.next_time = driver_config.message.interval;
-        driver_state.checkpoint_state.next_time = driver_config.checkpoint.interval;
-        driver_state.products_state.next_time = driver_config.products.interval;
-        driver_state.timeseries_state.next_time = driver_config.timeseries.interval;
+    // Get formatted messages
+    [[nodiscard]] std::string iteration_message();
+
+    // // Access to program state
+    const program_t<P>& program() const { return prog; }
+
+private:
+
+    // Helper to parse and apply key=value pair
+    template<typename T>
+    void apply_key_value(T& target, const std::string& pair) {
+        const auto eq = pair.find('=');
+        if (eq == std::string::npos) {
+            throw std::runtime_error("invalid key=value pair: " + pair);
+        }
+        const auto key = pair.substr(0, eq);
+        const auto value = pair.substr(eq + 1);
+        set(target, key, value);
     }
 
-    double last_message_wall_time = get_wall_time();
-    int last_message_iteration = driver_state.iteration;
-    auto fmt = driver_config.output_format;
+    // Time stepping
+    void do_timestep(double dt);
+    void advance_to_target(const std::string& var_name, double target, std::optional<int> target_iteration = std::nullopt);
+    void execute_recurring_commands();
 
-    auto message_output = scheduled_output<physics_state_t>{
-        driver_config.message,
-        &driver_state.message_state,
-        [&](const physics_state_t& s) {
-            double wall_now = get_wall_time();
-            double wall_elapsed = wall_now - last_message_wall_time;
-            int iter_elapsed = driver_state.iteration - last_message_iteration;
-            double mzps = (wall_elapsed > 0) ? (iter_elapsed * zone_count(s)) / (wall_elapsed * 1e6) : 0.0;
+    // Command handlers
+    void handle_increment_n(int n);
+    void handle_target_n(int target);
+    void handle_increment_var(const std::string& kind, double increment);
+    void handle_target_var(const std::string& kind, double target);
+    void handle_set_output(const std::string& format_str);
+    void handle_set_physics(const std::string& pairs_str);
+    void handle_set_initial(const std::string& pairs_str);
+    void handle_select_timeseries(std::vector<std::string> columns);
+    void handle_clear_timeseries();
+    void handle_select_products(std::vector<std::string> products);
+    void handle_clear_products();
+    void handle_do_timeseries();
+    void handle_write_timeseries(const std::optional<std::string>& filename);
+    void handle_write_checkpoint(const std::optional<std::string>& filename);
+    void handle_write_products(const std::optional<std::string>& filename);
+    void handle_repeat_add(double interval, const std::string& unit, const std::string& sub_cmd);
+    void handle_repeat_list();
+    void handle_repeat_clear(const std::vector<std::string>& indices);
+    void handle_init();
+    void handle_reset();
+    void handle_load(const std::string& filename);
+    void handle_show_all();
+    void handle_show_message();
+    void handle_show_physics();
+    void handle_show_initial();
+    void handle_show_timeseries();
+    void handle_show_products();
+    void handle_show_driver();
+    void handle_help();
+    void handle_stop();
+};
 
-            std::ostringstream oss;
-            oss << "[" << std::setw(6) << std::setfill('0') << driver_state.iteration << "] ";
-            oss << "t=" << std::fixed << std::setprecision(5) << get_time(s, 0) << " (";
+// =============================================================================
+// Driver implementation
+// =============================================================================
 
-            for (int kind = 1; kind <= 10; ++kind) {
-                try {
-                    double t = get_time(s, kind);
-                    if (kind > 1) oss << " ";
-                    oss << kind << ":" << std::fixed << std::setprecision(4) << t;
-                } catch (const std::out_of_range&) {
-                    break;
-                }
-            }
-            oss << ") Mzps=" << std::fixed << std::setprecision(3) << mzps;
-
-            write_iteration_message(oss.str());
-            last_message_wall_time = wall_now;
-            last_message_iteration = driver_state.iteration;
-        }
-    };
-
-    auto checkpoint_output = scheduled_output<physics_state_t>{
-        driver_config.checkpoint,
-        &driver_state.checkpoint_state,
-        [&](const physics_state_t& s) {
-            char filename[64];
-            std::snprintf(filename, sizeof(filename), "chkpt.%04d.%s",
-                driver_state.checkpoint_state.count, driver::extension(fmt) + 1);
-            program<P> checkpoint_prog{{driver_config, physics_config}, {driver_state, s}};
-            if (fmt == driver::output_format::binary) {
-                std::ofstream file(filename, std::ios::binary);
-                binary_writer writer(file);
-                write_checkpoint<binary_writer, P>(writer, checkpoint_prog);
-            } else {
-                std::ofstream file(filename);
-                ascii_writer writer(file);
-                write_checkpoint<ascii_writer, P>(writer, checkpoint_prog);
-            }
-        }
-    };
-
-    auto products_output = scheduled_output<physics_state_t>{
-        driver_config.products,
-        &driver_state.products_state,
-        [&](const physics_state_t& s) {
-            char filename[64];
-            std::snprintf(filename, sizeof(filename), "prods.%04d.%s",
-                driver_state.products_state.count, driver::extension(fmt) + 1);
-            if (fmt == driver::output_format::binary) {
-                std::ofstream file(filename, std::ios::binary);
-                binary_writer writer(file);
-                write_products<binary_writer, P>(writer, get_product(physics_config, s));
-            } else {
-                std::ofstream file(filename);
-                ascii_writer writer(file);
-                write_products<ascii_writer, P>(writer, get_product(physics_config, s));
-            }
-        }
-    };
-
-    auto timeseries_output = scheduled_output<physics_state_t>{
-        driver_config.timeseries,
-        &driver_state.timeseries_state,
-        [&](const physics_state_t& s) {
-            accumulate_timeseries_sample(driver_state, timeseries_sample(physics_config, s));
-        }
-    };
-
-    std::array<scheduled_output<physics_state_t>, 4> outputs = {{
-        message_output,
-        checkpoint_output,
-        products_output,
-        timeseries_output
-    }};
-
-    for (auto& output : outputs) {
-        output.validate();
+template<Physics P>
+void driver_t<P>::do_timestep(double dt) {
+    if (!prog.physics_state.has_value()) {
+        throw std::runtime_error("physics state not initialized; use 'init' command first");
     }
-
-    if (driver_state.iteration == 0) {
-        for (std::size_t i = 1; i < outputs.size(); ++i) {
-            outputs[i].callback(physics_state);
-        }
-    }
-
-    while (true) {
-        double t0 = get_time(physics_state, 0);
-
-        if (t0 >= driver_config.t_final) break;
-        if (driver_config.max_iter > 0 && driver_state.iteration >= driver_config.max_iter) break;
-
-        double dt = driver_config.cfl * courant_time(physics_config, physics_state);
-        double t1 = t0 + dt;
-
-        for (auto& output : outputs) {
-            output.handle_exact_output(t0, t1, physics_state, rk_step);
-        }
-
-        physics_state = rk_step(physics_state, dt);
-        driver_state.iteration++;
-
-        for (auto& output : outputs) {
-            output.handle_nearest_output(physics_state,
-                [](const auto& s, int kind) { return get_time(s, kind); });
-        }
-    }
-
-    return physics_state;
+    advance(*prog.physics_state, dt, exec_context);
+    prog.driver_state.iteration++;
 }
 
 template<Physics P>
-typename P::state_t run(int argc, const char** argv) {
-    if (argc < 2) {
-        throw std::runtime_error("usage: " + std::string(argv[0]) +
-            " <config.cfg | checkpoint.dat | checkpoint.bin> [key=value ...]");
+void driver_t<P>::advance_to_target(const std::string& var_name, double target, std::optional<int> target_iteration) {
+    if (!prog.physics_state.has_value()) {
+        *err << "error: physics state not initialized; use 'init' command first\n";
+        return;
     }
 
-    std::string filename = argv[1];
-    bool is_config = filename.size() >= 4 && filename.substr(filename.size() - 4) == ".cfg";
-    bool is_checkpoint = filename.size() >= 4 &&
-                         (filename.substr(filename.size() - 4) == ".dat" ||
-                          filename.substr(filename.size() - 4) == ".bin");
-
-    if (!is_config && !is_checkpoint) {
-        throw std::runtime_error("unrecognized file extension: " + filename +
-                                 " (expected .cfg, .dat, or .bin)");
+    // If target_iteration is specified, advance until iteration reaches target
+    if (target_iteration.has_value()) {
+        while (prog.driver_state.iteration < target_iteration.value()) {
+            double dt = courant_time(*prog.physics_state, exec_context);
+            do_timestep(dt);
+            execute_recurring_commands();
+        }
+        return;
     }
 
-    program<P> prog;
-
-    if (is_config) {
-        std::ifstream file(filename);
-        if (!file) throw std::runtime_error("cannot open config file: " + filename);
-        ascii_reader reader(file);
-        deserialize(reader, "config", prog.config);
-        prog.state.physics = initial_state(prog.config.physics);
+    // Otherwise advance based on time variable
+    if (var_name == "t") {
+        // Exact time-stepping for t
+        while (get_time(*prog.physics_state, var_name) < target) {
+            double dt_cfl = courant_time(*prog.physics_state, exec_context);
+            double t = get_time(*prog.physics_state, var_name);
+            double dt = std::min(dt_cfl, target - t);
+            do_timestep(dt);
+            execute_recurring_commands();
+        }
     } else {
-        bool is_binary = filename.substr(filename.size() - 4) == ".bin";
-        if (is_binary) {
-            std::ifstream file(filename, std::ios::binary);
-            if (!file) throw std::runtime_error("cannot open checkpoint file: " + filename);
-            binary_reader reader(file);
-            read_checkpoint<binary_reader, P>(reader, prog);
+        // Nearest for other variables (just past target)
+        while (get_time(*prog.physics_state, var_name) <= target) {
+            double dt = courant_time(*prog.physics_state, exec_context);
+            do_timestep(dt);
+            execute_recurring_commands();
+        }
+    }
+}
+
+template<Physics P>
+std::string driver_t<P>::iteration_message() {
+    if (!prog.physics_state.has_value()) {
+        return "[no state initialized]\n";
+    }
+    const auto wall_now = get_wall_time();
+    const auto wall_elapsed = wall_now - command_start_wall_time;
+    const auto iter_elapsed = prog.driver_state.iteration - command_start_iteration;
+    const auto mzps = (wall_elapsed > 0) ? (iter_elapsed * zone_count(*prog.physics_state, exec_context)) / (wall_elapsed * 1e6) : 0.0;
+    const auto time_names = names_of_time(std::type_identity<P>{});
+
+    auto oss = std::ostringstream{};
+    oss << "[" << std::setw(6) << std::setfill('0') << prog.driver_state.iteration << "] ";
+
+    for (std::size_t i = 0; i < time_names.size(); ++i) {
+        if (i > 0) oss << " ";
+        oss << time_names[i] << "=" << std::scientific << std::showpos << std::setprecision(6)
+            << get_time(*prog.physics_state, time_names[i]) << std::noshowpos;
+    }
+    oss << " Mzps=" << std::scientific << std::setprecision(6) << mzps << "\n";
+    return oss.str();
+}
+
+template<Physics P>
+void driver_t<P>::execute_recurring_commands() {
+    if (!prog.physics_state.has_value()) {
+        return;
+    }
+    for (auto& rcmd : prog.driver_state.recurring_commands) {
+        try {
+            const auto current_value = get_time(*prog.physics_state, rcmd.unit);
+            if (current_value >= rcmd.last_executed + rcmd.interval) {
+                const auto subcmd = parse_command(rcmd.sub_command);
+                if (subcmd.cmd == command_t::type::invalid) {
+                    *err << "error in recurring command: " << subcmd.error_msg << "\n";
+                    continue;
+                }
+
+                // Execute the sub-command (only do/write commands are allowed)
+                switch (subcmd.cmd) {
+                    case command_t::type::do_timeseries:
+                        handle_do_timeseries();
+                        break;
+                    case command_t::type::write_timeseries:
+                        handle_write_timeseries(subcmd.string_value);
+                        break;
+                    case command_t::type::write_checkpoint:
+                        handle_write_checkpoint(subcmd.string_value);
+                        break;
+                    case command_t::type::write_products:
+                        handle_write_products(subcmd.string_value);
+                        break;
+                    case command_t::type::show_message:
+                        handle_show_message();
+                        break;
+                    default:
+                        *err << "error: recurring command type not supported: " << rcmd.sub_command << "\n";
+                        break;
+                }
+
+                rcmd.last_executed = current_value;
+            }
+        } catch (const std::exception& e) {
+            *err << "error: recurring command '" << e.what() << "'\n";
+        }
+    }
+}
+
+template<Physics P>
+void driver_t<P>::handle_increment_n(int n) {
+    const auto target = prog.driver_state.iteration + n;
+    advance_to_target("", 0.0, target);
+    *out << iteration_message();
+}
+
+template<Physics P>
+void driver_t<P>::handle_target_n(int target) {
+    advance_to_target("", 0.0, target);
+    *out << iteration_message();
+}
+
+template<Physics P>
+void driver_t<P>::handle_increment_var(const std::string& kind, double increment) {
+    const auto start_value = get_time(*prog.physics_state, kind);
+    const auto target = start_value + increment;
+    advance_to_target(kind, target);
+    *out << iteration_message();
+}
+
+template<Physics P>
+void driver_t<P>::handle_target_var(const std::string& kind, double target) {
+    advance_to_target(kind, target);
+    *out << iteration_message();
+}
+
+template<Physics P>
+void driver_t<P>::handle_set_output(const std::string& format_str) {
+    prog.driver_state.format = driver::from_string(std::type_identity<driver::output_format>{}, format_str);
+    *out << "output format set to " << format_str << "\n";
+}
+
+template<Physics P>
+void driver_t<P>::handle_set_physics(const std::string& pairs_str) {
+    auto pairs_ss = std::istringstream{pairs_str};
+    auto pair = std::string{};
+
+    try {
+        while (pairs_ss >> pair) {
+            apply_key_value(prog.physics, pair);
+        }
+        *out << "physics config updated: " << pairs_str << "\n";
+    } catch (const std::exception& e) {
+        *err << "error: failed to set physics config: " << e.what() << "\n";
+    }
+}
+
+template<Physics P>
+void driver_t<P>::handle_set_initial(const std::string& pairs_str) {
+    // Check if state is initialized - cannot modify initial params if state exists
+    if (prog.physics_state.has_value()) {
+        *err << "error: cannot modify initial params when state is initialized; use 'reset' first\n";
+        return;
+    }
+
+    auto pairs_ss = std::istringstream{pairs_str};
+    auto pair = std::string{};
+
+    try {
+        while (pairs_ss >> pair) {
+            apply_key_value(prog.initial, pair);
+        }
+        *out << "initial config updated: " << pairs_str << "\n";
+    } catch (const std::exception& e) {
+        *err << "error: failed to set initial config: " << e.what() << "\n";
+    }
+}
+
+template<Physics P>
+void driver_t<P>::handle_select_timeseries(std::vector<std::string> columns) {
+    const auto available = names_of_timeseries(std::type_identity<P>{});
+
+    if (columns.empty()) {
+        columns = available;
+    }
+    if (!prog.driver_state.timeseries.empty()) {
+        *err << "error: use 'clear timeseries' before 'select timeseries ...'\n";
+        return;
+    }
+    for (const auto& col : columns) {
+        if (std::find(available.begin(), available.end(), col) == available.end()) {
+            *err << "error: column '" << col << "' not found in physics timeseries\n";
+            return;
+        }
+    }
+    for (const auto& col : columns) {
+        prog.driver_state.timeseries[col] = {};
+    }
+    handle_show_timeseries();
+}
+
+template<Physics P>
+void driver_t<P>::handle_clear_timeseries() {
+    prog.driver_state.timeseries.clear();
+    *out << "clear timeseries\n";
+}
+
+template<Physics P>
+void driver_t<P>::handle_select_products(std::vector<std::string> products) {
+    const auto available = names_of_products(std::type_identity<P>{});
+
+    if (products.empty()) {
+        prog.driver_state.selected_products = available;
+        handle_show_products();
+        return;
+    }
+
+    for (const auto& prod : products) {
+        if (std::find(available.begin(), available.end(), prod) == available.end()) {
+            *err << "error: product '" << prod << "' not found in physics products\n";
+            *err << "available products: ";
+            auto first = true;
+            for (const auto& name : available) {
+                if (!first) *err << ", ";
+                *err << name;
+                first = false;
+            }
+            *err << "\n";
+            return;
+        }
+    }
+
+    prog.driver_state.selected_products = products;
+    handle_show_products();
+}
+
+template<Physics P>
+void driver_t<P>::handle_clear_products() {
+    prog.driver_state.selected_products.clear();
+    *out << "clear product selection\n";
+}
+
+template<Physics P>
+void driver_t<P>::handle_do_timeseries() {
+    if (!prog.physics_state.has_value()) {
+        *err << "error: physics state not initialized; use 'init' command first\n";
+        return;
+    }
+    if (prog.driver_state.timeseries.empty()) {
+        *err << "no timeseries selected; use 'select timeseries [names...]'\n";
+        return;
+    }
+    *out << "record timeseries sample (";
+    auto first = true;
+    for (const auto& [col, values] : prog.driver_state.timeseries) {
+        const auto value = get_timeseries(prog.physics, prog.initial, *prog.physics_state, col);
+        prog.driver_state.timeseries[col].push_back(value);
+        if (!first) *out << ", ";
+        *out << col << "=" << std::scientific << std::showpos << std::setprecision(6) << value << std::noshowpos;
+        first = false;
+    }
+    *out << ")\n";
+}
+
+template<Physics P>
+void driver_t<P>::handle_write_timeseries(const std::optional<std::string>& filename_opt) {
+    if (prog.driver_state.timeseries.empty()) {
+        *err << "no timeseries selected; use 'select timeseries [names...]'\n";
+        return;
+    }
+
+    auto filename = std::string{};
+    auto format = driver::output_format{};
+
+    if (filename_opt) {
+        filename = *filename_opt;
+        format = driver::infer_format_from_filename(filename);
+    } else {
+        format = prog.driver_state.format;
+        const auto ext = (format == driver::output_format::ascii) ? ".dat" : ".bin";
+        auto oss = std::ostringstream{};
+        oss << "timeseries." << std::setw(4) << std::setfill('0') << prog.driver_state.timeseries_count << ext;
+        filename = oss.str();
+        prog.driver_state.timeseries_count++;
+    }
+
+    if (format == driver::output_format::hdf5) {
+        throw std::runtime_error("HDF5 output format not implemented");
+    }
+
+    auto file = std::ofstream{filename};
+    if (!file) {
+        *err << "error: failed to open " << filename << "\n";
+        return;
+    }
+    if (format == driver::output_format::ascii) {
+        auto writer = ascii_writer{file};
+        serialize(writer, "timeseries", prog.driver_state.timeseries);
+    } else {
+        auto writer = binary_writer{file};
+        serialize(writer, "timeseries", prog.driver_state.timeseries);
+    }
+    *out << "write " << filename << "\n";
+}
+
+template<Physics P>
+void driver_t<P>::handle_write_checkpoint(const std::optional<std::string>& filename_opt) {
+    auto filename = std::string{};
+    auto format = driver::output_format{};
+
+    if (filename_opt) {
+        filename = *filename_opt;
+        format = driver::infer_format_from_filename(filename);
+    } else {
+        format = prog.driver_state.format;
+        const auto ext = (format == driver::output_format::ascii) ? ".dat" : ".bin";
+        auto oss = std::ostringstream{};
+        oss << "chkpt." << std::setw(4) << std::setfill('0') << prog.driver_state.checkpoint_count << ext;
+        filename = oss.str();
+        prog.driver_state.checkpoint_count++;
+    }
+
+    if (format == driver::output_format::hdf5) {
+        throw std::runtime_error("HDF5 output format not implemented");
+    }
+
+    auto file = std::ofstream{filename};
+    if (format == driver::output_format::ascii) {
+        auto writer = ascii_writer{file};
+        serialize(writer, "checkpoint", prog);
+    } else {
+        auto writer = binary_writer{file};
+        serialize(writer, "checkpoint", prog);
+    }
+    *out << "write " << filename << "\n";
+}
+
+template<Physics P>
+void driver_t<P>::handle_write_products(const std::optional<std::string>& filename_opt) {
+    if (!prog.physics_state.has_value()) {
+        *err << "error: physics state not initialized; use 'init' command first\n";
+        return;
+    }
+    if (prog.driver_state.selected_products.empty()) {
+        *err << "no products selected; use 'select products [names...]'\n";
+        return;
+    }
+
+    auto filename = std::string{};
+    auto format = driver::output_format{};
+
+    if (filename_opt) {
+        filename = *filename_opt;
+        format = driver::infer_format_from_filename(filename);
+    } else {
+        format = prog.driver_state.format;
+        const auto ext = (format == driver::output_format::ascii) ? ".dat" : ".bin";
+        auto oss = std::ostringstream{};
+        oss << "prods." << std::setw(4) << std::setfill('0') << prog.driver_state.products_count << ext;
+        filename = oss.str();
+        prog.driver_state.products_count++;
+    }
+
+    if (format == driver::output_format::hdf5) {
+        throw std::runtime_error("HDF5 output format not implemented");
+    }
+
+    auto file = std::ofstream{filename};
+
+    for (const auto& name : prog.driver_state.selected_products) {
+        const auto product = get_product(*prog.physics_state, name, exec_context);
+        if (format == driver::output_format::ascii) {
+            auto writer = ascii_writer{file};
+            serialize(writer, name.c_str(), product);
         } else {
-            std::ifstream file(filename);
-            if (!file) throw std::runtime_error("cannot open checkpoint file: " + filename);
-            ascii_reader reader(file);
-            read_checkpoint<ascii_reader, P>(reader, prog);
+            auto writer = binary_writer{file};
+            serialize(writer, name.c_str(), product);
+        }
+    }
+    *out << "write " << filename << "\n";
+}
+
+template<Physics P>
+void driver_t<P>::handle_show_message() {
+    *out << iteration_message();
+}
+
+template<Physics P>
+void driver_t<P>::handle_repeat_add(double interval, const std::string& unit, const std::string& sub_cmd) {
+    if (!prog.physics_state.has_value()) {
+        *err << "error: physics state not initialized; use 'init' command first\n";
+        return;
+    }
+    try {
+        const auto current_value = get_time(*prog.physics_state, unit);
+        auto rcmd = driver::recurring_command_t{};
+        rcmd.interval = interval;
+        rcmd.unit = unit;
+        rcmd.sub_command = sub_cmd;
+        rcmd.last_executed = current_value;
+        prog.driver_state.recurring_commands.push_back(rcmd);
+        *out << "add recurring command: every " << interval << " " << unit
+            << " -> " << sub_cmd << "\n";
+    } catch (const std::exception& e) {
+        *err << "error: " << e.what() << "\n";
+    }
+}
+
+template<Physics P>
+void driver_t<P>::handle_repeat_list() {
+    if (prog.driver_state.recurring_commands.empty()) {
+        *out << "no recurring commands.\n";
+    } else {
+        *out << "recurring commands:\n";
+        for (std::size_t i = 0; i < prog.driver_state.recurring_commands.size(); ++i) {
+            const auto& rcmd = prog.driver_state.recurring_commands[i];
+            *out << "  [" << i << "] every " << rcmd.interval << " " << rcmd.unit
+                << " -> " << rcmd.sub_command << "\n";
+        }
+    }
+}
+
+template<Physics P>
+void driver_t<P>::handle_repeat_clear(const std::vector<std::string>& indices) {
+    if (indices.empty()) {
+        prog.driver_state.recurring_commands.clear();
+        *out << "clear all recurring commands\n";
+    } else {
+        auto idx_list = std::vector<std::size_t>{};
+        for (const auto& idx_str : indices) {
+            try {
+                const auto idx = std::stoull(idx_str);
+                if (idx >= prog.driver_state.recurring_commands.size()) {
+                    *err << "error: index " << idx << " out of range (max: "
+                        << prog.driver_state.recurring_commands.size() - 1 << ")\n";
+                    continue;
+                }
+                idx_list.push_back(idx);
+            } catch (...) {
+                *err << "error: invalid index: " << idx_str << "\n";
+            }
+        }
+        std::sort(idx_list.begin(), idx_list.end(), std::greater<std::size_t>());
+        idx_list.erase(std::unique(idx_list.begin(), idx_list.end()), idx_list.end());
+        for (const auto idx : idx_list) {
+            prog.driver_state.recurring_commands.erase(
+                prog.driver_state.recurring_commands.begin() + idx);
+        }
+        *out << "clear " << idx_list.size() << " recurring command(s)\n";
+    }
+}
+
+template<Physics P>
+void driver_t<P>::handle_init() {
+    if (prog.physics_state.has_value()) {
+        *err << "error: state already initialized; use 'reset' to clear state first\n";
+        return;
+    }
+    prog.physics_state = initial_state(exec_context);
+    *out << "initialized physics state\n";
+}
+
+template<Physics P>
+void driver_t<P>::handle_reset() {
+    prog.physics_state = std::nullopt;
+    prog.driver_state = driver::state_t{};
+    *out << "cleared physics state\n";
+}
+
+template<typename T>
+void deserialize_with_format(std::ifstream& file, driver::output_format format, const char* name, T& value) {
+    if (format == driver::output_format::ascii) {
+        auto reader = ascii_reader{file};
+        deserialize(reader, name, value);
+    } else {
+        auto reader = binary_reader{file};
+        deserialize(reader, name, value);
+    }
+}
+
+template<Physics P>
+void driver_t<P>::handle_load(const std::string& filename) {
+    auto file = std::ifstream{filename};
+    if (!file) {
+        *err << "error: failed to open " << filename << "\n";
+        return;
+    }
+
+    const auto format = driver::infer_format_from_filename(filename);
+    if (format == driver::output_format::hdf5) {
+        throw std::runtime_error("HDF5 format not implemented");
+    }
+
+    // Try checkpoint first - if successful, we're done
+    try {
+        deserialize_with_format(file, format, "checkpoint", prog);
+        *out << "loaded checkpoint from " << filename << "\n";
+        return;
+    } catch (...) {
+        // Not a checkpoint, reopen and continue
+        file.close();
+        file.open(filename);
+    }
+
+    // Try loading physics
+    try {
+        deserialize_with_format(file, format, "physics", prog.physics);
+        prog.physics_state = std::nullopt;
+        prog.driver_state.iteration = 0;
+        *out << "loaded physics from " << filename << "; use 'init' to generate initial state\n";
+        return;
+    } catch (...) {
+        // Not physics, reopen and continue
+        file.close();
+        file.open(filename);
+    }
+
+    // Try loading initial
+    try {
+        deserialize_with_format(file, format, "initial", prog.initial);
+        if (prog.physics_state.has_value()) {
+            *err << "warning: loaded initial but state is already initialized; use 'reset' first\n";
+        }
+        *out << "loaded initial from " << filename << "\n";
+        return;
+    } catch (...) {
+        // Not initial either
+    }
+
+    *err << "error: could not load checkpoint, physics, or initial from " << filename << "\n";
+}
+
+template<Physics P>
+void driver_t<P>::handle_show_all() {
+    handle_show_message();
+    *out << "\n";
+    handle_show_initial();
+    *out << "\n";
+    handle_show_physics();
+    *out << "\n";
+    handle_show_driver();
+    *out << "\n";
+    handle_show_products();
+    *out << "\n";
+    handle_show_timeseries();
+    *out << "\n";
+}
+
+template<Physics P>
+void driver_t<P>::handle_show_physics() {
+    auto writer = ascii_writer{*out};
+    serialize(writer, "physics", prog.physics);
+}
+
+template<Physics P>
+void driver_t<P>::handle_show_initial() {
+    auto writer = ascii_writer{*out};
+    serialize(writer, "initial", prog.initial);
+}
+
+template<Physics P>
+void driver_t<P>::handle_show_timeseries() {
+    const auto available = names_of_timeseries(std::type_identity<P>{});
+    *out << "Timeseries:\n";
+    for (const auto& col : available) {
+        const auto is_selected = prog.driver_state.timeseries.find(col) != prog.driver_state.timeseries.end();
+        *out << "  - [" << (is_selected ? "+" : " ") << "] " << col;
+        if (is_selected) {
+            const auto sample_count = prog.driver_state.timeseries.at(col).size();
+            *out << " (" << sample_count << " sample" << (sample_count != 1 ? "s" : "") << ")";
+        }
+        *out << "\n";
+    }
+}
+
+template<Physics P>
+void driver_t<P>::handle_show_products() {
+    const auto available = names_of_products(std::type_identity<P>{});
+    *out << "Products:\n";
+    for (const auto& prod : available) {
+        const auto is_selected = std::find(
+            prog.driver_state.selected_products.begin(),
+            prog.driver_state.selected_products.end(),
+            prod
+        ) != prog.driver_state.selected_products.end();
+        *out << "  - [" << (is_selected ? "+" : " ") << "] " << prod << "\n";
+    }
+}
+
+template<Physics P>
+void driver_t<P>::handle_show_driver() {
+    auto writer = ascii_writer{*out};
+    serialize(writer, "driver_state", prog.driver_state);
+}
+
+template<Physics P>
+void driver_t<P>::handle_help() {
+    *out << "\n" << help_text << "\n";
+}
+
+template<Physics P>
+void driver_t<P>::handle_stop() {
+    *out << "\n=== Simulation Complete ===\n";
+    if (prog.physics_state.has_value()) {
+        const auto time_names = names_of_time(std::type_identity<P>{});
+        *out << "Final times: ";
+        for (std::size_t i = 0; i < time_names.size(); ++i) {
+            if (i > 0) *out << " ";
+            *out << time_names[i] << "=" << std::scientific << std::showpos << std::setprecision(6)
+                << get_time(*prog.physics_state, time_names[i]) << std::noshowpos;
+        }
+        *out << "\n";
+    }
+}
+
+template<Physics P>
+bool driver_t<P>::execute(const command_t& cmd) {
+    try {
+        command_start_wall_time = get_wall_time();
+        command_start_iteration = prog.driver_state.iteration;
+
+        switch (cmd.cmd) {
+            case command_t::type::increment_n:
+                handle_increment_n(cmd.int_value.value());
+                break;
+
+            case command_t::type::target_n:
+                handle_target_n(cmd.int_value.value());
+                break;
+
+            case command_t::type::increment_var:
+                handle_increment_var(cmd.var_name.value(), cmd.double_value.value());
+                break;
+
+            case command_t::type::target_var:
+                handle_target_var(cmd.var_name.value(), cmd.double_value.value());
+                break;
+
+            case command_t::type::set_output:
+                handle_set_output(cmd.string_value.value());
+                break;
+
+            case command_t::type::set_physics:
+                handle_set_physics(cmd.string_value.value());
+                break;
+
+            case command_t::type::set_initial:
+                handle_set_initial(cmd.string_value.value());
+                break;
+
+            case command_t::type::clear_timeseries:
+                handle_clear_timeseries();
+                break;
+
+            case command_t::type::select_timeseries:
+                handle_select_timeseries(cmd.string_list.value());
+                break;
+
+            case command_t::type::clear_products:
+                handle_clear_products();
+                break;
+
+            case command_t::type::select_products:
+                handle_select_products(cmd.string_list.value_or(std::vector<std::string>{}));
+                break;
+
+            case command_t::type::do_timeseries:
+                handle_do_timeseries();
+                break;
+
+            case command_t::type::write_timeseries:
+                handle_write_timeseries(cmd.string_value);
+                break;
+
+            case command_t::type::write_checkpoint:
+                handle_write_checkpoint(cmd.string_value);
+                break;
+
+            case command_t::type::write_products:
+                handle_write_products(cmd.string_value);
+                break;
+
+            case command_t::type::show_message:
+                handle_show_message();
+                break;
+
+            case command_t::type::repeat_add:
+                handle_repeat_add(cmd.double_value.value(), cmd.var_name.value(),
+                                 cmd.string_value.value());
+                break;
+
+            case command_t::type::repeat_list:
+                handle_repeat_list();
+                break;
+
+            case command_t::type::repeat_clear:
+                handle_repeat_clear(cmd.string_list.value_or(std::vector<std::string>{}));
+                break;
+
+            case command_t::type::init:
+                handle_init();
+                break;
+
+            case command_t::type::reset:
+                handle_reset();
+                break;
+
+            case command_t::type::load:
+                handle_load(cmd.string_value.value());
+                break;
+
+            case command_t::type::show_all:
+                handle_show_all();
+                break;
+
+            case command_t::type::show_physics:
+                handle_show_physics();
+                break;
+
+            case command_t::type::show_initial:
+                handle_show_initial();
+                break;
+
+            case command_t::type::show_timeseries:
+                handle_show_timeseries();
+                break;
+
+            case command_t::type::show_products:
+                handle_show_products();
+                break;
+
+            case command_t::type::show_driver:
+                handle_show_driver();
+                break;
+
+            case command_t::type::help:
+                handle_help();
+                break;
+
+            case command_t::type::stop:
+                handle_stop();
+                return false;
+
+            case command_t::type::invalid:
+                break;
+        }
+    } catch (const std::exception& e) {
+        *err << "Error: " << e.what() << "\n";
+    }
+    return true;
+}
+
+// =============================================================================
+// REPL class - handles interactive input/output
+// =============================================================================
+
+template<Physics P>
+class repl_t {
+    driver_t<P>& driver;
+    std::queue<std::string> command_queue;
+    bool is_tty;
+    FILE* null_stream = nullptr;
+
+public:
+    explicit repl_t(driver_t<P>& driver)
+        : driver(driver)
+        , is_tty(isatty(STDIN_FILENO)) {
+        setup_readline();
+    }
+
+    ~repl_t() {
+        if (null_stream) {
+            fclose(null_stream);
         }
     }
 
-    for (int i = 2; i < argc; ++i) {
-        std::string arg = argv[i];
-        auto eq = arg.find('=');
-        if (eq == std::string::npos) {
-            throw std::runtime_error("invalid override (expected key=value): " + arg);
-        }
-        set(prog.config, arg.substr(0, eq), arg.substr(eq + 1));
+    void run();
+
+private:
+    void setup_readline();
+    // void print_initial_state();
+    auto get_next_command() -> std::optional<std::string>;
+    void switch_to_interactive_mode();
+};
+
+template<Physics P>
+void repl_t<P>::setup_readline() {
+    if (!is_tty) {
+        null_stream = fopen("/dev/null", "w");
+        rl_outstream = null_stream;
+    }
+}
+
+// template<Physics P>
+// void repl_t<P>::print_initial_state() {
+//     ascii_writer cfg_writer(std::cout);
+//     serialize(cfg_writer, "initial", driver.program().initial);
+//     std::cout << "\n";
+//     serialize(cfg_writer, "physics", driver.program().physics);
+//     if (is_tty) {
+//         std::cout << "\nType 'help' for available commands\n";
+//     }
+// }
+
+template<Physics P>
+std::optional<std::string> repl_t<P>::get_next_command() {
+    if (!command_queue.empty()) {
+        auto cmd = command_queue.front();
+        command_queue.pop();
+        return cmd;
     }
 
-    return run<P>(prog);
+    auto accumulated = std::string{};
+    const auto* prompt = is_tty ? "> " : "";
+
+    while (true) {
+        auto* line = readline(prompt);
+        if (!line) {
+            if (!accumulated.empty()) {
+                return accumulated;
+            }
+            return std::nullopt;
+        }
+
+        auto input = std::string{line};
+        std::free(line);
+
+        if (!is_tty && !input.empty() && input[0] != '#') {
+            std::cout << "> " << input << "\n";
+        }
+
+        auto has_continuation = false;
+        if (!input.empty() && input.back() == '\\') {
+            has_continuation = true;
+            input.pop_back();
+            while (!input.empty() && (input.back() == ' ' || input.back() == '\t')) {
+                input.pop_back();
+            }
+        }
+
+        if (!accumulated.empty()) {
+            accumulated += " ";
+        }
+        accumulated += input;
+
+        if (!has_continuation) {
+            auto iss = std::istringstream{accumulated};
+            auto first_line = std::string{};
+            if (std::getline(iss, first_line)) {
+                auto remaining_line = std::string{};
+                while (std::getline(iss, remaining_line)) {
+                    if (!remaining_line.empty()) {
+                        command_queue.push(remaining_line);
+                    }
+                }
+                return first_line;
+            }
+            return accumulated;
+        }
+
+        prompt = is_tty ? "... " : "";
+    }
+}
+
+template<Physics P>
+void repl_t<P>::switch_to_interactive_mode() {
+    std::cout << "\n=== Piped input complete, entering interactive mode ===\n\n";
+    std::cout << "Type 'help' for available commands\n";
+    is_tty = true;
+    if (null_stream) {
+        fclose(null_stream);
+        null_stream = nullptr;
+    }
+    rl_outstream = stderr;
+    if (freopen("/dev/tty", "r", stdin) == nullptr) {
+        throw std::runtime_error("failed to reopen stdin as tty");
+    }
+}
+
+template<Physics P>
+void repl_t<P>::run() {
+    // print_initial_state();
+
+    while (true) {
+        const auto input_opt = get_next_command();
+        if (!input_opt) {
+            if (!is_tty) {
+                try {
+                    switch_to_interactive_mode();
+                    continue;
+                } catch (...) {
+                    std::cout << "\n";
+                    break;
+                }
+            }
+            std::cout << "\n";
+            break;
+        }
+
+        const auto input = *input_opt;
+
+        if (input.empty() || input[0] == '#') {
+            continue;
+        }
+
+        add_history(input.c_str());
+
+        const auto cmd = parse_command(input);
+
+        if (cmd.cmd == command_t::type::invalid) {
+            std::cerr << "error: " << cmd.error_msg << "\n";
+            continue;
+        }
+
+        if (!driver.execute(cmd)) {
+            break;
+        }
+    }
+}
+
+// =============================================================================
+// Main run function (backward compatibility wrapper)
+// =============================================================================
+
+template<Physics P>
+std::optional<typename P::state_t> run(program_t<P>& prog)
+{
+    auto driver = driver_t<P>{prog, std::cout, std::cerr};
+    auto repl = repl_t<P>{driver};
+    repl.run();
+    return std::move(prog.physics_state);
 }
 
 } // namespace mist

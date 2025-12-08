@@ -84,16 +84,35 @@ public:
     void read_string(const char* name, std::string& value) {
         ensure_header();
         verify_name(name);
-        
+
         uint8_t type_tag = read_type_tag();
-        
+
         if (in_anonymous_group_ == 0 && type_tag != binary_format::TYPE_STRING) {
             throw std::runtime_error("Expected string type for field '" + std::string(name) + "'");
         }
-        
+
         uint64_t length;
         read_raw(length);
-        
+
+        value.resize(length);
+        if (length > 0) {
+            is_.read(value.data(), static_cast<std::streamsize>(length));
+            if (!is_) {
+                throw std::runtime_error("Failed to read string data");
+            }
+        }
+    }
+
+    void read_string(std::string& value) {
+        uint8_t type_tag = read_type_tag();
+
+        if (in_anonymous_group_ == 0 && type_tag != binary_format::TYPE_STRING) {
+            throw std::runtime_error("Expected string type");
+        }
+
+        uint64_t length;
+        read_raw(length);
+
         value.resize(length);
         if (length > 0) {
             is_.read(value.data(), static_cast<std::streamsize>(length));
@@ -243,31 +262,42 @@ public:
 
     std::size_t count_groups(const char* name) {
         ensure_header();
-        
+
         // Save position
         std::streampos pos = is_.tellg();
-        
+
         // Read and verify name
         std::string field_name = read_name();
         if (field_name != name) {
             throw std::runtime_error(
                 "Expected field '" + std::string(name) + "' but found '" + field_name + "'");
         }
-        
+
         uint8_t type_tag;
         read_raw(type_tag);
-        
+
         if (type_tag != binary_format::TYPE_LIST) {
             throw std::runtime_error("Expected list type for field '" + std::string(name) + "'");
         }
-        
+
         uint64_t count;
         read_raw(count);
-        
+
         // Restore position
         is_.seekg(pos);
-        
+
         return static_cast<std::size_t>(count);
+    }
+
+    std::size_t count_fields(const char* list_name, const char* /*field_name*/) {
+        // For binary format, the count is stored in the stream and is the same
+        // regardless of the field name within the list
+        return count_groups(list_name);
+    }
+
+    std::size_t count_strings(const char* list_name) {
+        // For binary format, the count is the same as count_groups
+        return count_groups(list_name);
     }
 
     void begin_list(const char* name) {
@@ -297,21 +327,8 @@ public:
     // Check if we're at the end of the current group
     // For binary format, we track field counts, so check if we've read all fields
     bool at_group_end() {
-        // In binary format, we can peek at the next bytes to check for end
-        // For simplicity, we'll peek and check if next read would fail or hit end
-        if (!is_) return true;
-        std::streampos pos = is_.tellg();
-        if (pos == std::streampos(-1)) return true;
-        
-        // Try to peek at the next field name length
-        uint64_t length;
-        is_.read(reinterpret_cast<char*>(&length), sizeof(length));
-        bool at_end = !is_ || is_.eof();
-        
-        // Restore position
-        is_.clear();
-        is_.seekg(pos);
-        return at_end;
+        if (group_field_counts_.empty()) return true;
+        return group_field_counts_.back() == 0;
     }
 
     // Peek at the next field name without consuming it
@@ -337,15 +354,21 @@ private:
             if (magic != binary_format::MAGIC) {
                 throw std::runtime_error("Invalid binary archive: bad magic number");
             }
-            
+
             uint8_t version;
             read_raw(version);
             if (version != binary_format::VERSION) {
                 throw std::runtime_error(
                     "Unsupported binary archive version: " + std::to_string(version));
             }
-            
+
             header_read_ = true;
+        }
+        // Decrement field count for parent group when reading a field
+        if (!group_field_counts_.empty() && in_anonymous_group_ == 0) {
+            if (group_field_counts_.back() > 0) {
+                group_field_counts_.back()--;
+            }
         }
     }
 

@@ -48,12 +48,17 @@ public:
         std::string field_name = read_identifier();
         if (field_name != name) {
             throw std::runtime_error(
-                "Expected field '" + std::string(name) + "' but found '" + field_name + 
+                "Expected field '" + std::string(name) + "' but found '" + field_name +
                 "' in group '" + current_group_ + "'");
         }
         skip_whitespace();
         expect_char('=');
         skip_whitespace();
+        value = read_quoted_string();
+    }
+
+    void read_string(std::string& value) {
+        skip_whitespace_and_comments();
         value = read_quoted_string();
     }
 
@@ -180,13 +185,34 @@ public:
     }
 
     // =========================================================================
-    // Bulk data (for ndarray) - not implemented for ASCII
+    // Bulk data (for ndarray)
     // =========================================================================
 
     template<typename T>
         requires std::is_arithmetic_v<T>
-    void read_data(const char* /*name*/, T* /*ptr*/, std::size_t /*count*/) {
-        throw std::runtime_error("read_data not implemented for ASCII format");
+    void read_data(const char* name, T* ptr, std::size_t count) {
+        skip_whitespace_and_comments();
+        std::string field_name = read_identifier();
+        if (field_name != name) {
+            throw std::runtime_error(
+                "Expected field '" + std::string(name) + "' but found '" + field_name +
+                "' in group '" + current_group_ + "'");
+        }
+        skip_whitespace();
+        expect_char('=');
+        skip_whitespace();
+        expect_char('[');
+
+        for (std::size_t i = 0; i < count; ++i) {
+            skip_whitespace();
+            ptr[i] = read_value<T>();
+            skip_whitespace();
+            if (i < count - 1) {
+                expect_char(',');
+            }
+        }
+        skip_whitespace();
+        expect_char(']');
     }
 
     // Check if we're at the end of the current group (next char is '}')
@@ -210,28 +236,28 @@ public:
 
     std::size_t count_groups(const char* name) {
         skip_whitespace_and_comments();
-        
+
         // Save position
         std::streampos start_pos = is_.tellg();
-        
+
         // Read and verify group name
         std::string field_name = read_identifier();
         if (field_name != name) {
             throw std::runtime_error(
-                "Expected group '" + std::string(name) + "' but found '" + field_name + 
+                "Expected group '" + std::string(name) + "' but found '" + field_name +
                 "' in group '" + current_group_ + "'");
         }
         skip_whitespace();
         expect_char('{');
-        
+
         // Count anonymous groups
         std::size_t count = 0;
         int depth = 0;
-        
+
         while (is_) {
             skip_whitespace_and_comments();
             char c = peek_char();
-            
+
             if (c == '{') {
                 get_char();
                 if (depth == 0) {
@@ -251,10 +277,114 @@ public:
                 get_char();
             }
         }
-        
+
         // Restore position
         is_.seekg(start_pos);
-        
+
+        return count;
+    }
+
+    std::size_t count_fields(const char* list_name, const char* field_name) {
+        skip_whitespace_and_comments();
+
+        // Save position
+        std::streampos start_pos = is_.tellg();
+
+        // Read and verify list name
+        std::string name = read_identifier();
+        if (name != list_name) {
+            throw std::runtime_error(
+                "Expected list '" + std::string(list_name) + "' but found '" + name +
+                "' in group '" + current_group_ + "'");
+        }
+        skip_whitespace();
+        expect_char('{');
+
+        // Count occurrences of the named field
+        std::size_t count = 0;
+        int depth = 0;
+
+        while (is_) {
+            skip_whitespace_and_comments();
+            char c = peek_char();
+
+            if (c == '}') {
+                if (depth == 0) {
+                    // End of containing list
+                    break;
+                }
+                get_char();
+                depth--;
+            } else if (c == '{') {
+                get_char();
+                depth++;
+            } else if (c == std::char_traits<char>::eof()) {
+                break;
+            } else if (std::isalpha(c) || c == '_') {
+                // This might be a field name
+                std::string id = read_identifier();
+                if (id == field_name && depth == 0) {
+                    count++;
+                }
+            } else {
+                get_char();
+            }
+        }
+
+        // Restore position
+        is_.seekg(start_pos);
+
+        return count;
+    }
+
+    std::size_t count_strings(const char* list_name) {
+        skip_whitespace_and_comments();
+
+        // Save position
+        std::streampos start_pos = is_.tellg();
+
+        // Read and verify list name
+        std::string name = read_identifier();
+        if (name != list_name) {
+            throw std::runtime_error(
+                "Expected list '" + std::string(list_name) + "' but found '" + name +
+                "' in group '" + current_group_ + "'");
+        }
+        skip_whitespace();
+        expect_char('{');
+
+        // Count quoted strings at depth 0
+        std::size_t count = 0;
+        int depth = 0;
+
+        while (is_) {
+            skip_whitespace_and_comments();
+            char c = peek_char();
+
+            if (c == '}') {
+                if (depth == 0) {
+                    // End of containing list
+                    break;
+                }
+                get_char();
+                depth--;
+            } else if (c == '{') {
+                get_char();
+                depth++;
+            } else if (c == '"' && depth == 0) {
+                // Found a string at depth 0
+                count++;
+                read_quoted_string();  // Consume it
+            } else if (c == std::char_traits<char>::eof()) {
+                break;
+            } else {
+                get_char();
+            }
+        }
+
+        // Restore position
+        is_.seekg(start_pos);
+
         return count;
     }
 

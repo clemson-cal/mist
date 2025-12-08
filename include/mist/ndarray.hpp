@@ -94,6 +94,9 @@ struct lazy_t {
     F _func;
 
     MIST_HD auto operator()(const ivec_t<S>& idx) const { return _func(idx); }
+
+    // Convenience for 1D arrays: accept integer index
+    MIST_HD auto operator[](int i) const requires (S == 1) { return _func(ivec(i)); }
 };
 
 template<std::size_t S, typename F>
@@ -120,6 +123,12 @@ struct cached_t {
     index_space_t<S> _space;
     T* _data;
     memory _location;
+
+    // Default constructor: creates empty array
+    cached_t()
+        : _space(index_space(ivec_t<S>{}, uvec_t<S>{})), _data(nullptr), _location(memory::host)
+    {
+    }
 
     // Constructor
     cached_t(const index_space_t<S>& space, memory loc = memory::host)
@@ -195,6 +204,15 @@ struct cached_t {
     MIST_HD const T& operator()(const ivec_t<S>& idx) const {
         return _data[ndoffset(_space, idx)];
     }
+
+    // Convenience for 1D arrays: accept integer index
+    MIST_HD T& operator[](int i) requires (S == 1) {
+        return _data[ndoffset(_space, ivec(i))];
+    }
+
+    MIST_HD const T& operator[](int i) const requires (S == 1) {
+        return _data[ndoffset(_space, ivec(i))];
+    }
 };
 
 template<typename T, std::size_t S>
@@ -230,6 +248,15 @@ struct cached_view_t {
 
     MIST_HD const T& operator()(const ivec_t<S>& idx) const {
         return _data[ndoffset(_space, idx)];
+    }
+
+    // Convenience for 1D arrays: accept integer index
+    MIST_HD T& operator[](int i) requires (S == 1) {
+        return _data[ndoffset(_space, ivec(i))];
+    }
+
+    MIST_HD const T& operator[](int i) const requires (S == 1) {
+        return _data[ndoffset(_space, ivec(i))];
     }
 };
 
@@ -537,6 +564,98 @@ auto cache(const A& a, memory loc, exec e) {
 }
 
 // =============================================================================
+// copy: Copy between owned cached arrays with automatic reallocation
+// =============================================================================
+
+// Copy from cached_t to cached_t (reallocates dst if needed)
+template<typename T, std::size_t S>
+void copy(cached_t<T, S>& dst, const cached_t<T, S>& src) {
+    // Check if we need to reallocate
+    bool need_realloc = (dst._space != src._space) || (dst._location != src._location);
+
+    if (need_realloc) {
+        // Free existing memory
+        if (dst._data) {
+            if (dst._location == memory::host) {
+                delete[] dst._data;
+            } else {
+                #ifdef __CUDACC__
+                cudaFree(dst._data);
+                #endif
+            }
+        }
+
+        // Allocate new memory
+        dst._space = src._space;
+        dst._location = src._location;
+        std::size_t n = size(dst._space);
+
+        switch (dst._location) {
+            case memory::host:
+                dst._data = new T[n]();
+                break;
+            case memory::device:
+                #ifdef __CUDACC__
+                cudaMalloc(&dst._data, n * sizeof(T));
+                #endif
+                break;
+            case memory::managed:
+                #ifdef __CUDACC__
+                cudaMallocManaged(&dst._data, n * sizeof(T));
+                #endif
+                break;
+        }
+    }
+
+    // Copy data
+    detail::memcpy_any(dst._data, src._data, size(dst._space), dst._location, src._location);
+}
+
+// Copy from cached_vec_t to cached_vec_t (reallocates dst if needed)
+template<typename T, std::size_t N, std::size_t S, layout L>
+void copy(cached_vec_t<T, N, S, L>& dst, const cached_vec_t<T, N, S, L>& src) {
+    // Check if we need to reallocate
+    bool need_realloc = (dst._space != src._space) || (dst._location != src._location);
+
+    if (need_realloc) {
+        // Free existing memory
+        if (dst._data) {
+            if (dst._location == memory::host) {
+                delete[] dst._data;
+            } else {
+                #ifdef __CUDACC__
+                cudaFree(dst._data);
+                #endif
+            }
+        }
+
+        // Allocate new memory
+        dst._space = src._space;
+        dst._location = src._location;
+        std::size_t n = size(dst._space) * N;
+
+        switch (dst._location) {
+            case memory::host:
+                dst._data = new T[n]();
+                break;
+            case memory::device:
+                #ifdef __CUDACC__
+                cudaMalloc(&dst._data, n * sizeof(T));
+                #endif
+                break;
+            case memory::managed:
+                #ifdef __CUDACC__
+                cudaMallocManaged(&dst._data, n * sizeof(T));
+                #endif
+                break;
+        }
+    }
+
+    // Copy data
+    detail::memcpy_any(dst._data, src._data, size(dst._space) * N, dst._location, src._location);
+}
+
+// =============================================================================
 // safe_at: Host/device transparent access with proxy
 // =============================================================================
 
@@ -679,6 +798,65 @@ auto coords(const index_space_t<S>& space, const dvec_t<S>& origin, const dvec_t
         }
         return result;
     });
+}
+
+// =============================================================================
+// Reduction operations
+// =============================================================================
+
+// min: minimum value in an array
+template<NdArray A>
+    requires std::is_arithmetic_v<typename A::value_type>
+auto min(const A& array, exec e = exec::cpu) -> typename A::value_type {
+    using T = typename A::value_type;
+    constexpr auto S = A::rank;
+    const auto sp = space(array);
+
+    if (size(sp) == 0) {
+        throw std::runtime_error("min: empty array");
+    }
+
+    const auto first_value = array(start(sp));
+    return map_reduce(sp, first_value,
+        [&array] MIST_HD (ivec_t<S> idx) { return array(idx); },
+        [] MIST_HD (T a, T b) { return a < b ? a : b; },
+        e
+    );
+}
+
+// max: maximum value in an array
+template<NdArray A>
+    requires std::is_arithmetic_v<typename A::value_type>
+auto max(const A& array, exec e = exec::cpu) -> typename A::value_type {
+    using T = typename A::value_type;
+    constexpr auto S = A::rank;
+    const auto sp = space(array);
+
+    if (size(sp) == 0) {
+        throw std::runtime_error("max: empty array");
+    }
+
+    const auto first_value = array(start(sp));
+    return map_reduce(sp, first_value,
+        [&array] MIST_HD (ivec_t<S> idx) { return array(idx); },
+        [] MIST_HD (T a, T b) { return a > b ? a : b; },
+        e
+    );
+}
+
+// sum: sum of all values in an array
+template<NdArray A>
+    requires std::is_arithmetic_v<typename A::value_type>
+auto sum(const A& array, exec e = exec::cpu) -> typename A::value_type {
+    using T = typename A::value_type;
+    constexpr auto S = A::rank;
+    const auto sp = space(array);
+
+    return map_reduce(sp, T{0},
+        [&array] MIST_HD (ivec_t<S> idx) { return array(idx); },
+        [] MIST_HD (T a, T b) { return a + b; },
+        e
+    );
 }
 
 } // namespace mist

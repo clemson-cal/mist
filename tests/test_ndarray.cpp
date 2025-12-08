@@ -517,6 +517,65 @@ void test_coords() {
 }
 
 // =============================================================================
+// copy tests
+// =============================================================================
+
+void test_copy_cached_to_cached() {
+    std::cout << "Testing copy cached_t to cached_t... ";
+
+    auto space = index_space(ivec(0, 0), uvec(10, 10));
+    cached_t<double, 2> src(space, memory::host);
+    cached_t<double, 2> dst(space, memory::host);
+
+    // Fill source with values
+    for (auto idx : space) {
+        src(idx) = idx[0] * 10 + idx[1];
+    }
+
+    // Copy
+    copy(dst, src);
+
+    // Verify
+    for (auto idx : space) {
+        assert(approx_equal(dst(idx), src(idx)));
+    }
+
+    // Modify source and verify dst is unchanged
+    src(ivec(5, 5)) = 999.0;
+    assert(approx_equal(dst(ivec(5, 5)), 55.0));
+
+    std::cout << "PASSED\n";
+}
+
+void test_copy_with_reallocation() {
+    std::cout << "Testing copy with reallocation... ";
+
+    auto space1 = index_space(ivec(0, 0), uvec(10, 10));
+    auto space2 = index_space(ivec(0, 0), uvec(5, 5));
+
+    cached_t<double, 2> src(space1, memory::host);
+    cached_t<double, 2> dst(space2, memory::host);
+
+    // Fill source with values
+    for (auto idx : space1) {
+        src(idx) = idx[0] * 10 + idx[1];
+    }
+
+    // Copy should reallocate dst to match src's space
+    copy(dst, src);
+
+    // Verify dst now has the same space as src
+    assert(space(dst) == space1);
+
+    // Verify contents
+    for (auto idx : space1) {
+        assert(approx_equal(dst(idx), src(idx)));
+    }
+
+    std::cout << "PASSED\n";
+}
+
+// =============================================================================
 // safe_at tests
 // =============================================================================
 
@@ -637,6 +696,10 @@ int main() {
     test_range();
     test_linspace();
     test_coords();
+
+    std::cout << "\n--- copy ---\n";
+    test_copy_cached_to_cached();
+    test_copy_with_reallocation();
 
     std::cout << "\n--- safe_at ---\n";
     test_safe_at_host();

@@ -11,6 +11,8 @@
 - C++20 with concepts, `std::same_as`, `std::type_identity`
 - Prefer concepts over SFINAE for template constraints
 - Use `auto` for return types when the type is clear from context
+- Prefer `auto function() -> return_type` instead of `return_type function()`
+- Use `auto var = type()` instead of `type var`
 
 ### Formatting
 - 4-space indentation

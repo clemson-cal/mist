@@ -321,6 +321,120 @@ MIST_HD constexpr bool contains(const index_space_t<S>& space, const ivec_t<S>& 
     return true;
 }
 
+template<std::size_t S>
+constexpr bool contains(const index_space_t<S>& space, const index_space_t<S>& other) {
+    if (size(other) == 0) {
+        return true;
+    }
+    ivec_t<S> other_front = other._start;
+    ivec_t<S> other_back = other._start + map(other._shape, [](unsigned int v) { return static_cast<int>(v) - 1; });
+    return contains(space, other_front) && contains(space, other_back);
+}
+
+template<std::size_t S>
+constexpr index_space_t<S> subspace(const index_space_t<S>& space, unsigned int num_partitions, unsigned int which_partition, unsigned int axis) {
+    auto large_partition_size = space._shape._data[axis] / num_partitions + 1;
+    auto small_partition_size = space._shape._data[axis] / num_partitions;
+    auto num_large_partitions = space._shape._data[axis] % num_partitions;
+    auto n_large = which_partition < num_large_partitions ? which_partition : num_large_partitions;
+    auto n_small = which_partition > n_large ? which_partition - n_large : 0;
+    auto i0 = n_large * large_partition_size + n_small * small_partition_size;
+    auto di = which_partition < num_large_partitions ? large_partition_size : small_partition_size;
+
+    auto result = space;
+    result._start._data[axis] = static_cast<int>(i0) + space._start._data[axis];
+    result._shape._data[axis] = di;
+    return result;
+}
+
+template<std::size_t S>
+constexpr index_space_t<S> subspace(const index_space_t<S>& space, const uvec_t<S>& shape, const uvec_t<S>& coords) {
+    auto result = space;
+    for (std::size_t axis = 0; axis < S; ++axis) {
+        result = subspace(result, shape._data[axis], coords._data[axis], axis);
+    }
+    return result;
+}
+
+template<std::size_t S>
+constexpr index_space_t<S> shift(const index_space_t<S>& space, int amount, unsigned int axis) {
+    auto result = space;
+    result._start._data[axis] += amount;
+    return result;
+}
+
+template<std::size_t S>
+constexpr index_space_t<S> nudge(const index_space_t<S>& space, const ivec_t<S>& lower, const ivec_t<S>& upper) {
+    auto result = space;
+    for (std::size_t axis = 0; axis < S; ++axis) {
+        result._start._data[axis] += lower._data[axis];
+        result._shape._data[axis] += static_cast<unsigned int>(upper._data[axis] - lower._data[axis]);
+    }
+    return result;
+}
+
+template<std::size_t S>
+constexpr index_space_t<S> contract(const index_space_t<S>& space, const uvec_t<S>& count) {
+    ivec_t<S> lower{};
+    ivec_t<S> upper{};
+    for (std::size_t i = 0; i < S; ++i) {
+        lower._data[i] = +static_cast<int>(count._data[i]);
+        upper._data[i] = -static_cast<int>(count._data[i]);
+    }
+    return nudge(space, lower, upper);
+}
+
+template<std::size_t S>
+constexpr index_space_t<S> contract(const index_space_t<S>& space, unsigned int count) {
+    uvec_t<S> count_vec{};
+    for (std::size_t i = 0; i < S; ++i) {
+        count_vec._data[i] = count;
+    }
+    return contract(space, count_vec);
+}
+
+template<std::size_t S>
+constexpr index_space_t<S> expand(const index_space_t<S>& space, const uvec_t<S>& count) {
+    ivec_t<S> lower{};
+    ivec_t<S> upper{};
+    for (std::size_t i = 0; i < S; ++i) {
+        lower._data[i] = -static_cast<int>(count._data[i]);
+        upper._data[i] = +static_cast<int>(count._data[i]);
+    }
+    return nudge(space, lower, upper);
+}
+
+template<std::size_t S>
+constexpr index_space_t<S> expand(const index_space_t<S>& space, unsigned int count) {
+    uvec_t<S> count_vec{};
+    for (std::size_t i = 0; i < S; ++i) {
+        count_vec._data[i] = count;
+    }
+    return expand(space, count_vec);
+}
+
+template<std::size_t S>
+constexpr index_space_t<S> translate(const index_space_t<S>& space, const ivec_t<S>& new_start) {
+    auto result = space;
+    result._start = new_start;
+    return result;
+}
+
+template<std::size_t S>
+constexpr index_space_t<S> upper(const index_space_t<S>& space, unsigned int amount, unsigned int axis) {
+    auto result = space;
+    result._start._data[axis] = space._start._data[axis] + static_cast<int>(space._shape._data[axis]) - static_cast<int>(amount);
+    result._shape._data[axis] = amount;
+    return result;
+}
+
+template<std::size_t S>
+constexpr index_space_t<S> lower(const index_space_t<S>& space, unsigned int amount, unsigned int axis) {
+    auto result = space;
+    result._shape._data[axis] = amount;
+    return result;
+}
+
 // =============================================================================
 // Multi-dimensional indexing
 // =============================================================================

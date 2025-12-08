@@ -270,7 +270,7 @@ class AsciiReader:
         return result
 
     def _read_group_contents(self) -> Union[dict, list]:
-        """Read contents of a group (may be dict or list of anonymous groups)."""
+        """Read contents of a group (may be dict, list of anonymous groups, or list of strings)."""
         self._skip_whitespace_and_comments()
 
         # Check if this is a list of anonymous groups
@@ -288,6 +288,21 @@ class AsciiReader:
                 else:
                     raise ParseError(
                         "Expected '{' or '}'", self._line_num, self._context
+                    )
+
+        # Check if this is a list of bare quoted strings (std::vector<std::string>)
+        if self._peek() == '"':
+            items = []
+            while True:
+                self._skip_whitespace_and_comments()
+                if self._peek() == "}":
+                    self._get()
+                    return items
+                if self._peek() == '"':
+                    items.append(self._read_quoted_string())
+                else:
+                    raise ParseError(
+                        "Expected '\"' or '}'", self._line_num, self._context
                     )
 
         # Named fields -> return dict
@@ -383,18 +398,33 @@ class AsciiWriter:
             self._indent_level -= 1
             self._file.write(f"{self._indent()}}}\n")
         elif isinstance(value, list):
-            # List of compound objects (anonymous groups)
-            self._file.write(f"{self._indent()}{name} {{\n")
-            self._indent_level += 1
-            for item in value:
-                self._file.write(f"{self._indent()}{{\n")
+            if len(value) == 0:
+                # Empty list
+                self._file.write(f"{self._indent()}{name} {{\n")
+                self._file.write(f"{self._indent()}}}\n")
+            elif isinstance(value[0], str):
+                # List of strings (bare quoted strings in a group)
+                self._file.write(f"{self._indent()}{name} {{\n")
                 self._indent_level += 1
-                for k, v in item.items():
-                    self._write_field(k, v)
+                for item in value:
+                    self._file.write(f"{self._indent()}{self._format_string(item)}\n")
                 self._indent_level -= 1
                 self._file.write(f"{self._indent()}}}\n")
-            self._indent_level -= 1
-            self._file.write(f"{self._indent()}}}\n")
+            elif isinstance(value[0], dict):
+                # List of compound objects (anonymous groups)
+                self._file.write(f"{self._indent()}{name} {{\n")
+                self._indent_level += 1
+                for item in value:
+                    self._file.write(f"{self._indent()}{{\n")
+                    self._indent_level += 1
+                    for k, v in item.items():
+                        self._write_field(k, v)
+                    self._indent_level -= 1
+                    self._file.write(f"{self._indent()}}}\n")
+                self._indent_level -= 1
+                self._file.write(f"{self._indent()}}}\n")
+            else:
+                raise TypeError(f"Unsupported list item type: {type(value[0])}")
         elif isinstance(value, np.ndarray):
             self._file.write(f"{self._indent()}{name} = {self._format_array(value)}\n")
         elif isinstance(value, str):
@@ -563,13 +593,27 @@ class BinaryReader:
             item_count = self._read_uint64()
             if item_count == 0:
                 return name, []
-            # Read first item with full schema
-            items = [self._read_list_item_with_schema()]
-            # Read remaining items without schema (just values)
-            schema = self._extract_schema(items[0])
-            for _ in range(item_count - 1):
-                items.append(self._read_list_item_without_schema(schema))
-            return name, items
+            # Peek at the first type tag to determine list content type
+            first_type_tag = self._read_uint8()
+
+            if first_type_tag == TYPE_STRING:
+                # List of strings - each item is just a string value
+                items = [self._read_string_value()]
+                for _ in range(item_count - 1):
+                    # Subsequent strings also have TYPE_STRING tag
+                    self._read_uint8()  # TYPE_STRING
+                    items.append(self._read_string_value())
+                return name, items
+            else:
+                # List of compound objects - first type tag is start of first item's first field
+                # Put the type tag back conceptually by handling in _read_list_item_with_schema
+                self._file.seek(self._file.tell() - 1)  # rewind 1 byte
+                items = [self._read_list_item_with_schema()]
+                # Read remaining items without schema (just values)
+                schema = self._extract_schema(items[0])
+                for _ in range(item_count - 1):
+                    items.append(self._read_list_item_without_schema(schema))
+                return name, items
         else:
             raise ParseError(f"Unknown type tag: {type_tag}")
 
@@ -797,27 +841,42 @@ class BinaryWriter:
             self._file.seek(end_pos)
 
         elif isinstance(value, list):
-            # List of compound objects
             self._write_name(name)
             self._write_type_tag(TYPE_LIST)
             pos = self._file.tell()
             self._write_uint64(0)  # Placeholder for count
-            self._list_item_indices.append(0)
 
-            for i, item in enumerate(value):
-                self._list_item_indices[-1] = i + 1
-                is_first = (i == 0)
-                if not is_first:
-                    self._in_anonymous_group += 1
+            if len(value) == 0:
+                # Empty list - just backfill count = 0
+                pass
+            elif isinstance(value[0], str):
+                # List of strings - each item is TYPE_STRING + length + data
+                for item in value:
+                    self._file.write(struct.pack("<B", TYPE_STRING))
+                    encoded = item.encode("utf-8")
+                    self._write_uint64(len(encoded))
+                    self._file.write(encoded)
+            elif isinstance(value[0], dict):
+                # List of compound objects
+                self._list_item_indices.append(0)
 
-                # Write item fields
-                for k, v in item.items():
-                    self._write_field(k, v)
+                for i, item in enumerate(value):
+                    self._list_item_indices[-1] = i + 1
+                    is_first = (i == 0)
+                    if not is_first:
+                        self._in_anonymous_group += 1
 
-                if not is_first:
-                    self._in_anonymous_group -= 1
+                    # Write item fields
+                    for k, v in item.items():
+                        self._write_field(k, v)
 
-            self._list_item_indices.pop()
+                    if not is_first:
+                        self._in_anonymous_group -= 1
+
+                self._list_item_indices.pop()
+            else:
+                raise TypeError(f"Unsupported list item type: {type(value[0])}")
+
             # Backfill count
             end_pos = self._file.tell()
             self._file.seek(pos)

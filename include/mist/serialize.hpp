@@ -1,6 +1,7 @@
 #pragma once
 
 #include <concepts>
+#include <map>
 #include <string>
 #include <tuple>
 #include <type_traits>
@@ -110,6 +111,18 @@ concept ArchiveReader = requires(A& ar, const char* name, int& i, double& d) {
     { ar.begin_group() } -> std::same_as<void>;
     { ar.end_group() } -> std::same_as<void>;
     { ar.count_groups(name) } -> std::same_as<std::size_t>;
+    { ar.count_fields(name, name) } -> std::same_as<std::size_t>;
+};
+
+// Concepts for anonymous serialization (used in lists)
+template<typename A, typename T>
+concept HasAnonymousSerialize = requires(A& ar, const T& value) {
+    { serialize_anonymous(ar, value) } -> std::same_as<void>;
+};
+
+template<typename A, typename T>
+concept HasAnonymousDeserialize = requires(A& ar, T& value) {
+    { deserialize_anonymous(ar, value) } -> std::same_as<void>;
 };
 
 // =============================================================================
@@ -141,6 +154,9 @@ void serialize(A& ar, const char* name, const std::vector<T>& value);
 template<ArchiveWriter A, typename T>
     requires HasConstFields<T>
 void serialize(A& ar, const char* name, const T& value);
+
+template<ArchiveWriter A, typename T>
+void serialize(A& ar, const char* name, const std::optional<T>& value);
 
 template<ArchiveWriter A, typename T, std::size_t S>
 void serialize(A& ar, const char* name, const cached_t<T, S>& value);
@@ -175,6 +191,9 @@ template<ArchiveReader A, typename T>
     requires HasFields<T>
 void deserialize(A& ar, const char* name, T& value);
 
+template<ArchiveReader A, typename T>
+void deserialize(A& ar, const char* name, std::optional<T>& value);
+
 template<ArchiveReader A, typename T, std::size_t S>
 void deserialize(A& ar, const char* name, cached_t<T, S>& value);
 
@@ -202,6 +221,24 @@ void serialize(A& ar, const char* name, const E& value) {
     ar.write_string(name, to_string(value));
 }
 
+// std::pair<T1, T2> - named version
+template<ArchiveWriter A, typename T1, typename T2>
+void serialize(A& ar, const char* name, const std::pair<T1, T2>& value) {
+    ar.begin_group(name);
+    serialize(ar, "first", value.first);
+    serialize(ar, "second", value.second);
+    ar.end_group();
+}
+
+// std::pair<T1, T2> - anonymous version for use in lists
+template<ArchiveWriter A, typename T1, typename T2>
+void serialize_anonymous(A& ar, const std::pair<T1, T2>& value) {
+    ar.begin_group();
+    serialize(ar, "first", value.first);
+    serialize(ar, "second", value.second);
+    ar.end_group();
+}
+
 // vec_t<T, N>
 template<ArchiveWriter A, typename T, std::size_t N>
 void serialize(A& ar, const char* name, const vec_t<T, N>& value) {
@@ -213,6 +250,39 @@ template<ArchiveWriter A, typename T>
     requires std::is_arithmetic_v<T>
 void serialize(A& ar, const char* name, const std::vector<T>& value) {
     ar.write_array(name, value);
+}
+
+// std::vector<std::string>
+template<ArchiveWriter A>
+void serialize(A& ar, const char* name, const std::vector<std::string>& value) {
+    ar.begin_list(name);
+    for (const auto& elem : value) {
+        ar.write_string(elem);
+    }
+    ar.end_list();
+}
+
+// std::vector<std::pair<T1, T2>> - uses anonymous groups
+template<ArchiveWriter A, typename T1, typename T2>
+void serialize(A& ar, const char* name, const std::vector<std::pair<T1, T2>>& value) {
+    ar.begin_list(name);
+    for (const auto& elem : value) {
+        serialize_anonymous(ar, elem);
+    }
+    ar.end_list();
+}
+
+// std::map<std::string, T>
+template<ArchiveWriter A, typename T>
+void serialize(A& ar, const char* name, const std::map<std::string, T>& value) {
+    ar.begin_list(name);
+    for (const auto& [key, val] : value) {
+        ar.begin_group();
+        serialize(ar, "key", key);
+        serialize(ar, "value", val);
+        ar.end_group();
+    }
+    ar.end_list();
 }
 
 // std::vector<T> where T is a compound type
@@ -241,7 +311,19 @@ void serialize(A& ar, const char* name, const T& value) {
     ar.end_group();
 }
 
-// cached_t<T, S> (ndarray)
+// std::optional<T>
+template<ArchiveWriter A, typename T>
+void serialize(A& ar, const char* name, const std::optional<T>& value) {
+    ar.begin_group(name);
+    bool has_value = value.has_value();
+    serialize(ar, "has_value", has_value);
+    if (has_value) {
+        serialize(ar, "value", *value);
+    }
+    ar.end_group();
+}
+
+// cached_t<T, S> (ndarray) - named version
 template<ArchiveWriter A, typename T, std::size_t S>
 void serialize(A& ar, const char* name, const cached_t<T, S>& arr) {
     static_assert(std::is_arithmetic_v<T>, "cached_t serialization requires arithmetic element type");
@@ -253,6 +335,31 @@ void serialize(A& ar, const char* name, const cached_t<T, S>& arr) {
     serialize(ar, "shape", shape(arr));
     ar.write_data("data", data(arr), size(arr));
     ar.end_group();
+}
+
+// cached_t<T, S> (ndarray) - anonymous version for use in lists
+template<ArchiveWriter A, typename T, std::size_t S>
+void serialize_anonymous(A& ar, const cached_t<T, S>& arr) {
+    static_assert(std::is_arithmetic_v<T>, "cached_t serialization requires arithmetic element type");
+    if (location(arr) != memory::host) {
+        throw std::runtime_error("cached_t serialization requires host memory");
+    }
+    ar.begin_group();
+    serialize(ar, "start", start(arr));
+    serialize(ar, "shape", shape(arr));
+    ar.write_data("data", data(arr), size(arr));
+    ar.end_group();
+}
+
+// std::vector<T> where T has anonymous serialization
+template<ArchiveWriter A, typename T>
+    requires HasAnonymousSerialize<A, T>
+void serialize(A& ar, const char* name, const std::vector<T>& value) {
+    ar.begin_list(name);
+    for (const auto& elem : value) {
+        serialize_anonymous(ar, elem);
+    }
+    ar.end_list();
 }
 
 // =============================================================================
@@ -281,6 +388,15 @@ void deserialize(A& ar, const char* name, E& value) {
     value = from_string(std::type_identity<E>{}, str);
 }
 
+// std::pair<T1, T2>
+template<ArchiveReader A, typename T1, typename T2>
+void deserialize(A& ar, const char* name, std::pair<T1, T2>& value) {
+    ar.begin_group(name);
+    deserialize(ar, "first", value.first);
+    deserialize(ar, "second", value.second);
+    ar.end_group();
+}
+
 // vec_t<T, N>
 template<ArchiveReader A, typename T, std::size_t N>
 void deserialize(A& ar, const char* name, vec_t<T, N>& value) {
@@ -292,6 +408,51 @@ template<ArchiveReader A, typename T>
     requires std::is_arithmetic_v<T>
 void deserialize(A& ar, const char* name, std::vector<T>& value) {
     ar.read_array(name, value);
+}
+
+// std::vector<std::string>
+template<ArchiveReader A>
+void deserialize(A& ar, const char* name, std::vector<std::string>& value) {
+    std::size_t count = ar.count_strings(name);
+    ar.begin_list(name);
+    value.resize(count);
+    for (auto& elem : value) {
+        ar.read_string(elem);
+    }
+    ar.end_list();
+}
+
+// std::vector<std::pair<T1, T2>>
+template<ArchiveReader A, typename T1, typename T2>
+void deserialize(A& ar, const char* name, std::vector<std::pair<T1, T2>>& value) {
+    std::size_t count = ar.count_groups(name);
+    ar.begin_list(name);
+    value.resize(count);
+    for (auto& elem : value) {
+        ar.begin_group();
+        deserialize(ar, "first", elem.first);
+        deserialize(ar, "second", elem.second);
+        ar.end_group();
+    }
+    ar.end_list();
+}
+
+// std::map<std::string, T>
+template<ArchiveReader A, typename T>
+void deserialize(A& ar, const char* name, std::map<std::string, T>& value) {
+    std::size_t count = ar.count_groups(name);
+    ar.begin_list(name);
+    value.clear();
+    for (std::size_t i = 0; i < count; ++i) {
+        ar.begin_group();
+        std::string key;
+        T val;
+        deserialize(ar, "key", key);
+        deserialize(ar, "value", val);
+        value[key] = std::move(val);
+        ar.end_group();
+    }
+    ar.end_list();
 }
 
 // std::vector<T> where T is a compound type
@@ -322,7 +483,23 @@ void deserialize(A& ar, const char* name, T& value) {
     ar.end_group();
 }
 
-// cached_t<T, S> (ndarray)
+// std::optional<T>
+template<ArchiveReader A, typename T>
+void deserialize(A& ar, const char* name, std::optional<T>& value) {
+    ar.begin_group(name);
+    bool has_value = false;
+    deserialize(ar, "has_value", has_value);
+    if (has_value) {
+        T temp;
+        deserialize(ar, "value", temp);
+        value = std::move(temp);
+    } else {
+        value = std::nullopt;
+    }
+    ar.end_group();
+}
+
+// cached_t<T, S> (ndarray) - named version
 template<ArchiveReader A, typename T, std::size_t S>
 void deserialize(A& ar, const char* name, cached_t<T, S>& arr) {
     static_assert(std::is_arithmetic_v<T>, "cached_t deserialization requires arithmetic element type");
@@ -334,6 +511,36 @@ void deserialize(A& ar, const char* name, cached_t<T, S>& arr) {
     arr = cached_t<T, S>(index_space(st, sh), memory::host);
     ar.read_data("data", data(arr), size(arr));
     ar.end_group();
+}
+
+// cached_t<T, S> (ndarray) - anonymous version for use in lists
+template<ArchiveReader A, typename T, std::size_t S>
+void deserialize_anonymous(A& ar, cached_t<T, S>& arr) {
+    static_assert(std::is_arithmetic_v<T>, "cached_t deserialization requires arithmetic element type");
+    ar.begin_group();
+    ivec_t<S> st;
+    uvec_t<S> sh;
+    deserialize(ar, "start", st);
+    deserialize(ar, "shape", sh);
+    arr = cached_t<T, S>(index_space(st, sh), memory::host);
+    ar.read_data("data", data(arr), size(arr));
+    ar.end_group();
+}
+
+// std::vector<T> where T has anonymous deserialization
+template<ArchiveReader A, typename T>
+    requires HasAnonymousDeserialize<A, T>
+void deserialize(A& ar, const char* name, std::vector<T>& value) {
+    std::size_t count = ar.count_groups(name);
+    ar.begin_list(name);
+    value.clear();
+    value.reserve(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        T elem;
+        deserialize_anonymous(ar, elem);
+        value.push_back(std::move(elem));
+    }
+    ar.end_list();
 }
 
 // =============================================================================

@@ -113,7 +113,21 @@ public:
         ensure_header();
         write_name(name);
         write_type_tag(binary_format::TYPE_STRING);
-        
+
+        uint64_t length = value.size();
+        write_raw(length);
+        if (length > 0) {
+            os_.write(value.data(), static_cast<std::streamsize>(length));
+        }
+    }
+
+    void write_string(const std::string& value) {
+        // Increment field count for parent list
+        if (!field_counts_.empty()) {
+            field_counts_.back()++;
+        }
+        write_type_tag(binary_format::TYPE_STRING);
+
         uint64_t length = value.size();
         write_raw(length);
         if (length > 0) {

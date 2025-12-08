@@ -547,6 +547,95 @@ void test_binary_empty_vector() {
     std::cout << "PASSED\n";
 }
 
+void test_vector_string_serialization() {
+    std::cout << "Testing std::vector<std::string> serialization... ";
+
+    std::vector<std::string> original = {"default", "primitive", "conserved"};
+
+    std::stringstream ss;
+    ascii_writer writer(ss);
+    serialize(writer, "products", original);
+
+    std::string output = ss.str();
+    std::cout << "\n--- Serialized vector<string> ---\n";
+    std::cout << output;
+    std::cout << "--- End Output ---\n";
+
+    ss.seekg(0);
+    ascii_reader reader(ss);
+
+    std::vector<std::string> loaded;
+    deserialize(reader, "products", loaded);
+
+    assert(original.size() == loaded.size());
+    for (std::size_t i = 0; i < original.size(); ++i) {
+        assert(original[i] == loaded[i]);
+    }
+
+    std::cout << "PASSED\n";
+}
+
+void test_empty_vector_string_serialization() {
+    std::cout << "Testing empty std::vector<std::string> serialization... ";
+
+    std::vector<std::string> original;
+
+    std::stringstream ss;
+    ascii_writer writer(ss);
+    serialize(writer, "products", original);
+
+    ss.seekg(0);
+    ascii_reader reader(ss);
+
+    std::vector<std::string> loaded;
+    loaded.push_back("should_be_cleared");  // Pre-fill to ensure it gets cleared
+    deserialize(reader, "products", loaded);
+
+    assert(loaded.empty());
+
+    std::cout << "PASSED\n";
+}
+
+void test_nested_vector_string_serialization() {
+    std::cout << "Testing nested std::vector<std::string> serialization... ";
+
+    struct nested_t {
+        std::vector<std::string> selected_products;
+
+        auto fields() const {
+            return std::make_tuple(field("selected_products", selected_products));
+        }
+
+        auto fields() {
+            return std::make_tuple(field("selected_products", selected_products));
+        }
+    };
+
+    nested_t original;
+    original.selected_products = {"default", "primitive"};
+
+    std::stringstream ss;
+    ascii_writer writer(ss);
+    serialize(writer, "nested", original);
+
+    std::cout << "\n--- Serialized nested vector<string> ---\n";
+    std::cout << ss.str();
+    std::cout << "--- End Output ---\n";
+
+    ss.seekg(0);
+    ascii_reader reader(ss);
+
+    nested_t loaded;
+    deserialize(reader, "nested", loaded);
+
+    assert(original.selected_products.size() == loaded.selected_products.size());
+    for (std::size_t i = 0; i < original.selected_products.size(); ++i) {
+        assert(original.selected_products[i] == loaded.selected_products[i]);
+    }
+
+    std::cout << "PASSED\n";
+}
+
 void test_binary_file_output() {
     std::cout << "Testing binary file output (1000 doubles)... ";
 
@@ -781,6 +870,9 @@ int main() {
     test_binary_full_simulation_state();
     test_binary_vs_ascii_size();
     test_binary_empty_vector();
+    test_vector_string_serialization();
+    test_empty_vector_string_serialization();
+    test_nested_vector_string_serialization();
     test_binary_file_output();
 
     std::cout << "\n=== NdArray Serialization Tests ===\n\n";

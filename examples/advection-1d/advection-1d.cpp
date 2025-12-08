@@ -1,12 +1,13 @@
-#include <iostream>
-#include <fstream>
-#include <vector>
 #include <cmath>
-#include "mist/core.hpp"
-#include "mist/serialize.hpp"
+#include <fstream>
+#include <iostream>
 #include "mist/ascii_reader.hpp"
 #include "mist/ascii_writer.hpp"
+#include "mist/core.hpp"
 #include "mist/driver.hpp"
+#include "mist/ndarray.hpp"
+#include "mist/runge_kutta.hpp"
+#include "mist/serialize.hpp"
 
 using namespace mist;
 
@@ -18,32 +19,60 @@ struct advection_1d {
 
     // Configuration: runtime parameters
     struct config_t {
-        unsigned int num_zones = 100;
-        double domain_length = 1.0;
+        int rk_order = 2;
+        double cfl = 0.4;
         double advection_velocity = 1.0;
 
         auto fields() const {
             return std::make_tuple(
-                field("num_zones", num_zones),
-                field("domain_length", domain_length),
+                field("rk_order", rk_order),
+                field("cfl", cfl),
                 field("advection_velocity", advection_velocity)
             );
         }
 
         auto fields() {
             return std::make_tuple(
-                field("num_zones", num_zones),
-                field("domain_length", domain_length),
+                field("rk_order", rk_order),
+                field("cfl", cfl),
                 field("advection_velocity", advection_velocity)
             );
         }
     };
 
-    // State: conservative variables + metadata
+    // Initial data parameters
+    struct initial_t {
+        unsigned int num_zones = 200;
+        double domain_length = 1.0;
+
+        auto fields() const {
+            return std::make_tuple(
+                field("num_zones", num_zones),
+                field("domain_length", domain_length)
+            );
+        }
+
+        auto fields() {
+            return std::make_tuple(
+                field("num_zones", num_zones),
+                field("domain_length", domain_length)
+            );
+        }
+    };
+
+    // State: conservative variables + time only
     struct state_t {
-        std::vector<double> conserved;
+        cached_t<double, 1> conserved;
         double time;
-        index_space_t<1> grid;
+
+        state_t()
+            : conserved(index_space(ivec(0), uvec(1))), time(0.0) {}
+
+        state_t(cached_t<double, 1>&& c, double t)
+            : conserved(std::move(c)), time(t) {}
+
+        state_t(state_t&&) = default;
+        state_t& operator=(state_t&&) = default;
 
         auto fields() const {
             return std::make_tuple(
@@ -60,169 +89,218 @@ struct advection_1d {
         }
     };
 
-    // Product: derived quantities
-    struct product_t {
-        std::vector<double> primitive;
-        double total_mass;
-        double min_value;
-        double max_value;
+    // Product: vector of 1D ndarrays (single partition for non-decomposed solver)
+    using product_t = std::vector<cached_t<double, 1>>;
 
-        auto fields() const {
-            return std::make_tuple(
-                field("primitive", primitive),
-                field("total_mass", total_mass),
-                field("min_value", min_value),
-                field("max_value", max_value)
-            );
-        }
+    // Execution context: references to config/initial + resources
+    struct exec_context_t {
+        const config_t& config;
+        const initial_t& initial;
+        mutable state_t rk_temp;
 
-        auto fields() {
-            return std::make_tuple(
-                field("primitive", primitive),
-                field("total_mass", total_mass),
-                field("min_value", min_value),
-                field("max_value", max_value)
-            );
-        }
+        exec_context_t(const config_t& cfg, const initial_t& ini)
+            : config(cfg), initial(ini), rk_temp() {}
     };
 };
 
-// Initial state: sine wave
-auto initial_state(const advection_1d::config_t& cfg) -> advection_1d::state_t {
-    auto grid = index_space(ivec(0), uvec(cfg.num_zones));
-    std::vector<double> u(cfg.num_zones);
-    double dx = cfg.domain_length / cfg.num_zones;
-
-    for (unsigned int i = 0; i < cfg.num_zones; ++i) {
-        double x = (i + 0.5) * dx;
-        u[i] = std::sin(2.0 * M_PI * x / cfg.domain_length);
-    }
-
-    return {u, 0.0, grid};
+// Default physics configuration
+auto default_physics_config(std::type_identity<advection_1d>) -> advection_1d::config_t {
+    return {2, 0.4, 1.0};
 }
 
-// Forward Euler step
-auto euler_step(
-    const advection_1d::config_t& cfg,
-    const advection_1d::state_t& state,
-    double dt
-) -> advection_1d::state_t {
+// Default initial configuration
+auto default_initial_config(std::type_identity<advection_1d>) -> advection_1d::initial_t {
+    return {200, 1.0};
+}
 
-    auto new_state = state;
-    new_state.time += dt;
+// Initial state: sine wave
+auto initial_state(const advection_1d::exec_context_t& ctx) -> advection_1d::state_t {
+    const auto& ini = ctx.initial;
+    const auto space = index_space(ivec(0), uvec(ini.num_zones));
+    auto u = cached_t<double, 1>(space);
+    const auto dx = ini.domain_length / ini.num_zones;
 
-    double dx = cfg.domain_length / cfg.num_zones;
-    double v = cfg.advection_velocity;
+    for (auto i = 0u; i < ini.num_zones; ++i) {
+        const auto x = (i + 0.5) * dx;
+        u(ivec(i)) = std::sin(2.0 * M_PI * x / ini.domain_length);
+    }
 
-    // First-order upwind scheme
-    for (unsigned int i = 0; i < cfg.num_zones; ++i) {
-        unsigned int im1 = (i == 0) ? cfg.num_zones - 1 : i - 1;
+    return {std::move(u), 0.0};
+}
+
+// Copy state
+void copy(advection_1d::state_t& dest, const advection_1d::state_t& source) {
+    mist::copy(dest.conserved, source.conserved);
+    dest.time = source.time;
+}
+
+// RK step function - called via ADL from runge_kutta.hpp
+void rk_step(
+    advection_1d::state_t& state,
+    const advection_1d::state_t& s_base,
+    double dt,
+    double alpha,
+    const advection_1d::exec_context_t& ctx)
+{
+    const auto n = size(state.conserved);
+    const auto dx = ctx.initial.domain_length / n;
+    const auto v = ctx.config.advection_velocity;
+    const auto space = index_space(ivec(0), uvec(n));
+    auto new_conserved = cached_t<double, 1>(space);
+
+    // First-order upwind scheme with periodic boundaries
+    for (auto i = 0u; i < n; ++i) {
+        const auto im1 = (i == 0) ? n - 1 : i - 1;
 
         if (v > 0) {
-            double flux_left = v * state.conserved[im1];
-            double flux_right = v * state.conserved[i];
-            new_state.conserved[i] = state.conserved[i] - dt / dx * (flux_right - flux_left);
+            const auto flux_left = v * state.conserved(ivec(im1));
+            const auto flux_right = v * state.conserved(ivec(i));
+            new_conserved(ivec(i)) = state.conserved(ivec(i)) - dt / dx * (flux_right - flux_left);
         } else {
-            unsigned int ip1 = (i + 1) % cfg.num_zones;
-            double flux_left = v * state.conserved[i];
-            double flux_right = v * state.conserved[ip1];
-            new_state.conserved[i] = state.conserved[i] - dt / dx * (flux_right - flux_left);
+            const auto ip1 = (i + 1) % n;
+            const auto flux_left = v * state.conserved(ivec(i));
+            const auto flux_right = v * state.conserved(ivec(ip1));
+            new_conserved(ivec(i)) = state.conserved(ivec(i)) - dt / dx * (flux_right - flux_left);
         }
     }
 
-    return new_state;
+    // Blend with base state
+    for (auto i = 0u; i < n; ++i) {
+        state.conserved(ivec(i)) = (1.0 - alpha) * s_base.conserved(ivec(i)) + alpha * new_conserved(ivec(i));
+    }
+
+    state.time = (1.0 - alpha) * s_base.time + alpha * (state.time + dt);
+}
+
+// Advance function: implements RK time-stepping
+void advance(
+    advection_1d::state_t& state,
+    double dt,
+    const advection_1d::exec_context_t& ctx
+) {
+    rk_advance<advection_1d>(ctx.config.rk_order, state, ctx.rk_temp, dt, ctx);
 }
 
 // CFL timestep
 auto courant_time(
-    const advection_1d::config_t& cfg,
-    const advection_1d::state_t& state
+    const advection_1d::state_t& state,
+    const advection_1d::exec_context_t& ctx
 ) -> double {
-    double dx = cfg.domain_length / cfg.num_zones;
-    double v = std::abs(cfg.advection_velocity);
-    return dx / v;
-}
-
-// Weighted average of two states
-auto average(
-    const advection_1d::state_t& s1,
-    const advection_1d::state_t& s2,
-    double alpha
-) -> advection_1d::state_t {
-
-    auto result = s1;
-
-    for (unsigned int i = 0; i < s1.conserved.size(); ++i) {
-        result.conserved[i] = (1.0 - alpha) * s1.conserved[i] + alpha * s2.conserved[i];
-    }
-
-    result.time = (1.0 - alpha) * s1.time + alpha * s2.time;
-    return result;
-}
-
-// Compute diagnostics
-auto get_product(
-    const advection_1d::config_t& cfg,
-    const advection_1d::state_t& state
-) -> advection_1d::product_t {
-
-    double dx = cfg.domain_length / cfg.num_zones;
-    double total_mass = 0.0;
-    double min_val = state.conserved[0];
-    double max_val = state.conserved[0];
-
-    for (const auto& u : state.conserved) {
-        total_mass += u * dx;
-        min_val = std::min(min_val, u);
-        max_val = std::max(max_val, u);
-    }
-
-    return {state.conserved, total_mass, min_val, max_val};
-}
-
-// Get time for scheduling
-auto get_time(const advection_1d::state_t& state, int kind) -> double {
-    if (kind == 0) return state.time;
-    throw std::out_of_range("advection_1d only supports time kind=0");
+    const auto n = size(state.conserved);
+    const auto dx = ctx.initial.domain_length / n;
+    const auto v = std::abs(ctx.config.advection_velocity);
+    return ctx.config.cfl * dx / v;
 }
 
 // Zone count for performance metrics
-auto zone_count(const advection_1d::state_t& state) -> std::size_t {
-    return state.conserved.size();
+auto zone_count(const advection_1d::state_t& state, const advection_1d::exec_context_t& ctx) -> std::size_t {
+    return ctx.initial.num_zones;
 }
 
-// Timeseries samples
-auto timeseries_sample(
-    const advection_1d::config_t& cfg,
-    const advection_1d::state_t& state
-) -> std::vector<std::pair<std::string, double>> {
-
-    auto product = get_product(cfg, state);
-    return {
-        {"time", state.time},
-        {"total_mass", product.total_mass},
-        {"min_value", product.min_value},
-        {"max_value", product.max_value}
-    };
+// Uniform interface: names of time variables
+auto names_of_time(std::type_identity<advection_1d>) -> std::vector<std::string> {
+    return {"t"};
 }
 
-// =============================================================================
-// Main driver
-// =============================================================================
+// Uniform interface: names of timeseries columns
+auto names_of_timeseries(std::type_identity<advection_1d>) -> std::vector<std::string> {
+    return {"time", "total_mass", "min_value", "max_value"};
+}
 
-int main(int argc, const char** argv) {
-    static_assert(Physics<advection_1d>, "advection_1d must satisfy Physics concept");
+// Uniform interface: names of products
+auto names_of_products(std::type_identity<advection_1d>) -> std::vector<std::string> {
+    return {"concentration", "cell_size"};
+}
 
-    std::cout << "=== 1D Linear Advection Demo (Mist Driver) ===\n\n";
-
-    try {
-        auto final_state = run<advection_1d>(argc, argv);
-        std::cout << "\n=== Simulation Complete ===\n";
-        std::cout << "Final time: " << final_state.time << "\n";
-    } catch (const std::exception& e) {
-        std::cerr << "Error: " << e.what() << "\n";
-        return 1;
+// Uniform interface: get time value by name
+auto get_time(
+    const advection_1d::state_t& state,
+    const std::string& name
+) -> double {
+    if (name == "t") {
+        return state.time;
     }
+    throw std::runtime_error("unknown time variable: " + name);
+}
+
+// Uniform interface: get timeseries value by name
+auto get_timeseries(
+    const advection_1d::config_t& cfg,
+    const advection_1d::initial_t& ini,
+    const advection_1d::state_t& state,
+    const std::string& name
+) -> double {
+    if (name == "time") {
+        return state.time;
+    }
+
+    const auto n = size(state.conserved);
+    const auto dx = ini.domain_length / n;
+
+    if (name == "total_mass") {
+        auto total_mass = 0.0;
+        for (auto i = 0u; i < n; ++i) {
+            total_mass += state.conserved(ivec(i)) * dx;
+        }
+        return total_mass;
+    } else if (name == "min_value") {
+        auto min_val = state.conserved(ivec(0));
+        for (auto i = 0u; i < n; ++i) {
+            min_val = std::min(min_val, state.conserved(ivec(i)));
+        }
+        return min_val;
+    } else if (name == "max_value") {
+        auto max_val = state.conserved(ivec(0));
+        for (auto i = 0u; i < n; ++i) {
+            max_val = std::max(max_val, state.conserved(ivec(i)));
+        }
+        return max_val;
+    }
+
+    throw std::runtime_error("unknown timeseries column: " + name);
+}
+
+// Uniform interface: get product by name
+auto get_product(
+    const advection_1d::state_t& state,
+    const std::string& name,
+    const advection_1d::exec_context_t& ctx
+) -> advection_1d::product_t {
+    const auto n = ctx.initial.num_zones;
+    const auto dx = ctx.initial.domain_length / n;
+    const auto s = index_space(ivec(0), uvec(n));
+
+    auto result = advection_1d::product_t{};
+
+    if (name == "concentration") {
+        auto arr = cached_t<double, 1>(s);
+        for (auto i = 0u; i < n; ++i) {
+            arr(ivec(i)) = state.conserved(ivec(i));
+        }
+        result.push_back(std::move(arr));
+        return result;
+    } else if (name == "cell_size") {
+        result.push_back(cache(fill<double>(s, dx), memory::host, exec::cpu));
+        return result;
+    }
+
+    throw std::runtime_error("unknown product: " + name);
+}
+
+// =============================================================================
+// Main
+// =============================================================================
+
+int main(int argc, char** argv)
+{
+    // Create program with default physics and initial configs
+    mist::program_t<advection_1d> prog;
+    prog.physics = default_physics_config(std::type_identity<advection_1d>{});
+    prog.initial = default_initial_config(std::type_identity<advection_1d>{});
+    // Note: physics_state is now optional and must be initialized with 'init' command
+
+    // Run interactive simulation
+    auto final_state = mist::run(prog);
 
     return 0;
 }
