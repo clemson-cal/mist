@@ -219,6 +219,7 @@ struct command_t {
         set_output,       // set output=ascii|binary
         set_physics,      // set physics key1=val1 key2=val2 ...
         set_initial,      // set initial key1=val1 key2=val2 ...
+        set_exec,         // set exec key1=val1 key2=val2 ...
         select_timeseries,// select timeseries col1 col2 ...
         clear_timeseries, // clear timeseries
         select_products,  // select products [prod1 prod2 ...]
@@ -338,6 +339,19 @@ struct command_t {
             }
             if (pairs.empty()) {
                 return {command_t::type::invalid, {}, {}, {}, {}, {}, "set initial requires key=value pairs"};
+            }
+            result.string_value = pairs;
+        } else if (what == "exec") {
+            result.cmd = command_t::type::set_exec;
+            // Collect all key=value pairs as a single string
+            auto pairs = std::string{};
+            std::getline(iss, pairs);
+            // Trim leading whitespace
+            if (const auto start = pairs.find_first_not_of(" \t"); start != std::string::npos) {
+                pairs = pairs.substr(start);
+            }
+            if (pairs.empty()) {
+                return {command_t::type::invalid, {}, {}, {}, {}, {}, "set exec requires key=value pairs"};
             }
             result.string_value = pairs;
         } else {
@@ -565,6 +579,7 @@ inline const char* help_text = R"(
     set output=ascii               - Set output format (ascii|binary|hdf5)
     set physics key1=val1 ...      - Set physics config parameters
     set initial key1=val1 ...      - Set initial data parameters (only when state is null)
+    set exec key1=val1 ...         - Set execution parameters (e.g. num_threads)
     select products [prod1 ...]    - Select products (no args = all)
     select timeseries [col1 ...]   - Select timeseries columns (no args = all)
     clear timeseries               - Clear timeseries data
@@ -574,8 +589,9 @@ inline const char* help_text = R"(
   ---------------------------------------------------------------------------------------
     init                           - Generate initial state from config
     reset                          - Reset driver and clear physics state
-    load <file>                    - Load configuation data or a checkpoint file
-                                     {checkpoint|physics|initial}.{dat|bin|h5}
+    load <file>                    - Load data or command sequence from file
+                                     .dat|.bin|.h5 = checkpoint/physics/initial
+                                     .prog|.mist   = command sequence
 
   ---------------------------------------------------------------------------------------
   Sampling
@@ -672,6 +688,7 @@ private:
     void handle_set_output(const std::string& format_str);
     void handle_set_physics(const std::string& pairs_str);
     void handle_set_initial(const std::string& pairs_str);
+    void handle_set_exec(const std::string& pairs_str);
     void handle_select_timeseries(std::vector<std::string> columns);
     void handle_clear_timeseries();
     void handle_select_products(std::vector<std::string> products);
@@ -881,6 +898,33 @@ void driver_t<P>::handle_set_initial(const std::string& pairs_str) {
         *out << "initial config updated: " << pairs_str << "\n";
     } catch (const std::exception& e) {
         *err << "error: failed to set initial config: " << e.what() << "\n";
+    }
+}
+
+template<Physics P>
+void driver_t<P>::handle_set_exec(const std::string& pairs_str) {
+    auto pairs_ss = std::istringstream{pairs_str};
+    auto pair = std::string{};
+
+    while (pairs_ss >> pair) {
+        const auto eq = pair.find('=');
+        if (eq == std::string::npos) {
+            *err << "error: invalid key=value pair: " << pair << "\n";
+            return;
+        }
+        const auto key = pair.substr(0, eq);
+        const auto value = pair.substr(eq + 1);
+
+        if (key == "num_threads") {
+            if constexpr (requires { exec_context.set_num_threads(std::size_t{}); }) {
+                exec_context.set_num_threads(std::stoul(value));
+                *out << "exec num_threads set to " << value << "\n";
+            } else {
+                *err << "error: this physics module does not support num_threads\n";
+            }
+        } else {
+            *err << "error: unknown exec parameter: " << key << "\n";
+        }
     }
 }
 
@@ -1188,6 +1232,41 @@ void deserialize_with_format(std::ifstream& file, driver::output_format format, 
 
 template<Physics P>
 void driver_t<P>::handle_load(const std::string& filename) {
+    // Check for command sequence files (.prog or .mist)
+    if (filename.ends_with(".prog") || filename.ends_with(".mist")) {
+        auto file = std::ifstream{filename};
+        if (!file) {
+            *err << "error: failed to open " << filename << "\n";
+            return;
+        }
+        *out << "loading commands from " << filename << "\n";
+        auto line = std::string{};
+        auto line_num = 0;
+        while (std::getline(file, line)) {
+            ++line_num;
+            // Trim leading whitespace
+            const auto start = line.find_first_not_of(" \t");
+            if (start == std::string::npos) continue;
+            line = line.substr(start);
+            // Skip empty lines and comments
+            if (line.empty() || line[0] == '#') continue;
+            // Echo the command
+            *out << "> " << line << "\n";
+            // Parse and execute
+            const auto cmd = parse_command(line);
+            if (cmd.cmd == command_t::type::invalid) {
+                *err << filename << ":" << line_num << ": error: " << cmd.error_msg << "\n";
+                continue;
+            }
+            if (!execute(cmd)) {
+                // Stop command was encountered
+                return;
+            }
+        }
+        *out << "finished loading " << filename << "\n";
+        return;
+    }
+
     auto file = std::ifstream{filename};
     if (!file) {
         *err << "error: failed to open " << filename << "\n";
@@ -1354,6 +1433,10 @@ bool driver_t<P>::execute(const command_t& cmd) {
 
             case command_t::type::set_initial:
                 handle_set_initial(cmd.string_value.value());
+                break;
+
+            case command_t::type::set_exec:
+                handle_set_exec(cmd.string_value.value());
                 break;
 
             case command_t::type::clear_timeseries:

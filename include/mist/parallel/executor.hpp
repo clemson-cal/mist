@@ -109,15 +109,17 @@ std::vector<typename A::value_t> execute(
     local_communicator<typename A::message_t>& comm,
     S& scheduler
 ) {
+    using key_t = typename A::key_t;
     using value_t = typename A::value_t;
 
-    blocking_queue<value_t> results_queue;
+    blocking_queue<std::pair<key_t, value_t>> results_queue;
     std::size_t total = automata.size();
 
     // Create sink that spawns tasks and sends results to queue
     auto sink = [&](A a) {
         scheduler.spawn([&results_queue, a = std::move(a)]() mutable {
-            results_queue.send(std::move(a).value());
+            auto key = a.key();
+            results_queue.send({key, std::move(a).value()});
         });
     };
 
@@ -125,10 +127,10 @@ std::vector<typename A::value_t> execute(
     coordinate(std::move(automata), comm, sink);
 
     // Collect all results from queue (blocks until all arrive)
-    std::vector<value_t> results;
-    results.reserve(total);
+    std::vector<value_t> results(total);
     for (std::size_t i = 0; i < total; ++i) {
-        results.push_back(results_queue.recv());
+        auto [key, value] = results_queue.recv();
+        results[static_cast<std::size_t>(key)] = std::move(value);
     }
 
     return results;
