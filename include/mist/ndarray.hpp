@@ -570,11 +570,7 @@ auto cache(const A& a, memory loc, exec e) {
 // Copy from cached_t to cached_t (reallocates dst if needed)
 template<typename T, std::size_t S>
 void copy(cached_t<T, S>& dst, const cached_t<T, S>& src) {
-    // Check if we need to reallocate
-    bool need_realloc = (dst._space != src._space) || (dst._location != src._location);
-
-    if (need_realloc) {
-        // Free existing memory
+    if (size(dst._space) != size(src._space)) {
         if (dst._data) {
             if (dst._location == memory::host) {
                 delete[] dst._data;
@@ -584,12 +580,7 @@ void copy(cached_t<T, S>& dst, const cached_t<T, S>& src) {
                 #endif
             }
         }
-
-        // Allocate new memory
-        dst._space = src._space;
-        dst._location = src._location;
-        std::size_t n = size(dst._space);
-
+        std::size_t n = size(src._space);
         switch (dst._location) {
             case memory::host:
                 dst._data = new T[n]();
@@ -606,19 +597,14 @@ void copy(cached_t<T, S>& dst, const cached_t<T, S>& src) {
                 break;
         }
     }
-
-    // Copy data
+    dst._space = src._space;
     detail::memcpy_any(dst._data, src._data, size(dst._space), dst._location, src._location);
 }
 
 // Copy from cached_vec_t to cached_vec_t (reallocates dst if needed)
 template<typename T, std::size_t N, std::size_t S, layout L>
 void copy(cached_vec_t<T, N, S, L>& dst, const cached_vec_t<T, N, S, L>& src) {
-    // Check if we need to reallocate
-    bool need_realloc = (dst._space != src._space) || (dst._location != src._location);
-
-    if (need_realloc) {
-        // Free existing memory
+    if (size(dst._space) != size(src._space)) {
         if (dst._data) {
             if (dst._location == memory::host) {
                 delete[] dst._data;
@@ -628,12 +614,7 @@ void copy(cached_vec_t<T, N, S, L>& dst, const cached_vec_t<T, N, S, L>& src) {
                 #endif
             }
         }
-
-        // Allocate new memory
-        dst._space = src._space;
-        dst._location = src._location;
-        std::size_t n = size(dst._space) * N;
-
+        std::size_t n = size(src._space) * N;
         switch (dst._location) {
             case memory::host:
                 dst._data = new T[n]();
@@ -650,8 +631,7 @@ void copy(cached_vec_t<T, N, S, L>& dst, const cached_vec_t<T, N, S, L>& src) {
                 break;
         }
     }
-
-    // Copy data
+    dst._space = src._space;
     detail::memcpy_any(dst._data, src._data, size(dst._space) * N, dst._location, src._location);
 }
 
