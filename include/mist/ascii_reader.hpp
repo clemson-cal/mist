@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 #include "core.hpp"
+#include "ndarray.hpp"
 
 namespace mist {
 
@@ -19,27 +20,41 @@ class ascii_reader {
 public:
     explicit ascii_reader(std::istream& is) : is_(is) {}
 
+    // --- Name context ---
+
+    void begin_named(const char* name) {
+        pending_name_ = name;
+    }
+
     // --- Scalars (return false if field missing) ---
 
     template<typename T>
         requires std::is_arithmetic_v<T>
-    auto read_scalar(const char* name, T& value) -> bool {
-        if (!seek_field(name)) return false;
-        expect('=');
+    auto read(T& value) -> bool {
+        if (pending_name_) {
+            if (!seek_field(pending_name_)) {
+                pending_name_ = nullptr;
+                return false;
+            }
+            pending_name_ = nullptr;
+            expect('=');
+        }
         value = read_number<T>();
         return true;
     }
 
-    auto read_string(const char* name, std::string& value) -> bool {
-        if (!seek_field(name)) return false;
-        expect('=');
-        value = read_quoted_string();
-        return true;
-    }
-
-    auto read_string(std::string& value) -> bool {
-        skip_ws();
-        if (peek() != '"') return false;
+    auto read(std::string& value) -> bool {
+        if (pending_name_) {
+            if (!seek_field(pending_name_)) {
+                pending_name_ = nullptr;
+                return false;
+            }
+            pending_name_ = nullptr;
+            expect('=');
+        } else {
+            skip_ws();
+            if (peek() != '"') return false;
+        }
         value = read_quoted_string();
         return true;
     }
@@ -47,9 +62,15 @@ public:
     // --- Arrays ---
 
     template<typename T, std::size_t N>
-    auto read_array(const char* name, vec_t<T, N>& value) -> bool {
-        if (!seek_field(name)) return false;
-        expect('=');
+    auto read(vec_t<T, N>& value) -> bool {
+        if (pending_name_) {
+            if (!seek_field(pending_name_)) {
+                pending_name_ = nullptr;
+                return false;
+            }
+            pending_name_ = nullptr;
+            expect('=');
+        }
         expect('[');
         for (std::size_t i = 0; i < N; ++i) {
             skip_ws();
@@ -63,9 +84,15 @@ public:
 
     template<typename T>
         requires std::is_arithmetic_v<T>
-    auto read_array(const char* name, std::vector<T>& value) -> bool {
-        if (!seek_field(name)) return false;
-        expect('=');
+    auto read(std::vector<T>& value) -> bool {
+        if (pending_name_) {
+            if (!seek_field(pending_name_)) {
+                pending_name_ = nullptr;
+                return false;
+            }
+            pending_name_ = nullptr;
+            expect('=');
+        }
         expect('[');
         value.clear();
         skip_ws();
@@ -87,9 +114,15 @@ public:
 
     template<typename T>
         requires std::is_arithmetic_v<T>
-    auto read_data(const char* name, T* ptr, std::size_t count) -> bool {
-        if (!seek_field(name)) return false;
-        expect('=');
+    auto read_data(T* ptr, std::size_t count) -> bool {
+        if (pending_name_) {
+            if (!seek_field(pending_name_)) {
+                pending_name_ = nullptr;
+                return false;
+            }
+            pending_name_ = nullptr;
+            expect('=');
+        }
         expect('[');
         for (std::size_t i = 0; i < count; ++i) {
             skip_ws();
@@ -101,19 +134,40 @@ public:
         return true;
     }
 
-    // --- Groups ---
+    // --- CachedNdArray ---
 
-    auto begin_group(const char* name) -> bool {
-        if (!seek_field(name)) return false;
-        expect('{');
-        group_stack_.push_back(is_.tellg());
+    template<CachedNdArray T>
+    auto read(T& arr) -> bool {
+        if (!begin_group()) return false;
+        using start_t = std::decay_t<decltype(start(arr))>;
+        using shape_t = std::decay_t<decltype(shape(arr))>;
+        start_t st;
+        shape_t sh;
+        begin_named("start");
+        read(st);
+        begin_named("shape");
+        read(sh);
+        arr = T(index_space(st, sh), memory::host);
+        begin_named("data");
+        read_data(data(arr), size(arr));
+        end_group();
         return true;
     }
 
+    // --- Groups ---
+
     auto begin_group() -> bool {
-        skip_ws();
-        if (peek() != '{') return false;
-        get();
+        if (pending_name_) {
+            if (!seek_field(pending_name_)) {
+                pending_name_ = nullptr;
+                return false;
+            }
+            pending_name_ = nullptr;
+        } else {
+            skip_ws();
+            if (peek() != '{') return false;
+        }
+        expect('{');
         group_stack_.push_back(is_.tellg());
         return true;
     }
@@ -126,7 +180,7 @@ public:
         }
     }
 
-    auto begin_list(const char* name) -> bool { return begin_group(name); }
+    auto begin_list() -> bool { return begin_group(); }
     void end_list() { end_group(); }
 
     // --- Query ---
@@ -169,8 +223,6 @@ public:
         return count;
     }
 
-    // Legacy compatibility
-    auto count_groups(const char* name) -> std::size_t { return count_items(name); }
     auto count_strings(const char* name) -> std::size_t {
         auto pos = is_.tellg();
         if (!seek_field(name)) {
@@ -204,11 +256,10 @@ public:
         return count;
     }
 
-    auto count_fields(const char*, const char*) -> std::size_t { return 0; }
-
 private:
     std::istream& is_;
     std::vector<std::streampos> group_stack_;
+    const char* pending_name_ = nullptr;
 
     auto peek() -> char { return static_cast<char>(is_.peek()); }
     auto get() -> char { return static_cast<char>(is_.get()); }

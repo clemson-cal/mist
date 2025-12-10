@@ -119,8 +119,10 @@ void test_scalar_serialization() {
     std::stringstream ss;
     ascii_writer writer(ss);
 
-    writer.write_scalar("time", 1.234);
-    writer.write_scalar("iteration", 42);
+    writer.begin_named("time");
+    writer.write(1.234);
+    writer.begin_named("iteration");
+    writer.write(42);
 
     std::string output = ss.str();
     assert(output.find("time = ") != std::string::npos);
@@ -132,8 +134,10 @@ void test_scalar_serialization() {
 
     double time;
     int iteration;
-    reader.read_scalar("time", time);
-    reader.read_scalar("iteration", iteration);
+    reader.begin_named("time");
+    reader.read(time);
+    reader.begin_named("iteration");
+    reader.read(iteration);
 
     assert(approx_equal(time, 1.234));
     assert(iteration == 42);
@@ -148,7 +152,8 @@ void test_vec_serialization() {
 
     std::stringstream ss;
     ascii_writer writer(ss);
-    writer.write_array("position", original);
+    writer.begin_named("position");
+    writer.write(original);
 
     std::string output = ss.str();
     assert(output.find("position = [") != std::string::npos);
@@ -157,7 +162,8 @@ void test_vec_serialization() {
     ascii_reader reader(ss);
 
     vec_t<double, 3> loaded = {};
-    reader.read_array("position", loaded);
+    reader.begin_named("position");
+    reader.read(loaded);
 
     assert(vec_equal(original, loaded));
 
@@ -171,7 +177,8 @@ void test_scalar_vector_serialization() {
 
     std::stringstream ss;
     ascii_writer writer(ss);
-    writer.write_array("scalar_field", original);
+    writer.begin_named("scalar_field");
+    writer.write(original);
 
     std::string output = ss.str();
     assert(output.find("scalar_field = [") != std::string::npos);
@@ -180,7 +187,8 @@ void test_scalar_vector_serialization() {
     ascii_reader reader(ss);
 
     std::vector<double> loaded;
-    reader.read_array("scalar_field", loaded);
+    reader.begin_named("scalar_field");
+    reader.read(loaded);
 
     assert(original.size() == loaded.size());
     for (std::size_t i = 0; i < original.size(); ++i) {
@@ -300,8 +308,10 @@ void test_binary_scalar_serialization() {
     std::stringstream ss(std::ios::binary | std::ios::in | std::ios::out);
     binary_writer writer(ss);
 
-    writer.write_scalar("time", 1.234);
-    writer.write_scalar("iteration", 42);
+    writer.begin_named("time");
+    writer.write(1.234);
+    writer.begin_named("iteration");
+    writer.write(42);
 
     // Test round-trip
     ss.seekg(0);
@@ -309,8 +319,10 @@ void test_binary_scalar_serialization() {
 
     double time;
     int iteration;
-    reader.read_scalar("time", time);
-    reader.read_scalar("iteration", iteration);
+    reader.begin_named("time");
+    reader.read(time);
+    reader.begin_named("iteration");
+    reader.read(iteration);
 
     assert(approx_equal(time, 1.234));
     assert(iteration == 42);
@@ -325,13 +337,15 @@ void test_binary_string_serialization() {
     binary_writer writer(ss);
 
     std::string original = "Hello, World!\nWith escape chars: \t\"quoted\"";
-    writer.write_string("message", original);
+    writer.begin_named("message");
+    writer.write(original);
 
     ss.seekg(0);
     binary_reader reader(ss);
 
     std::string loaded;
-    reader.read_string("message", loaded);
+    reader.begin_named("message");
+    reader.read(loaded);
 
     assert(original == loaded);
 
@@ -345,13 +359,15 @@ void test_binary_vec_serialization() {
 
     std::stringstream ss(std::ios::binary | std::ios::in | std::ios::out);
     binary_writer writer(ss);
-    writer.write_array("position", original);
+    writer.begin_named("position");
+    writer.write(original);
 
     ss.seekg(0);
     binary_reader reader(ss);
 
     vec_t<double, 3> loaded = {};
-    reader.read_array("position", loaded);
+    reader.begin_named("position");
+    reader.read(loaded);
 
     assert(vec_equal(original, loaded));
 
@@ -365,13 +381,15 @@ void test_binary_scalar_vector_serialization() {
 
     std::stringstream ss(std::ios::binary | std::ios::in | std::ios::out);
     binary_writer writer(ss);
-    writer.write_array("scalar_field", original);
+    writer.begin_named("scalar_field");
+    writer.write(original);
 
     ss.seekg(0);
     binary_reader reader(ss);
 
     std::vector<double> loaded;
-    reader.read_array("scalar_field", loaded);
+    reader.begin_named("scalar_field");
+    reader.read(loaded);
 
     assert(original.size() == loaded.size());
     for (std::size_t i = 0; i < original.size(); ++i) {
@@ -533,14 +551,16 @@ void test_binary_empty_vector() {
 
     std::stringstream ss(std::ios::binary | std::ios::in | std::ios::out);
     binary_writer writer(ss);
-    writer.write_array("empty", original);
+    writer.begin_named("empty");
+    writer.write(original);
 
     ss.seekg(0);
     binary_reader reader(ss);
 
     std::vector<double> loaded;
     loaded.push_back(999.0);  // Pre-fill to ensure it gets cleared
-    reader.read_array("empty", loaded);
+    reader.begin_named("empty");
+    reader.read(loaded);
 
     assert(loaded.empty());
 
@@ -648,7 +668,8 @@ void test_binary_file_output() {
     // Write to file
     std::ofstream file("test_output.bin", std::ios::binary);
     binary_writer writer(file);
-    writer.write_array("data", data);
+    writer.begin_named("data");
+    writer.write(data);
     file.close();
 
     // Verify file size: header (5) + name (8 + 4) + type tags (2) + count (8) + data (8000) = 8027 bytes
@@ -662,7 +683,8 @@ void test_binary_file_output() {
     std::ifstream infile("test_output.bin", std::ios::binary);
     binary_reader reader(infile);
     std::vector<double> loaded;
-    reader.read_array("data", loaded);
+    reader.begin_named("data");
+    reader.read(loaded);
     infile.close();
 
     assert(loaded.size() == 1000);

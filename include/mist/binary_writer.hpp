@@ -5,6 +5,7 @@
 #include <vector>
 #include <cstdint>
 #include <cstring>
+#include "ndarray.hpp"
 #include "core.hpp"
 
 namespace mist {
@@ -80,15 +81,23 @@ public:
         : os_(os), header_written_(false) {}
 
     // =========================================================================
+    // Name context
+    // =========================================================================
+
+    void begin_named(const char* name) {
+        pending_name_ = name;
+    }
+
+    // =========================================================================
     // Scalar types
     // =========================================================================
 
     template<typename T>
         requires std::is_arithmetic_v<T>
-    void write_scalar(const char* name, const T& value) {
+    void write(const T& value) {
         ensure_header();
-        write_name(name);
-        
+        write_pending_name();
+
         // Write type tag and value (promote to standard sizes)
         if constexpr (std::is_floating_point_v<T>) {
             write_type_tag(binary_format::TYPE_FLOAT64);
@@ -109,9 +118,9 @@ public:
     // String type
     // =========================================================================
 
-    void write_string(const char* name, const std::string& value) {
+    void write(const std::string& value) {
         ensure_header();
-        write_name(name);
+        write_pending_name();
         write_type_tag(binary_format::TYPE_STRING);
 
         uint64_t length = value.size();
@@ -121,18 +130,8 @@ public:
         }
     }
 
-    void write_string(const std::string& value) {
-        // Increment field count for parent list
-        if (!field_counts_.empty()) {
-            field_counts_.back()++;
-        }
-        write_type_tag(binary_format::TYPE_STRING);
-
-        uint64_t length = value.size();
-        write_raw(length);
-        if (length > 0) {
-            os_.write(value.data(), static_cast<std::streamsize>(length));
-        }
+    void write(const char* value) {
+        write(std::string(value));
     }
 
     // =========================================================================
@@ -140,15 +139,15 @@ public:
     // =========================================================================
 
     template<typename T, std::size_t N>
-    void write_array(const char* name, const vec_t<T, N>& value) {
+    void write(const vec_t<T, N>& value) {
         ensure_header();
-        write_name(name);
+        write_pending_name();
         write_type_tag(binary_format::TYPE_ARRAY);
         write_type_tag(binary_format::element_type_tag<T>());
-        
+
         uint64_t count = N;
         write_raw(count);
-        
+
         // Write elements in standardized format
         for (std::size_t i = 0; i < N; ++i) {
             write_element(value[i]);
@@ -161,15 +160,15 @@ public:
 
     template<typename T>
         requires std::is_arithmetic_v<T>
-    void write_array(const char* name, const std::vector<T>& value) {
+    void write(const std::vector<T>& value) {
         ensure_header();
-        write_name(name);
+        write_pending_name();
         write_type_tag(binary_format::TYPE_ARRAY);
         write_type_tag(binary_format::element_type_tag<T>());
-        
+
         uint64_t count = value.size();
         write_raw(count);
-        
+
         for (const auto& elem : value) {
             write_element(elem);
         }
@@ -181,9 +180,9 @@ public:
 
     template<typename T>
         requires std::is_arithmetic_v<T>
-    void write_data(const char* name, const T* ptr, std::size_t count) {
+    void write_data(const T* ptr, std::size_t count) {
         ensure_header();
-        write_name(name);
+        write_pending_name();
         write_type_tag(binary_format::TYPE_ARRAY);
         write_type_tag(binary_format::element_type_tag<T>());
 
@@ -195,28 +194,45 @@ public:
     }
 
     // =========================================================================
+    // CachedNdArray
+    // =========================================================================
+
+    template<CachedNdArray T>
+    void write(const T& arr) {
+        begin_group();
+        begin_named("start");
+        write(start(arr));
+        begin_named("shape");
+        write(shape(arr));
+        begin_named("data");
+        write_data(data(arr), size(arr));
+        end_group();
+    }
+
+    // =========================================================================
     // Groups (named and anonymous)
     // =========================================================================
 
-    void begin_group(const char* name) {
-        ensure_header();
-        write_name(name);
-        write_type_tag(binary_format::TYPE_GROUP);
-        
-        // Save position for field count backfill
-        group_positions_.push_back(os_.tellp());
-        uint64_t placeholder = 0;
-        write_raw(placeholder);
-        field_counts_.push_back(0);
-    }
-
     void begin_group() {
-        // Anonymous group within a list - increment parent's count
-        if (!field_counts_.empty()) {
-            field_counts_.back()++;
+        ensure_header();
+
+        if (pending_name_) {
+            write_name(pending_name_);
+            pending_name_ = nullptr;
+            write_type_tag(binary_format::TYPE_GROUP);
+            // Increment parent's field count for named groups
+            if (!field_counts_.empty()) {
+                field_counts_.back()++;
+            }
+        } else {
+            // Anonymous group within a list - increment parent's count
+            if (!field_counts_.empty()) {
+                field_counts_.back()++;
+            }
+            // Write GROUP type tag for anonymous groups
+            write_raw(binary_format::TYPE_GROUP);
         }
-        // Write GROUP type tag for anonymous groups
-        write_raw(binary_format::TYPE_GROUP);
+
         // Save position for field count backfill
         group_positions_.push_back(os_.tellp());
         uint64_t placeholder = 0;
@@ -224,11 +240,25 @@ public:
         field_counts_.push_back(0);
     }
 
-    void begin_list(const char* name) {
+    void begin_list() {
         ensure_header();
-        write_name(name);
-        write_type_tag(binary_format::TYPE_LIST);
-        
+
+        if (pending_name_) {
+            write_name(pending_name_);
+            pending_name_ = nullptr;
+            write_type_tag(binary_format::TYPE_LIST);
+            // Increment parent's field count for named lists
+            if (!field_counts_.empty()) {
+                field_counts_.back()++;
+            }
+        } else {
+            // Anonymous list - just write type tag
+            if (!field_counts_.empty()) {
+                field_counts_.back()++;
+            }
+            write_raw(binary_format::TYPE_LIST);
+        }
+
         // Save position for item count backfill
         group_positions_.push_back(os_.tellp());
         uint64_t placeholder = 0;
@@ -263,12 +293,20 @@ private:
     bool header_written_;
     std::vector<std::streampos> group_positions_;
     std::vector<uint64_t> field_counts_;
+    const char* pending_name_ = nullptr;
 
     void ensure_header() {
         if (!header_written_) {
             write_raw(binary_format::MAGIC);
             write_raw(binary_format::VERSION);
             header_written_ = true;
+        }
+    }
+
+    void write_pending_name() {
+        if (pending_name_) {
+            write_name(pending_name_);
+            pending_name_ = nullptr;
         }
         // Increment field count for parent group
         if (!field_counts_.empty()) {

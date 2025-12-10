@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include "core.hpp"
+#include "ndarray.hpp"
 
 namespace mist {
 
@@ -18,31 +19,48 @@ public:
     explicit ascii_writer(std::ostream& os, int indent_size = 4)
         : os_(os), indent_size_(indent_size), indent_level_(0) {}
 
+    // --- Name context ---
+
+    void begin_named(const char* name) {
+        pending_name_ = name;
+    }
+
     // --- Scalars ---
 
     template<typename T>
         requires std::is_arithmetic_v<T>
-    void write_scalar(const char* name, const T& value) {
+    void write(const T& value) {
         write_indent();
-        os_ << name << " = " << format_value(value) << "\n";
+        if (pending_name_) {
+            os_ << pending_name_ << " = ";
+            pending_name_ = nullptr;
+        }
+        os_ << format_value(value) << "\n";
     }
 
-    void write_string(const char* name, const std::string& value) {
+    void write(const std::string& value) {
         write_indent();
-        os_ << name << " = \"" << escape(value) << "\"\n";
-    }
-
-    void write_string(const std::string& value) {
-        write_indent();
+        if (pending_name_) {
+            os_ << pending_name_ << " = ";
+            pending_name_ = nullptr;
+        }
         os_ << "\"" << escape(value) << "\"\n";
+    }
+
+    void write(const char* value) {
+        write(std::string(value));
     }
 
     // --- Arrays ---
 
     template<typename T, std::size_t N>
-    void write_array(const char* name, const vec_t<T, N>& value) {
+    void write(const vec_t<T, N>& value) {
         write_indent();
-        os_ << name << " = [";
+        if (pending_name_) {
+            os_ << pending_name_ << " = ";
+            pending_name_ = nullptr;
+        }
+        os_ << "[";
         for (std::size_t i = 0; i < N; ++i) {
             if (i > 0) os_ << ", ";
             os_ << format_value(value[i]);
@@ -52,9 +70,13 @@ public:
 
     template<typename T>
         requires std::is_arithmetic_v<T>
-    void write_array(const char* name, const std::vector<T>& value) {
+    void write(const std::vector<T>& value) {
         write_indent();
-        os_ << name << " = [";
+        if (pending_name_) {
+            os_ << pending_name_ << " = ";
+            pending_name_ = nullptr;
+        }
+        os_ << "[";
         for (std::size_t i = 0; i < value.size(); ++i) {
             if (i > 0) os_ << ", ";
             os_ << format_value(value[i]);
@@ -66,9 +88,13 @@ public:
 
     template<typename T>
         requires std::is_arithmetic_v<T>
-    void write_data(const char* name, const T* ptr, std::size_t count) {
+    void write_data(const T* ptr, std::size_t count) {
         write_indent();
-        os_ << name << " = [";
+        if (pending_name_) {
+            os_ << pending_name_ << " = ";
+            pending_name_ = nullptr;
+        }
+        os_ << "[";
         for (std::size_t i = 0; i < count; ++i) {
             if (i > 0) os_ << ", ";
             os_ << format_value(ptr[i]);
@@ -76,16 +102,28 @@ public:
         os_ << "]\n";
     }
 
-    // --- Groups ---
+    // --- CachedNdArray ---
 
-    void begin_group(const char* name) {
-        write_indent();
-        os_ << name << " {\n";
-        indent_level_++;
+    template<CachedNdArray T>
+    void write(const T& arr) {
+        begin_group();
+        begin_named("start");
+        write(start(arr));
+        begin_named("shape");
+        write(shape(arr));
+        begin_named("data");
+        write_data(data(arr), size(arr));
+        end_group();
     }
+
+    // --- Groups ---
 
     void begin_group() {
         write_indent();
+        if (pending_name_) {
+            os_ << pending_name_ << " ";
+            pending_name_ = nullptr;
+        }
         os_ << "{\n";
         indent_level_++;
     }
@@ -96,13 +134,14 @@ public:
         os_ << "}\n";
     }
 
-    void begin_list(const char* name) { begin_group(name); }
+    void begin_list() { begin_group(); }
     void end_list() { end_group(); }
 
 private:
     std::ostream& os_;
     int indent_size_;
     int indent_level_;
+    const char* pending_name_ = nullptr;
 
     void write_indent() {
         for (int i = 0; i < indent_level_ * indent_size_; ++i) {

@@ -7,6 +7,7 @@
 #include <vector>
 #include "binary_writer.hpp"
 #include "core.hpp"
+#include "ndarray.hpp"
 
 namespace mist {
 
@@ -29,12 +30,24 @@ class binary_reader {
 public:
     explicit binary_reader(std::istream& is) : is_(is) {}
 
+    // --- Name context ---
+
+    void begin_named(const char* name) {
+        pending_name_ = name;
+    }
+
     // --- Scalars ---
 
     template<typename T>
         requires std::is_arithmetic_v<T>
-    auto read_scalar(const char* name, T& value) -> bool {
-        if (!seek_field(name)) return false;
+    auto read(T& value) -> bool {
+        if (pending_name_) {
+            if (!seek_field(pending_name_)) {
+                pending_name_ = nullptr;
+                return false;
+            }
+            pending_name_ = nullptr;
+        }
         uint8_t type_tag = read_type_tag();
         if (type_tag == binary_format::TYPE_FLOAT64) {
             double v;
@@ -49,26 +62,22 @@ public:
             read_raw(v);
             value = static_cast<T>(v);
         } else {
-            throw std::runtime_error("Expected scalar type for field '" + std::string(name) + "'");
+            throw std::runtime_error("Expected scalar type");
         }
         return true;
     }
 
-    auto read_string(const char* name, std::string& value) -> bool {
-        if (!seek_field(name)) return false;
-        uint8_t type_tag = read_type_tag();
-        if (type_tag != binary_format::TYPE_STRING) {
-            throw std::runtime_error("Expected string type for field '" + std::string(name) + "'");
+    auto read(std::string& value) -> bool {
+        if (pending_name_) {
+            if (!seek_field(pending_name_)) {
+                pending_name_ = nullptr;
+                return false;
+            }
+            pending_name_ = nullptr;
         }
-        value = read_string_data();
-        return true;
-    }
-
-    auto read_string(std::string& value) -> bool {
-        // Anonymous read within list
         uint8_t type_tag = read_type_tag();
         if (type_tag != binary_format::TYPE_STRING) {
-            return false;
+            throw std::runtime_error("Expected string type");
         }
         value = read_string_data();
         return true;
@@ -77,19 +86,25 @@ public:
     // --- Arrays ---
 
     template<typename T, std::size_t N>
-    auto read_array(const char* name, vec_t<T, N>& value) -> bool {
-        if (!seek_field(name)) return false;
+    auto read(vec_t<T, N>& value) -> bool {
+        if (pending_name_) {
+            if (!seek_field(pending_name_)) {
+                pending_name_ = nullptr;
+                return false;
+            }
+            pending_name_ = nullptr;
+        }
         uint8_t type_tag = read_type_tag();
         if (type_tag != binary_format::TYPE_ARRAY) {
-            throw std::runtime_error("Expected array type for field '" + std::string(name) + "'");
+            throw std::runtime_error("Expected array type");
         }
         uint8_t elem_tag = read_type_tag();
         uint64_t count;
         read_raw(count);
         if (count != N) {
             throw std::runtime_error(
-                "Array size mismatch for field '" + std::string(name) +
-                "': expected " + std::to_string(N) + ", got " + std::to_string(count));
+                "Array size mismatch: expected " + std::to_string(N) +
+                ", got " + std::to_string(count));
         }
         for (std::size_t i = 0; i < N; ++i) {
             value[i] = read_element<T>(elem_tag);
@@ -99,11 +114,17 @@ public:
 
     template<typename T>
         requires std::is_arithmetic_v<T>
-    auto read_array(const char* name, std::vector<T>& value) -> bool {
-        if (!seek_field(name)) return false;
+    auto read(std::vector<T>& value) -> bool {
+        if (pending_name_) {
+            if (!seek_field(pending_name_)) {
+                pending_name_ = nullptr;
+                return false;
+            }
+            pending_name_ = nullptr;
+        }
         uint8_t type_tag = read_type_tag();
         if (type_tag != binary_format::TYPE_ARRAY) {
-            throw std::runtime_error("Expected array type for field '" + std::string(name) + "'");
+            throw std::runtime_error("Expected array type");
         }
         uint8_t elem_tag = read_type_tag();
         uint64_t count;
@@ -119,50 +140,75 @@ public:
 
     template<typename T>
         requires std::is_arithmetic_v<T>
-    auto read_data(const char* name, T* ptr, std::size_t count) -> bool {
-        if (!seek_field(name)) return false;
+    auto read_data(T* ptr, std::size_t count) -> bool {
+        if (pending_name_) {
+            if (!seek_field(pending_name_)) {
+                pending_name_ = nullptr;
+                return false;
+            }
+            pending_name_ = nullptr;
+        }
         uint8_t type_tag = read_type_tag();
         if (type_tag != binary_format::TYPE_ARRAY) {
-            throw std::runtime_error("Expected array type for field '" + std::string(name) + "'");
+            throw std::runtime_error("Expected array type");
         }
         [[maybe_unused]] uint8_t elem_tag = read_type_tag();
         uint64_t n;
         read_raw(n);
         if (n != count) {
             throw std::runtime_error(
-                "Data size mismatch for field '" + std::string(name) +
-                "': expected " + std::to_string(count) + ", got " + std::to_string(n));
+                "Data size mismatch: expected " + std::to_string(count) +
+                ", got " + std::to_string(n));
         }
         is_.read(reinterpret_cast<char*>(ptr), static_cast<std::streamsize>(count * sizeof(T)));
         if (!is_) {
-            throw std::runtime_error("Failed to read data for field '" + std::string(name) + "'");
+            throw std::runtime_error("Failed to read data");
         }
+        return true;
+    }
+
+    // --- CachedNdArray ---
+
+    template<CachedNdArray T>
+    auto read(T& arr) -> bool {
+        if (!begin_group()) return false;
+        using start_t = std::decay_t<decltype(start(arr))>;
+        using shape_t = std::decay_t<decltype(shape(arr))>;
+        start_t st;
+        shape_t sh;
+        begin_named("start");
+        read(st);
+        begin_named("shape");
+        read(sh);
+        arr = T(index_space(st, sh), memory::host);
+        begin_named("data");
+        read_data(data(arr), size(arr));
+        end_group();
         return true;
     }
 
     // --- Groups ---
 
-    auto begin_group(const char* name) -> bool {
-        if (!seek_field(name)) return false;
-        uint8_t type_tag = read_type_tag();
-        if (type_tag != binary_format::TYPE_GROUP) {
-            throw std::runtime_error("Expected group type for field '" + std::string(name) + "'");
-        }
-        uint64_t field_count;
-        read_raw(field_count);
-        group_stack_.push_back({is_.tellg(), field_count, false});
-        return true;
-    }
-
     auto begin_group() -> bool {
-        // Anonymous group (within list) - read type tag
+        if (pending_name_) {
+            if (!seek_field(pending_name_)) {
+                pending_name_ = nullptr;
+                return false;
+            }
+            pending_name_ = nullptr;
+        } else if (!group_stack_.empty() && group_stack_.back().is_list) {
+            // Inside a list - check if we've read all items
+            if (group_stack_.back().remaining == 0) {
+                return false;
+            }
+            group_stack_.back().remaining--;
+        }
         uint8_t type_tag = read_type_tag();
         if (type_tag != binary_format::TYPE_GROUP) {
             return false;
         }
         uint64_t field_count;
         read_raw(field_count);
-        // Anonymous groups within lists are still seekable (not is_list)
         group_stack_.push_back({is_.tellg(), field_count, false});
         return true;
     }
@@ -173,11 +219,17 @@ public:
         }
     }
 
-    auto begin_list(const char* name) -> bool {
-        if (!seek_field(name)) return false;
+    auto begin_list() -> bool {
+        if (pending_name_) {
+            if (!seek_field(pending_name_)) {
+                pending_name_ = nullptr;
+                return false;
+            }
+            pending_name_ = nullptr;
+        }
         uint8_t type_tag = read_type_tag();
         if (type_tag != binary_format::TYPE_LIST) {
-            throw std::runtime_error("Expected list type for field '" + std::string(name) + "'");
+            return false;
         }
         uint64_t item_count;
         read_raw(item_count);
@@ -213,12 +265,11 @@ public:
         return static_cast<std::size_t>(count);
     }
 
-    // Legacy compatibility
-    auto count_groups(const char* name) -> std::size_t { return count_items(name); }
     auto count_strings(const char* name) -> std::size_t { return count_items(name); }
 
 private:
     std::istream& is_;
+    const char* pending_name_ = nullptr;
 
     struct group_info_t {
         std::streampos start;
