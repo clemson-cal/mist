@@ -7,6 +7,7 @@
 
 # Example executables
 examples/advection-1d/advection-1d
+examples/advection-1d-decomp/advection-1d-decomp
 examples/config-reader/config-reader
 
 # Output data files

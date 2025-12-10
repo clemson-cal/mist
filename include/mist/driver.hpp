@@ -26,6 +26,79 @@
 #include "serialize.hpp"
 
 // =============================================================================
+// ANSI Color Support
+// =============================================================================
+
+namespace mist::color {
+
+namespace ansi {
+    inline constexpr const char* reset      = "\033[0m";
+    inline constexpr const char* bold       = "\033[1m";
+    inline constexpr const char* dim        = "\033[2m";
+
+    // Foreground colors
+    inline constexpr const char* black      = "\033[30m";
+    inline constexpr const char* red        = "\033[31m";
+    inline constexpr const char* green      = "\033[32m";
+    inline constexpr const char* yellow     = "\033[33m";
+    inline constexpr const char* blue       = "\033[34m";
+    inline constexpr const char* magenta    = "\033[35m";
+    inline constexpr const char* cyan       = "\033[36m";
+    inline constexpr const char* white      = "\033[37m";
+
+    // Bright foreground colors
+    inline constexpr const char* bright_black   = "\033[90m";
+    inline constexpr const char* bright_red     = "\033[91m";
+    inline constexpr const char* bright_green   = "\033[92m";
+    inline constexpr const char* bright_yellow  = "\033[93m";
+    inline constexpr const char* bright_blue    = "\033[94m";
+    inline constexpr const char* bright_magenta = "\033[95m";
+    inline constexpr const char* bright_cyan    = "\033[96m";
+    inline constexpr const char* bright_white   = "\033[97m";
+} // namespace ansi
+
+struct scheme_t {
+    const char* reset       = ansi::reset;
+    const char* iteration   = ansi::cyan;        // [000001]
+    const char* label       = ansi::blue;        // t=, orbit=, Mzps=
+    const char* value       = ansi::bright_white;// numeric values
+    const char* info        = ansi::green;       // info messages
+    const char* warning     = ansi::yellow;      // warnings
+    const char* error       = ansi::red;         // errors
+    const char* prompt      = ansi::bright_cyan; // > prompt
+    const char* key         = ansi::magenta;     // config keys
+    const char* selected    = ansi::green;       // [+] selected items
+    const char* unselected  = ansi::dim;         // [ ] unselected items
+    const char* header      = ansi::bold;        // section headers
+};
+
+inline scheme_t enabled_scheme() {
+    return scheme_t{};
+}
+
+inline scheme_t disabled_scheme() {
+    return scheme_t{
+        "", "", "", "", "", "", "", "", "", "", "", ""
+    };
+}
+
+inline bool is_tty(int fd) {
+    return isatty(fd) != 0;
+}
+
+inline bool is_tty(std::ostream& os) {
+    if (&os == &std::cout) return is_tty(STDOUT_FILENO);
+    if (&os == &std::cerr) return is_tty(STDERR_FILENO);
+    return false;
+}
+
+inline scheme_t auto_scheme(std::ostream& os) {
+    return is_tty(os) ? enabled_scheme() : disabled_scheme();
+}
+
+} // namespace mist::color
+
+// =============================================================================
 // Physics Concept
 // =============================================================================
 
@@ -640,6 +713,8 @@ class driver_t {
     typename P::exec_context_t exec_context;
     std::ostream* out;
     std::ostream* err;
+    color::scheme_t colors;
+    color::scheme_t err_colors;
 
     // Performance tracking
     double command_start_wall_time = 0.0;
@@ -647,7 +722,12 @@ class driver_t {
 
 public:
     explicit driver_t(program_t<P>& prog, std::ostream& out = std::cout, std::ostream& err = std::cerr)
-        : prog(prog), exec_context(prog.physics, prog.initial), out(&out), err(&err) {
+        : prog(prog)
+        , exec_context(prog.physics, prog.initial)
+        , out(&out)
+        , err(&err)
+        , colors(color::auto_scheme(out))
+        , err_colors(color::auto_scheme(err)) {
         command_start_wall_time = get_wall_time();
         command_start_iteration = prog.driver_state.iteration;
     }
@@ -730,7 +810,8 @@ void driver_t<P>::do_timestep(double dt) {
 template<Physics P>
 void driver_t<P>::advance_to_target(const std::string& var_name, double target, std::optional<int> target_iteration) {
     if (!prog.physics_state.has_value()) {
-        *err << "error: physics state not initialized; use 'init' command first\n";
+        *err << err_colors.error << "error: " << err_colors.reset
+             << "physics state not initialized; use 'init' command first\n";
         return;
     }
 
@@ -774,16 +855,20 @@ std::string driver_t<P>::iteration_message() {
     const auto iter_elapsed = prog.driver_state.iteration - command_start_iteration;
     const auto mzps = (wall_elapsed > 0) ? (iter_elapsed * zone_count(*prog.physics_state, exec_context)) / (wall_elapsed * 1e6) : 0.0;
     const auto time_names = names_of_time(std::type_identity<P>{});
+    const auto& c = colors;
 
     auto oss = std::ostringstream{};
-    oss << "[" << std::setw(6) << std::setfill('0') << prog.driver_state.iteration << "] ";
+    oss << c.iteration << "[" << std::setw(6) << std::setfill('0')
+        << prog.driver_state.iteration << "]" << c.reset << " ";
 
     for (std::size_t i = 0; i < time_names.size(); ++i) {
         if (i > 0) oss << " ";
-        oss << time_names[i] << "=" << std::scientific << std::showpos << std::setprecision(6)
-            << get_time(*prog.physics_state, time_names[i]) << std::noshowpos;
+        oss << c.label << time_names[i] << "=" << c.reset
+            << c.value << std::scientific << std::showpos << std::setprecision(6)
+            << get_time(*prog.physics_state, time_names[i]) << std::noshowpos << c.reset;
     }
-    oss << " Mzps=" << std::scientific << std::setprecision(6) << mzps << "\n";
+    oss << " " << c.label << "Mzps=" << c.reset
+        << c.value << std::scientific << std::setprecision(6) << mzps << c.reset << "\n";
     return oss.str();
 }
 
@@ -798,7 +883,8 @@ void driver_t<P>::execute_recurring_commands() {
             if (current_value >= rcmd.last_executed + rcmd.interval) {
                 const auto subcmd = parse_command(rcmd.sub_command);
                 if (subcmd.cmd == command_t::type::invalid) {
-                    *err << "error in recurring command: " << subcmd.error_msg << "\n";
+                    *err << err_colors.error << "error in recurring command: "
+                         << err_colors.reset << subcmd.error_msg << "\n";
                     continue;
                 }
 
@@ -820,14 +906,16 @@ void driver_t<P>::execute_recurring_commands() {
                         handle_show_message();
                         break;
                     default:
-                        *err << "error: recurring command type not supported: " << rcmd.sub_command << "\n";
+                        *err << err_colors.error << "error: " << err_colors.reset
+                             << "recurring command type not supported: " << rcmd.sub_command << "\n";
                         break;
                 }
 
                 rcmd.last_executed = current_value;
             }
         } catch (const std::exception& e) {
-            *err << "error: recurring command '" << e.what() << "'\n";
+            *err << err_colors.error << "error: recurring command '"
+                 << err_colors.reset << e.what() << "'\n";
         }
     }
 }
@@ -862,7 +950,8 @@ void driver_t<P>::handle_target_var(const std::string& kind, double target) {
 template<Physics P>
 void driver_t<P>::handle_set_output(const std::string& format_str) {
     prog.driver_state.format = driver::from_string(std::type_identity<driver::output_format>{}, format_str);
-    *out << "output format set to " << format_str << "\n";
+    *out << colors.info << "output format set to " << colors.value << format_str
+         << colors.reset << "\n";
 }
 
 template<Physics P>
@@ -874,9 +963,11 @@ void driver_t<P>::handle_set_physics(const std::string& pairs_str) {
         while (pairs_ss >> pair) {
             apply_key_value(prog.physics, pair);
         }
-        *out << "physics config updated: " << pairs_str << "\n";
+        *out << colors.info << "physics config updated: " << colors.value << pairs_str
+             << colors.reset << "\n";
     } catch (const std::exception& e) {
-        *err << "error: failed to set physics config: " << e.what() << "\n";
+        *err << err_colors.error << "error: " << err_colors.reset
+             << "failed to set physics config: " << e.what() << "\n";
     }
 }
 
@@ -884,7 +975,8 @@ template<Physics P>
 void driver_t<P>::handle_set_initial(const std::string& pairs_str) {
     // Check if state is initialized - cannot modify initial params if state exists
     if (prog.physics_state.has_value()) {
-        *err << "error: cannot modify initial params when state is initialized; use 'reset' first\n";
+        *err << err_colors.error << "error: " << err_colors.reset
+             << "cannot modify initial params when state is initialized; use 'reset' first\n";
         return;
     }
 
@@ -895,9 +987,11 @@ void driver_t<P>::handle_set_initial(const std::string& pairs_str) {
         while (pairs_ss >> pair) {
             apply_key_value(prog.initial, pair);
         }
-        *out << "initial config updated: " << pairs_str << "\n";
+        *out << colors.info << "initial config updated: " << colors.value << pairs_str
+             << colors.reset << "\n";
     } catch (const std::exception& e) {
-        *err << "error: failed to set initial config: " << e.what() << "\n";
+        *err << err_colors.error << "error: " << err_colors.reset
+             << "failed to set initial config: " << e.what() << "\n";
     }
 }
 
@@ -909,7 +1003,8 @@ void driver_t<P>::handle_set_exec(const std::string& pairs_str) {
     while (pairs_ss >> pair) {
         const auto eq = pair.find('=');
         if (eq == std::string::npos) {
-            *err << "error: invalid key=value pair: " << pair << "\n";
+            *err << err_colors.error << "error: " << err_colors.reset
+                 << "invalid key=value pair: " << pair << "\n";
             return;
         }
         const auto key = pair.substr(0, eq);
@@ -918,12 +1013,15 @@ void driver_t<P>::handle_set_exec(const std::string& pairs_str) {
         if (key == "num_threads") {
             if constexpr (requires { exec_context.set_num_threads(std::size_t{}); }) {
                 exec_context.set_num_threads(std::stoul(value));
-                *out << "exec num_threads set to " << value << "\n";
+                *out << colors.info << "exec num_threads set to " << colors.value << value
+                     << colors.reset << "\n";
             } else {
-                *err << "error: this physics module does not support num_threads\n";
+                *err << err_colors.error << "error: " << err_colors.reset
+                     << "this physics module does not support num_threads\n";
             }
         } else {
-            *err << "error: unknown exec parameter: " << key << "\n";
+            *err << err_colors.error << "error: " << err_colors.reset
+                 << "unknown exec parameter: " << key << "\n";
         }
     }
 }
@@ -936,12 +1034,14 @@ void driver_t<P>::handle_select_timeseries(std::vector<std::string> columns) {
         columns = available;
     }
     if (!prog.driver_state.timeseries.empty()) {
-        *err << "error: use 'clear timeseries' before 'select timeseries ...'\n";
+        *err << err_colors.error << "error: " << err_colors.reset
+             << "use 'clear timeseries' before 'select timeseries ...'\n";
         return;
     }
     for (const auto& col : columns) {
         if (std::find(available.begin(), available.end(), col) == available.end()) {
-            *err << "error: column '" << col << "' not found in physics timeseries\n";
+            *err << err_colors.error << "error: " << err_colors.reset
+                 << "column '" << col << "' not found in physics timeseries\n";
             return;
         }
     }
@@ -954,7 +1054,7 @@ void driver_t<P>::handle_select_timeseries(std::vector<std::string> columns) {
 template<Physics P>
 void driver_t<P>::handle_clear_timeseries() {
     prog.driver_state.timeseries.clear();
-    *out << "clear timeseries\n";
+    *out << colors.info << "clear timeseries" << colors.reset << "\n";
 }
 
 template<Physics P>
@@ -969,7 +1069,8 @@ void driver_t<P>::handle_select_products(std::vector<std::string> products) {
 
     for (const auto& prod : products) {
         if (std::find(available.begin(), available.end(), prod) == available.end()) {
-            *err << "error: product '" << prod << "' not found in physics products\n";
+            *err << err_colors.error << "error: " << err_colors.reset
+                 << "product '" << prod << "' not found in physics products\n";
             *err << "available products: ";
             auto first = true;
             for (const auto& name : available) {
@@ -989,26 +1090,30 @@ void driver_t<P>::handle_select_products(std::vector<std::string> products) {
 template<Physics P>
 void driver_t<P>::handle_clear_products() {
     prog.driver_state.selected_products.clear();
-    *out << "clear product selection\n";
+    *out << colors.info << "clear product selection" << colors.reset << "\n";
 }
 
 template<Physics P>
 void driver_t<P>::handle_do_timeseries() {
     if (!prog.physics_state.has_value()) {
-        *err << "error: physics state not initialized; use 'init' command first\n";
+        *err << err_colors.error << "error: " << err_colors.reset
+             << "physics state not initialized; use 'init' command first\n";
         return;
     }
     if (prog.driver_state.timeseries.empty()) {
-        *err << "no timeseries selected; use 'select timeseries [names...]'\n";
+        *err << err_colors.warning << "no timeseries selected; " << err_colors.reset
+             << "use 'select timeseries [names...]'\n";
         return;
     }
-    *out << "record timeseries sample (";
+    *out << colors.info << "record timeseries sample" << colors.reset << " (";
     auto first = true;
     for (const auto& [col, values] : prog.driver_state.timeseries) {
         const auto value = get_timeseries(prog.physics, prog.initial, *prog.physics_state, col);
         prog.driver_state.timeseries[col].push_back(value);
         if (!first) *out << ", ";
-        *out << col << "=" << std::scientific << std::showpos << std::setprecision(6) << value << std::noshowpos;
+        *out << colors.label << col << "=" << colors.reset
+             << colors.value << std::scientific << std::showpos << std::setprecision(6)
+             << value << std::noshowpos << colors.reset;
         first = false;
     }
     *out << ")\n";
@@ -1017,7 +1122,8 @@ void driver_t<P>::handle_do_timeseries() {
 template<Physics P>
 void driver_t<P>::handle_write_timeseries(const std::optional<std::string>& filename_opt) {
     if (prog.driver_state.timeseries.empty()) {
-        *err << "no timeseries selected; use 'select timeseries [names...]'\n";
+        *err << err_colors.warning << "no timeseries selected; " << err_colors.reset
+             << "use 'select timeseries [names...]'\n";
         return;
     }
 
@@ -1042,7 +1148,8 @@ void driver_t<P>::handle_write_timeseries(const std::optional<std::string>& file
 
     auto file = std::ofstream{filename};
     if (!file) {
-        *err << "error: failed to open " << filename << "\n";
+        *err << err_colors.error << "error: " << err_colors.reset
+             << "failed to open " << filename << "\n";
         return;
     }
     if (format == driver::output_format::ascii) {
@@ -1052,7 +1159,7 @@ void driver_t<P>::handle_write_timeseries(const std::optional<std::string>& file
         auto writer = binary_writer{file};
         serialize(writer, "timeseries", prog.driver_state.timeseries);
     }
-    *out << "write " << filename << "\n";
+    *out << colors.info << "write " << colors.value << filename << colors.reset << "\n";
 }
 
 template<Physics P>
@@ -1084,17 +1191,19 @@ void driver_t<P>::handle_write_checkpoint(const std::optional<std::string>& file
         auto writer = binary_writer{file};
         serialize(writer, "checkpoint", prog);
     }
-    *out << "write " << filename << "\n";
+    *out << colors.info << "write " << colors.value << filename << colors.reset << "\n";
 }
 
 template<Physics P>
 void driver_t<P>::handle_write_products(const std::optional<std::string>& filename_opt) {
     if (!prog.physics_state.has_value()) {
-        *err << "error: physics state not initialized; use 'init' command first\n";
+        *err << err_colors.error << "error: " << err_colors.reset
+             << "physics state not initialized; use 'init' command first\n";
         return;
     }
     if (prog.driver_state.selected_products.empty()) {
-        *err << "no products selected; use 'select products [names...]'\n";
+        *err << err_colors.warning << "no products selected; " << err_colors.reset
+             << "use 'select products [names...]'\n";
         return;
     }
 
@@ -1129,7 +1238,7 @@ void driver_t<P>::handle_write_products(const std::optional<std::string>& filena
             serialize(writer, name.c_str(), product);
         }
     }
-    *out << "write " << filename << "\n";
+    *out << colors.info << "write " << colors.value << filename << colors.reset << "\n";
 }
 
 template<Physics P>
@@ -1140,7 +1249,8 @@ void driver_t<P>::handle_show_message() {
 template<Physics P>
 void driver_t<P>::handle_repeat_add(double interval, const std::string& unit, const std::string& sub_cmd) {
     if (!prog.physics_state.has_value()) {
-        *err << "error: physics state not initialized; use 'init' command first\n";
+        *err << err_colors.error << "error: " << err_colors.reset
+             << "physics state not initialized; use 'init' command first\n";
         return;
     }
     try {
@@ -1151,23 +1261,25 @@ void driver_t<P>::handle_repeat_add(double interval, const std::string& unit, co
         rcmd.sub_command = sub_cmd;
         rcmd.last_executed = current_value;
         prog.driver_state.recurring_commands.push_back(rcmd);
-        *out << "add recurring command: every " << interval << " " << unit
-            << " -> " << sub_cmd << "\n";
+        *out << colors.info << "add recurring command: " << colors.reset
+             << "every " << colors.value << interval << colors.reset << " " << unit
+             << " -> " << colors.value << sub_cmd << colors.reset << "\n";
     } catch (const std::exception& e) {
-        *err << "error: " << e.what() << "\n";
+        *err << err_colors.error << "error: " << err_colors.reset << e.what() << "\n";
     }
 }
 
 template<Physics P>
 void driver_t<P>::handle_repeat_list() {
     if (prog.driver_state.recurring_commands.empty()) {
-        *out << "no recurring commands.\n";
+        *out << colors.unselected << "no recurring commands." << colors.reset << "\n";
     } else {
-        *out << "recurring commands:\n";
+        *out << colors.header << "recurring commands:" << colors.reset << "\n";
         for (std::size_t i = 0; i < prog.driver_state.recurring_commands.size(); ++i) {
             const auto& rcmd = prog.driver_state.recurring_commands[i];
-            *out << "  [" << i << "] every " << rcmd.interval << " " << rcmd.unit
-                << " -> " << rcmd.sub_command << "\n";
+            *out << "  " << colors.iteration << "[" << i << "]" << colors.reset
+                 << " every " << colors.value << rcmd.interval << colors.reset << " " << rcmd.unit
+                 << " -> " << colors.value << rcmd.sub_command << colors.reset << "\n";
         }
     }
 }
@@ -1176,20 +1288,22 @@ template<Physics P>
 void driver_t<P>::handle_repeat_clear(const std::vector<std::string>& indices) {
     if (indices.empty()) {
         prog.driver_state.recurring_commands.clear();
-        *out << "clear all recurring commands\n";
+        *out << colors.info << "clear all recurring commands" << colors.reset << "\n";
     } else {
         auto idx_list = std::vector<std::size_t>{};
         for (const auto& idx_str : indices) {
             try {
                 const auto idx = std::stoull(idx_str);
                 if (idx >= prog.driver_state.recurring_commands.size()) {
-                    *err << "error: index " << idx << " out of range (max: "
-                        << prog.driver_state.recurring_commands.size() - 1 << ")\n";
+                    *err << err_colors.error << "error: " << err_colors.reset
+                         << "index " << idx << " out of range (max: "
+                         << prog.driver_state.recurring_commands.size() - 1 << ")\n";
                     continue;
                 }
                 idx_list.push_back(idx);
             } catch (...) {
-                *err << "error: invalid index: " << idx_str << "\n";
+                *err << err_colors.error << "error: " << err_colors.reset
+                     << "invalid index: " << idx_str << "\n";
             }
         }
         std::sort(idx_list.begin(), idx_list.end(), std::greater<std::size_t>());
@@ -1198,25 +1312,27 @@ void driver_t<P>::handle_repeat_clear(const std::vector<std::string>& indices) {
             prog.driver_state.recurring_commands.erase(
                 prog.driver_state.recurring_commands.begin() + idx);
         }
-        *out << "clear " << idx_list.size() << " recurring command(s)\n";
+        *out << colors.info << "clear " << colors.value << idx_list.size()
+             << colors.reset << colors.info << " recurring command(s)" << colors.reset << "\n";
     }
 }
 
 template<Physics P>
 void driver_t<P>::handle_init() {
     if (prog.physics_state.has_value()) {
-        *err << "error: state already initialized; use 'reset' to clear state first\n";
+        *err << err_colors.error << "error: " << err_colors.reset
+             << "state already initialized; use 'reset' to clear state first\n";
         return;
     }
     prog.physics_state = initial_state(exec_context);
-    *out << "initialized physics state\n";
+    *out << colors.info << "initialized physics state" << colors.reset << "\n";
 }
 
 template<Physics P>
 void driver_t<P>::handle_reset() {
     prog.physics_state = std::nullopt;
     prog.driver_state = driver::state_t{};
-    *out << "cleared physics state\n";
+    *out << colors.info << "cleared physics state" << colors.reset << "\n";
 }
 
 template<typename T>
@@ -1236,10 +1352,12 @@ void driver_t<P>::handle_load(const std::string& filename) {
     if (filename.ends_with(".prog") || filename.ends_with(".mist")) {
         auto file = std::ifstream{filename};
         if (!file) {
-            *err << "error: failed to open " << filename << "\n";
+            *err << err_colors.error << "error: " << err_colors.reset
+                 << "failed to open " << filename << "\n";
             return;
         }
-        *out << "loading commands from " << filename << "\n";
+        *out << colors.info << "loading commands from " << colors.value << filename
+             << colors.reset << "\n";
         auto line = std::string{};
         auto line_num = 0;
         while (std::getline(file, line)) {
@@ -1251,11 +1369,12 @@ void driver_t<P>::handle_load(const std::string& filename) {
             // Skip empty lines and comments
             if (line.empty() || line[0] == '#') continue;
             // Echo the command
-            *out << "> " << line << "\n";
+            *out << colors.prompt << "> " << colors.reset << line << "\n";
             // Parse and execute
             const auto cmd = parse_command(line);
             if (cmd.cmd == command_t::type::invalid) {
-                *err << filename << ":" << line_num << ": error: " << cmd.error_msg << "\n";
+                *err << err_colors.error << filename << ":" << line_num << ": error: "
+                     << err_colors.reset << cmd.error_msg << "\n";
                 continue;
             }
             if (!execute(cmd)) {
@@ -1263,13 +1382,15 @@ void driver_t<P>::handle_load(const std::string& filename) {
                 return;
             }
         }
-        *out << "finished loading " << filename << "\n";
+        *out << colors.info << "finished loading " << colors.value << filename
+             << colors.reset << "\n";
         return;
     }
 
     auto file = std::ifstream{filename};
     if (!file) {
-        *err << "error: failed to open " << filename << "\n";
+        *err << err_colors.error << "error: " << err_colors.reset
+             << "failed to open " << filename << "\n";
         return;
     }
 
@@ -1281,7 +1402,8 @@ void driver_t<P>::handle_load(const std::string& filename) {
     // Try checkpoint first - if successful, we're done
     try {
         deserialize_with_format(file, format, "checkpoint", prog);
-        *out << "loaded checkpoint from " << filename << "\n";
+        *out << colors.info << "loaded checkpoint from " << colors.value << filename
+             << colors.reset << "\n";
         return;
     } catch (...) {
         // Not a checkpoint, reopen and continue
@@ -1294,7 +1416,8 @@ void driver_t<P>::handle_load(const std::string& filename) {
         deserialize_with_format(file, format, "physics", prog.physics);
         prog.physics_state = std::nullopt;
         prog.driver_state.iteration = 0;
-        *out << "loaded physics from " << filename << "; use 'init' to generate initial state\n";
+        *out << colors.info << "loaded physics from " << colors.value << filename
+             << colors.reset << "; use 'init' to generate initial state\n";
         return;
     } catch (...) {
         // Not physics, reopen and continue
@@ -1306,15 +1429,18 @@ void driver_t<P>::handle_load(const std::string& filename) {
     try {
         deserialize_with_format(file, format, "initial", prog.initial);
         if (prog.physics_state.has_value()) {
-            *err << "warning: loaded initial but state is already initialized; use 'reset' first\n";
+            *err << err_colors.warning << "warning: " << err_colors.reset
+                 << "loaded initial but state is already initialized; use 'reset' first\n";
         }
-        *out << "loaded initial from " << filename << "\n";
+        *out << colors.info << "loaded initial from " << colors.value << filename
+             << colors.reset << "\n";
         return;
     } catch (...) {
         // Not initial either
     }
 
-    *err << "error: could not load checkpoint, physics, or initial from " << filename << "\n";
+    *err << err_colors.error << "error: " << err_colors.reset
+         << "could not load checkpoint, physics, or initial from " << filename << "\n";
 }
 
 template<Physics P>
@@ -1348,13 +1474,17 @@ void driver_t<P>::handle_show_initial() {
 template<Physics P>
 void driver_t<P>::handle_show_timeseries() {
     const auto available = names_of_timeseries(std::type_identity<P>{});
-    *out << "Timeseries:\n";
+    *out << colors.header << "Timeseries:" << colors.reset << "\n";
     for (const auto& col : available) {
         const auto is_selected = prog.driver_state.timeseries.find(col) != prog.driver_state.timeseries.end();
-        *out << "  - [" << (is_selected ? "+" : " ") << "] " << col;
         if (is_selected) {
+            *out << "  - " << colors.selected << "[+]" << colors.reset << " "
+                 << colors.key << col << colors.reset;
             const auto sample_count = prog.driver_state.timeseries.at(col).size();
-            *out << " (" << sample_count << " sample" << (sample_count != 1 ? "s" : "") << ")";
+            *out << " (" << colors.value << sample_count << colors.reset
+                 << " sample" << (sample_count != 1 ? "s" : "") << ")";
+        } else {
+            *out << "  - " << colors.unselected << "[ ] " << col << colors.reset;
         }
         *out << "\n";
     }
@@ -1363,14 +1493,19 @@ void driver_t<P>::handle_show_timeseries() {
 template<Physics P>
 void driver_t<P>::handle_show_products() {
     const auto available = names_of_products(std::type_identity<P>{});
-    *out << "Products:\n";
+    *out << colors.header << "Products:" << colors.reset << "\n";
     for (const auto& prod : available) {
         const auto is_selected = std::find(
             prog.driver_state.selected_products.begin(),
             prog.driver_state.selected_products.end(),
             prod
         ) != prog.driver_state.selected_products.end();
-        *out << "  - [" << (is_selected ? "+" : " ") << "] " << prod << "\n";
+        if (is_selected) {
+            *out << "  - " << colors.selected << "[+]" << colors.reset << " "
+                 << colors.key << prod << colors.reset << "\n";
+        } else {
+            *out << "  - " << colors.unselected << "[ ] " << prod << colors.reset << "\n";
+        }
     }
 }
 
@@ -1387,14 +1522,15 @@ void driver_t<P>::handle_help() {
 
 template<Physics P>
 void driver_t<P>::handle_stop() {
-    *out << "\n=== Simulation Complete ===\n";
+    *out << "\n" << colors.header << "=== Simulation Complete ===" << colors.reset << "\n";
     if (prog.physics_state.has_value()) {
         const auto time_names = names_of_time(std::type_identity<P>{});
         *out << "Final times: ";
         for (std::size_t i = 0; i < time_names.size(); ++i) {
             if (i > 0) *out << " ";
-            *out << time_names[i] << "=" << std::scientific << std::showpos << std::setprecision(6)
-                << get_time(*prog.physics_state, time_names[i]) << std::noshowpos;
+            *out << colors.label << time_names[i] << "=" << colors.reset
+                 << colors.value << std::scientific << std::showpos << std::setprecision(6)
+                 << get_time(*prog.physics_state, time_names[i]) << std::noshowpos << colors.reset;
         }
         *out << "\n";
     }
@@ -1536,7 +1672,7 @@ bool driver_t<P>::execute(const command_t& cmd) {
                 break;
         }
     } catch (const std::exception& e) {
-        *err << "Error: " << e.what() << "\n";
+        *err << err_colors.error << "Error: " << err_colors.reset << e.what() << "\n";
     }
     return true;
 }
@@ -1699,7 +1835,8 @@ void repl_t<P>::run() {
         const auto cmd = parse_command(input);
 
         if (cmd.cmd == command_t::type::invalid) {
-            std::cerr << "error: " << cmd.error_msg << "\n";
+            const auto err_colors = color::auto_scheme(std::cerr);
+            std::cerr << err_colors.error << "error: " << err_colors.reset << cmd.error_msg << "\n";
             continue;
         }
 
