@@ -215,21 +215,13 @@ public:
         if (!field_counts_.empty()) {
             field_counts_.back()++;
         }
-        // Push sentinel for anonymous group (no position tracking needed)
-        group_positions_.push_back(-1);
+        // Write GROUP type tag for anonymous groups
+        write_raw(binary_format::TYPE_GROUP);
+        // Save position for field count backfill
+        group_positions_.push_back(os_.tellp());
+        uint64_t placeholder = 0;
+        write_raw(placeholder);
         field_counts_.push_back(0);
-        
-        // For anonymous groups: first item writes full schema, subsequent items skip it
-        // Check if this is the first item (parent count was just incremented to 1)
-        bool is_first_item = false;
-        if (field_counts_.size() >= 2) {
-            // Parent's count is at field_counts_[size-2], we just incremented it
-            is_first_item = (field_counts_[field_counts_.size() - 2] == 1);
-        }
-        
-        if (!is_first_item) {
-            in_anonymous_group_++;
-        }
     }
 
     void begin_list(const char* name) {
@@ -255,23 +247,15 @@ public:
 
         std::streampos pos = group_positions_.back();
         group_positions_.pop_back();
-        
+
         uint64_t count = field_counts_.back();
         field_counts_.pop_back();
 
-        // If this was an anonymous group (sentinel -1)
-        if (pos == std::streampos(-1)) {
-            // Decrement anonymous counter if we're in anonymous mode
-            if (in_anonymous_group_ > 0) {
-                in_anonymous_group_--;
-            }
-        } else {
-            // Named group/list - backfill the count
-            std::streampos current_pos = os_.tellp();
-            os_.seekp(pos);
-            write_raw(count);
-            os_.seekp(current_pos);
-        }
+        // Backfill the count
+        std::streampos current_pos = os_.tellp();
+        os_.seekp(pos);
+        write_raw(count);
+        os_.seekp(current_pos);
     }
 
 private:
@@ -279,7 +263,6 @@ private:
     bool header_written_;
     std::vector<std::streampos> group_positions_;
     std::vector<uint64_t> field_counts_;
-    int in_anonymous_group_ = 0;  // Counter for nested anonymous groups
 
     void ensure_header() {
         if (!header_written_) {
@@ -287,29 +270,21 @@ private:
             write_raw(binary_format::VERSION);
             header_written_ = true;
         }
-        // Increment field count for parent group (only if not in anonymous group)
-        if (!field_counts_.empty() && in_anonymous_group_ == 0) {
+        // Increment field count for parent group
+        if (!field_counts_.empty()) {
             field_counts_.back()++;
         }
     }
 
     void write_name(const char* name) {
-        // Skip field names inside anonymous groups (list items)
-        if (in_anonymous_group_ > 0) {
-            return;
-        }
         uint64_t length = std::strlen(name);
         write_raw(length);
         if (length > 0) {
             os_.write(name, static_cast<std::streamsize>(length));
         }
     }
-    
+
     void write_type_tag(uint8_t tag) {
-        // Skip type tags inside anonymous groups (structure is known from first item)
-        if (in_anonymous_group_ > 0) {
-            return;
-        }
         write_raw(tag);
     }
 

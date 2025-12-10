@@ -1,483 +1,274 @@
 #pragma once
 
+#include <cctype>
 #include <istream>
+#include <map>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
-#include <cctype>
 #include "core.hpp"
 
 namespace mist {
 
 // =============================================================================
-// ASCII Reader
+// ASCII Reader - key-based lookup, missing fields return false
 // =============================================================================
 
 class ascii_reader {
 public:
-    explicit ascii_reader(std::istream& is)
-        : is_(is), current_group_("") {}
+    explicit ascii_reader(std::istream& is) : is_(is) {}
 
-    // =========================================================================
-    // Scalar types
-    // =========================================================================
+    // --- Scalars (return false if field missing) ---
 
     template<typename T>
         requires std::is_arithmetic_v<T>
-    void read_scalar(const char* name, T& value) {
-        skip_whitespace_and_comments();
-        std::string field_name = read_identifier();
-        if (field_name != name) {
-            throw std::runtime_error(
-                "Expected field '" + std::string(name) + "' but found '" + field_name + 
-                "' in group '" + current_group_ + "'");
-        }
-        skip_whitespace();
-        expect_char('=');
-        skip_whitespace();
-        value = read_value<T>();
+    auto read_scalar(const char* name, T& value) -> bool {
+        if (!seek_field(name)) return false;
+        expect('=');
+        value = read_number<T>();
+        return true;
     }
 
-    // =========================================================================
-    // String type
-    // =========================================================================
-
-    void read_string(const char* name, std::string& value) {
-        skip_whitespace_and_comments();
-        std::string field_name = read_identifier();
-        if (field_name != name) {
-            throw std::runtime_error(
-                "Expected field '" + std::string(name) + "' but found '" + field_name +
-                "' in group '" + current_group_ + "'");
-        }
-        skip_whitespace();
-        expect_char('=');
-        skip_whitespace();
+    auto read_string(const char* name, std::string& value) -> bool {
+        if (!seek_field(name)) return false;
+        expect('=');
         value = read_quoted_string();
+        return true;
     }
 
-    void read_string(std::string& value) {
-        skip_whitespace_and_comments();
+    auto read_string(std::string& value) -> bool {
+        skip_ws();
+        if (peek() != '"') return false;
         value = read_quoted_string();
+        return true;
     }
 
-    // =========================================================================
-    // Arrays (fixed-size vec_t)
-    // =========================================================================
+    // --- Arrays ---
 
     template<typename T, std::size_t N>
-    void read_array(const char* name, vec_t<T, N>& value) {
-        skip_whitespace_and_comments();
-        std::string field_name = read_identifier();
-        if (field_name != name) {
-            throw std::runtime_error(
-                "Expected field '" + std::string(name) + "' but found '" + field_name + 
-                "' in group '" + current_group_ + "'");
-        }
-        skip_whitespace();
-        expect_char('=');
-        skip_whitespace();
-        expect_char('[');
+    auto read_array(const char* name, vec_t<T, N>& value) -> bool {
+        if (!seek_field(name)) return false;
+        expect('=');
+        expect('[');
         for (std::size_t i = 0; i < N; ++i) {
-            skip_whitespace();
-            value[i] = read_value<T>();
-            skip_whitespace();
-            if (i < N - 1) {
-                expect_char(',');
-            }
+            skip_ws();
+            value[i] = read_number<T>();
+            skip_ws();
+            if (i < N - 1) expect(',');
         }
-        skip_whitespace();
-        expect_char(']');
+        expect(']');
+        return true;
     }
-
-    // =========================================================================
-    // Arrays (dynamic std::vector)
-    // =========================================================================
 
     template<typename T>
         requires std::is_arithmetic_v<T>
-    void read_array(const char* name, std::vector<T>& value) {
-        skip_whitespace_and_comments();
-        std::string field_name = read_identifier();
-        if (field_name != name) {
-            throw std::runtime_error(
-                "Expected field '" + std::string(name) + "' but found '" + field_name + 
-                "' in group '" + current_group_ + "'");
-        }
-        skip_whitespace();
-        expect_char('=');
-        skip_whitespace();
-        expect_char('[');
-        
+    auto read_array(const char* name, std::vector<T>& value) -> bool {
+        if (!seek_field(name)) return false;
+        expect('=');
+        expect('[');
         value.clear();
-        skip_whitespace();
-        
-        // Handle empty vector
-        if (peek_char() == ']') {
-            get_char();
-            return;
-        }
-        
-        while (true) {
-            skip_whitespace();
-            value.push_back(read_value<T>());
-            skip_whitespace();
-            char c = peek_char();
-            if (c == ',') {
-                get_char();
-            } else if (c == ']') {
-                get_char();
-                break;
-            } else {
-                throw std::runtime_error(
-                    "Expected ',' or ']' but found '" + std::string(1, c) + "'");
+        skip_ws();
+        if (peek() != ']') {
+            while (true) {
+                skip_ws();
+                value.push_back(read_number<T>());
+                skip_ws();
+                if (peek() == ',') { get(); continue; }
+                if (peek() == ']') break;
+                throw std::runtime_error("expected ',' or ']'");
             }
         }
+        expect(']');
+        return true;
     }
 
-    // =========================================================================
-    // Groups (named and anonymous)
-    // =========================================================================
+    // --- Bulk data ---
 
-    void begin_group(const char* name) {
-        skip_whitespace_and_comments();
-        std::string field_name = read_identifier();
-        if (field_name != name) {
-            throw std::runtime_error(
-                "Expected group '" + std::string(name) + "' but found '" + field_name + 
-                "' in group '" + current_group_ + "'");
+    template<typename T>
+        requires std::is_arithmetic_v<T>
+    auto read_data(const char* name, T* ptr, std::size_t count) -> bool {
+        if (!seek_field(name)) return false;
+        expect('=');
+        expect('[');
+        for (std::size_t i = 0; i < count; ++i) {
+            skip_ws();
+            ptr[i] = read_number<T>();
+            skip_ws();
+            if (i < count - 1) expect(',');
         }
-        skip_whitespace();
-        expect_char('{');
-        
-        std::string prev_group = current_group_;
-        current_group_ = current_group_.empty() ? name : current_group_ + "/" + name;
-        group_stack_.push_back(prev_group);
+        expect(']');
+        return true;
     }
 
-    void begin_group() {
-        skip_whitespace_and_comments();
-        expect_char('{');
-        
-        std::string prev_group = current_group_;
-        current_group_ = current_group_ + "[]";
-        group_stack_.push_back(prev_group);
+    // --- Groups ---
+
+    auto begin_group(const char* name) -> bool {
+        if (!seek_field(name)) return false;
+        expect('{');
+        group_stack_.push_back(is_.tellg());
+        return true;
+    }
+
+    auto begin_group() -> bool {
+        skip_ws();
+        if (peek() != '{') return false;
+        get();
+        group_stack_.push_back(is_.tellg());
+        return true;
     }
 
     void end_group() {
-        skip_whitespace_and_comments();
-        expect_char('}');
+        skip_to_group_end();
+        expect('}');
         if (!group_stack_.empty()) {
-            current_group_ = group_stack_.back();
             group_stack_.pop_back();
         }
     }
 
-    // List operations (for vectors of compound types)
-    // In ASCII format, lists are identical to groups
-    void begin_list(const char* name) {
-        begin_group(name);
+    auto begin_list(const char* name) -> bool { return begin_group(name); }
+    void end_list() { end_group(); }
+
+    // --- Query ---
+
+    auto has_field(const char* name) -> bool {
+        auto pos = is_.tellg();
+        bool found = seek_field(name);
+        is_.seekg(pos);
+        return found;
     }
 
-    void end_list() {
-        end_group();
-    }
-
-    // =========================================================================
-    // Bulk data (for ndarray)
-    // =========================================================================
-
-    template<typename T>
-        requires std::is_arithmetic_v<T>
-    void read_data(const char* name, T* ptr, std::size_t count) {
-        skip_whitespace_and_comments();
-        std::string field_name = read_identifier();
-        if (field_name != name) {
-            throw std::runtime_error(
-                "Expected field '" + std::string(name) + "' but found '" + field_name +
-                "' in group '" + current_group_ + "'");
+    auto count_items(const char* name) -> std::size_t {
+        auto pos = is_.tellg();
+        if (!seek_field(name)) {
+            is_.seekg(pos);
+            return 0;
         }
-        skip_whitespace();
-        expect_char('=');
-        skip_whitespace();
-        expect_char('[');
+        expect('{');
 
-        for (std::size_t i = 0; i < count; ++i) {
-            skip_whitespace();
-            ptr[i] = read_value<T>();
-            skip_whitespace();
-            if (i < count - 1) {
-                expect_char(',');
-            }
-        }
-        skip_whitespace();
-        expect_char(']');
-    }
-
-    // Check if we're at the end of the current group (next char is '}')
-    bool at_group_end() {
-        skip_whitespace_and_comments();
-        return peek_char() == '}';
-    }
-
-    // Peek at the next identifier without consuming it
-    std::string peek_identifier() {
-        skip_whitespace_and_comments();
-        std::streampos start_pos = is_.tellg();
-        std::string result = read_identifier();
-        is_.seekg(start_pos);
-        return result;
-    }
-
-    // =========================================================================
-    // Count anonymous groups inside a named group (for compound vectors)
-    // =========================================================================
-
-    std::size_t count_groups(const char* name) {
-        skip_whitespace_and_comments();
-
-        // Save position
-        std::streampos start_pos = is_.tellg();
-
-        // Read and verify group name
-        std::string field_name = read_identifier();
-        if (field_name != name) {
-            throw std::runtime_error(
-                "Expected group '" + std::string(name) + "' but found '" + field_name +
-                "' in group '" + current_group_ + "'");
-        }
-        skip_whitespace();
-        expect_char('{');
-
-        // Count anonymous groups
         std::size_t count = 0;
         int depth = 0;
-
         while (is_) {
-            skip_whitespace_and_comments();
-            char c = peek_char();
-
+            skip_ws();
+            char c = peek();
             if (c == '{') {
-                get_char();
-                if (depth == 0) {
-                    count++;
-                }
+                get();
+                if (depth == 0) count++;
                 depth++;
             } else if (c == '}') {
-                if (depth == 0) {
-                    // End of containing group
-                    break;
-                }
-                get_char();
+                if (depth == 0) break;
+                get();
                 depth--;
             } else if (c == std::char_traits<char>::eof()) {
                 break;
             } else {
-                get_char();
+                get();
             }
         }
-
-        // Restore position
-        is_.seekg(start_pos);
-
+        is_.seekg(pos);
         return count;
     }
 
-    std::size_t count_fields(const char* list_name, const char* field_name) {
-        skip_whitespace_and_comments();
-
-        // Save position
-        std::streampos start_pos = is_.tellg();
-
-        // Read and verify list name
-        std::string name = read_identifier();
-        if (name != list_name) {
-            throw std::runtime_error(
-                "Expected list '" + std::string(list_name) + "' but found '" + name +
-                "' in group '" + current_group_ + "'");
+    // Legacy compatibility
+    auto count_groups(const char* name) -> std::size_t { return count_items(name); }
+    auto count_strings(const char* name) -> std::size_t {
+        auto pos = is_.tellg();
+        if (!seek_field(name)) {
+            is_.seekg(pos);
+            return 0;
         }
-        skip_whitespace();
-        expect_char('{');
+        expect('{');
 
-        // Count occurrences of the named field
         std::size_t count = 0;
         int depth = 0;
-
         while (is_) {
-            skip_whitespace_and_comments();
-            char c = peek_char();
-
+            skip_ws();
+            char c = peek();
             if (c == '}') {
-                if (depth == 0) {
-                    // End of containing list
-                    break;
-                }
-                get_char();
+                if (depth == 0) break;
+                get();
                 depth--;
             } else if (c == '{') {
-                get_char();
-                depth++;
-            } else if (c == std::char_traits<char>::eof()) {
-                break;
-            } else if (std::isalpha(c) || c == '_') {
-                // This might be a field name
-                std::string id = read_identifier();
-                if (id == field_name && depth == 0) {
-                    count++;
-                }
-            } else {
-                get_char();
-            }
-        }
-
-        // Restore position
-        is_.seekg(start_pos);
-
-        return count;
-    }
-
-    std::size_t count_strings(const char* list_name) {
-        skip_whitespace_and_comments();
-
-        // Save position
-        std::streampos start_pos = is_.tellg();
-
-        // Read and verify list name
-        std::string name = read_identifier();
-        if (name != list_name) {
-            throw std::runtime_error(
-                "Expected list '" + std::string(list_name) + "' but found '" + name +
-                "' in group '" + current_group_ + "'");
-        }
-        skip_whitespace();
-        expect_char('{');
-
-        // Count quoted strings at depth 0
-        std::size_t count = 0;
-        int depth = 0;
-
-        while (is_) {
-            skip_whitespace_and_comments();
-            char c = peek_char();
-
-            if (c == '}') {
-                if (depth == 0) {
-                    // End of containing list
-                    break;
-                }
-                get_char();
-                depth--;
-            } else if (c == '{') {
-                get_char();
+                get();
                 depth++;
             } else if (c == '"' && depth == 0) {
-                // Found a string at depth 0
                 count++;
-                read_quoted_string();  // Consume it
+                read_quoted_string();
             } else if (c == std::char_traits<char>::eof()) {
                 break;
             } else {
-                get_char();
+                get();
             }
         }
-
-        // Restore position
-        is_.seekg(start_pos);
-
+        is_.seekg(pos);
         return count;
     }
+
+    auto count_fields(const char*, const char*) -> std::size_t { return 0; }
 
 private:
     std::istream& is_;
-    std::string current_group_;
-    std::vector<std::string> group_stack_;
+    std::vector<std::streampos> group_stack_;
 
-    char peek_char() {
-        return static_cast<char>(is_.peek());
-    }
+    auto peek() -> char { return static_cast<char>(is_.peek()); }
+    auto get() -> char { return static_cast<char>(is_.get()); }
 
-    char get_char() {
-        return static_cast<char>(is_.get());
-    }
-
-    void skip_whitespace() {
-        while (is_ && std::isspace(peek_char())) {
-            get_char();
-        }
-    }
-
-    void skip_whitespace_and_comments() {
+    void skip_ws() {
         while (is_) {
-            skip_whitespace();
-            if (peek_char() == '#') {
-                // Skip comment line
-                while (is_ && get_char() != '\n') {}
+            while (is_ && std::isspace(peek())) get();
+            if (peek() == '#') {
+                while (is_ && get() != '\n') {}
             } else {
                 break;
             }
         }
     }
 
-    void expect_char(char expected) {
-        char c = get_char();
-        if (c != expected) {
-            throw std::runtime_error(
-                "Expected '" + std::string(1, expected) + "' but found '" + 
-                std::string(1, c) + "' in group '" + current_group_ + "'");
+    void expect(char c) {
+        skip_ws();
+        if (get() != c) {
+            throw std::runtime_error(std::string("expected '") + c + "'");
         }
     }
 
-    std::string read_identifier() {
-        std::string result;
-        while (is_) {
-            char c = peek_char();
-            if (std::isalnum(c) || c == '_') {
-                result += get_char();
-            } else {
-                break;
-            }
+    auto read_identifier() -> std::string {
+        std::string s;
+        while (is_ && (std::isalnum(peek()) || peek() == '_')) {
+            s += get();
         }
-        if (result.empty()) {
-            throw std::runtime_error("Expected identifier in group '" + current_group_ + "'");
-        }
-        return result;
+        return s;
     }
 
     template<typename T>
-    T read_value() {
+    auto read_number() -> T {
+        skip_ws();
         std::string token;
         while (is_) {
-            char c = peek_char();
+            char c = peek();
             if (std::isdigit(c) || c == '.' || c == '-' || c == '+' || c == 'e' || c == 'E') {
-                token += get_char();
+                token += get();
             } else {
                 break;
             }
         }
-        
-        if (token.empty()) {
-            throw std::runtime_error("Expected numeric value in group '" + current_group_ + "'");
-        }
-        
         T value;
         std::istringstream iss(token);
         iss >> value;
         if (iss.fail()) {
-            throw std::runtime_error("Failed to parse value '" + token + "' in group '" + current_group_ + "'");
+            throw std::runtime_error("failed to parse number: " + token);
         }
         return value;
     }
 
-    std::string read_quoted_string() {
-        expect_char('"');
+    auto read_quoted_string() -> std::string {
+        skip_ws();
+        expect('"');
         std::string result;
         while (is_) {
-            char c = get_char();
-            if (c == '"') {
-                break;
-            } else if (c == '\\') {
-                char next = get_char();
+            char c = get();
+            if (c == '"') break;
+            if (c == '\\') {
+                char next = get();
                 switch (next) {
                     case '\\': result += '\\'; break;
                     case '"':  result += '"'; break;
@@ -491,6 +282,102 @@ private:
             }
         }
         return result;
+    }
+
+    // Seek to a field by name within the current group
+    auto seek_field(const char* name) -> bool {
+        auto start = group_stack_.empty() ? std::streampos(0) : group_stack_.back();
+        is_.seekg(start);
+
+        int depth = 0;
+        while (is_) {
+            skip_ws();
+            char c = peek();
+
+            if (c == '}') {
+                if (depth == 0) return false;  // End of current group
+                get();
+                depth--;
+            } else if (c == '{') {
+                get();
+                depth++;
+            } else if (c == std::char_traits<char>::eof()) {
+                return false;
+            } else if (depth == 0 && (std::isalpha(c) || c == '_')) {
+                auto id = read_identifier();
+                if (id == name) {
+                    skip_ws();
+                    return true;
+                }
+                // Skip this field's value
+                skip_field_value();
+            } else {
+                get();
+            }
+        }
+        return false;
+    }
+
+    void skip_field_value() {
+        skip_ws();
+        char c = peek();
+        if (c == '=') {
+            get();
+            skip_ws();
+            c = peek();
+            if (c == '"') {
+                read_quoted_string();
+            } else if (c == '[') {
+                skip_bracketed();
+            } else {
+                // Skip scalar value
+                while (is_ && !std::isspace(peek()) && peek() != '}' && peek() != '{') {
+                    get();
+                }
+            }
+        } else if (c == '{') {
+            skip_braced();
+        }
+    }
+
+    void skip_bracketed() {
+        expect('[');
+        int depth = 1;
+        while (is_ && depth > 0) {
+            char c = get();
+            if (c == '[') depth++;
+            else if (c == ']') depth--;
+        }
+    }
+
+    void skip_braced() {
+        expect('{');
+        int depth = 1;
+        while (is_ && depth > 0) {
+            char c = get();
+            if (c == '{') depth++;
+            else if (c == '}') depth--;
+        }
+    }
+
+    void skip_to_group_end() {
+        int depth = 0;
+        while (is_) {
+            skip_ws();
+            char c = peek();
+            if (c == '{') {
+                get();
+                depth++;
+            } else if (c == '}') {
+                if (depth == 0) return;
+                get();
+                depth--;
+            } else if (c == std::char_traits<char>::eof()) {
+                return;
+            } else {
+                get();
+            }
+        }
     }
 };
 

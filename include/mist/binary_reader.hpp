@@ -1,17 +1,17 @@
 #pragma once
 
+#include <cstdint>
 #include <istream>
+#include <stdexcept>
 #include <string>
 #include <vector>
-#include <stdexcept>
-#include <cstdint>
+#include "binary_writer.hpp"
 #include "core.hpp"
-#include "binary_writer.hpp"  // For format constants
 
 namespace mist {
 
 // =============================================================================
-// Binary Reader (Self-Describing Format)
+// Binary Reader - key-based lookup, missing fields return false
 // =============================================================================
 //
 // Binary format specification:
@@ -27,39 +27,15 @@ namespace mist {
 
 class binary_reader {
 public:
-    explicit binary_reader(std::istream& is)
-        : is_(is), header_read_(false) {}
+    explicit binary_reader(std::istream& is) : is_(is) {}
 
-    // =========================================================================
-    // Scalar types
-    // =========================================================================
+    // --- Scalars ---
 
     template<typename T>
         requires std::is_arithmetic_v<T>
-    void read_scalar(const char* name, T& value) {
-        ensure_header();
-        verify_name(name);
-        
+    auto read_scalar(const char* name, T& value) -> bool {
+        if (!seek_field(name)) return false;
         uint8_t type_tag = read_type_tag();
-        
-        // In anonymous mode, we know the type from the C++ template
-        if (in_anonymous_group_ > 0) {
-            if constexpr (std::is_floating_point_v<T>) {
-                double v;
-                read_raw(v);
-                value = static_cast<T>(v);
-            } else if constexpr (sizeof(T) <= 4) {
-                int32_t v;
-                read_raw(v);
-                value = static_cast<T>(v);
-            } else {
-                int64_t v;
-                read_raw(v);
-                value = static_cast<T>(v);
-            }
-            return;
-        }
-        
         if (type_tag == binary_format::TYPE_FLOAT64) {
             double v;
             read_raw(v);
@@ -75,307 +51,207 @@ public:
         } else {
             throw std::runtime_error("Expected scalar type for field '" + std::string(name) + "'");
         }
+        return true;
     }
 
-    // =========================================================================
-    // String type
-    // =========================================================================
-
-    void read_string(const char* name, std::string& value) {
-        ensure_header();
-        verify_name(name);
-
+    auto read_string(const char* name, std::string& value) -> bool {
+        if (!seek_field(name)) return false;
         uint8_t type_tag = read_type_tag();
-
-        if (in_anonymous_group_ == 0 && type_tag != binary_format::TYPE_STRING) {
+        if (type_tag != binary_format::TYPE_STRING) {
             throw std::runtime_error("Expected string type for field '" + std::string(name) + "'");
         }
-
-        uint64_t length;
-        read_raw(length);
-
-        value.resize(length);
-        if (length > 0) {
-            is_.read(value.data(), static_cast<std::streamsize>(length));
-            if (!is_) {
-                throw std::runtime_error("Failed to read string data");
-            }
-        }
+        value = read_string_data();
+        return true;
     }
 
-    void read_string(std::string& value) {
+    auto read_string(std::string& value) -> bool {
+        // Anonymous read within list
         uint8_t type_tag = read_type_tag();
-
-        if (in_anonymous_group_ == 0 && type_tag != binary_format::TYPE_STRING) {
-            throw std::runtime_error("Expected string type");
+        if (type_tag != binary_format::TYPE_STRING) {
+            return false;
         }
-
-        uint64_t length;
-        read_raw(length);
-
-        value.resize(length);
-        if (length > 0) {
-            is_.read(value.data(), static_cast<std::streamsize>(length));
-            if (!is_) {
-                throw std::runtime_error("Failed to read string data");
-            }
-        }
+        value = read_string_data();
+        return true;
     }
 
-    // =========================================================================
-    // Arrays (fixed-size vec_t)
-    // =========================================================================
+    // --- Arrays ---
 
     template<typename T, std::size_t N>
-    void read_array(const char* name, vec_t<T, N>& value) {
-        ensure_header();
-        verify_name(name);
-        
+    auto read_array(const char* name, vec_t<T, N>& value) -> bool {
+        if (!seek_field(name)) return false;
         uint8_t type_tag = read_type_tag();
-        
-        if (in_anonymous_group_ == 0 && type_tag != binary_format::TYPE_ARRAY) {
+        if (type_tag != binary_format::TYPE_ARRAY) {
             throw std::runtime_error("Expected array type for field '" + std::string(name) + "'");
         }
-        
         uint8_t elem_tag = read_type_tag();
-        
         uint64_t count;
         read_raw(count);
-        
         if (count != N) {
             throw std::runtime_error(
-                "Array size mismatch for field '" + std::string(name) + 
+                "Array size mismatch for field '" + std::string(name) +
                 "': expected " + std::to_string(N) + ", got " + std::to_string(count));
         }
-        
         for (std::size_t i = 0; i < N; ++i) {
             value[i] = read_element<T>(elem_tag);
         }
+        return true;
     }
-
-    // =========================================================================
-    // Arrays (dynamic std::vector)
-    // =========================================================================
 
     template<typename T>
         requires std::is_arithmetic_v<T>
-    void read_array(const char* name, std::vector<T>& value) {
-        ensure_header();
-        verify_name(name);
-        
+    auto read_array(const char* name, std::vector<T>& value) -> bool {
+        if (!seek_field(name)) return false;
         uint8_t type_tag = read_type_tag();
-        
-        if (in_anonymous_group_ == 0 && type_tag != binary_format::TYPE_ARRAY) {
+        if (type_tag != binary_format::TYPE_ARRAY) {
             throw std::runtime_error("Expected array type for field '" + std::string(name) + "'");
         }
-        
         uint8_t elem_tag = read_type_tag();
-        
         uint64_t count;
         read_raw(count);
-        
         value.resize(count);
         for (auto& elem : value) {
             elem = read_element<T>(elem_tag);
         }
+        return true;
     }
 
-    // =========================================================================
-    // Bulk data (for ndarray)
-    // =========================================================================
+    // --- Bulk data ---
 
     template<typename T>
         requires std::is_arithmetic_v<T>
-    void read_data(const char* name, T* ptr, std::size_t count) {
-        ensure_header();
-        verify_name(name);
-
+    auto read_data(const char* name, T* ptr, std::size_t count) -> bool {
+        if (!seek_field(name)) return false;
         uint8_t type_tag = read_type_tag();
-
-        if (in_anonymous_group_ == 0 && type_tag != binary_format::TYPE_ARRAY) {
+        if (type_tag != binary_format::TYPE_ARRAY) {
             throw std::runtime_error("Expected array type for field '" + std::string(name) + "'");
         }
-
         [[maybe_unused]] uint8_t elem_tag = read_type_tag();
-
         uint64_t n;
         read_raw(n);
-
         if (n != count) {
             throw std::runtime_error(
                 "Data size mismatch for field '" + std::string(name) +
                 "': expected " + std::to_string(count) + ", got " + std::to_string(n));
         }
-
-        // Read raw bytes directly
         is_.read(reinterpret_cast<char*>(ptr), static_cast<std::streamsize>(count * sizeof(T)));
         if (!is_) {
             throw std::runtime_error("Failed to read data for field '" + std::string(name) + "'");
         }
+        return true;
     }
 
-    // =========================================================================
-    // Groups (named and anonymous)
-    // =========================================================================
+    // --- Groups ---
 
-    void begin_group(const char* name) {
-        ensure_header();
-        verify_name(name);
-        
+    auto begin_group(const char* name) -> bool {
+        if (!seek_field(name)) return false;
         uint8_t type_tag = read_type_tag();
-        
-        if (in_anonymous_group_ == 0 && type_tag != binary_format::TYPE_GROUP) {
+        if (type_tag != binary_format::TYPE_GROUP) {
             throw std::runtime_error("Expected group type for field '" + std::string(name) + "'");
         }
-        
         uint64_t field_count;
         read_raw(field_count);
-        group_field_counts_.push_back(field_count);
+        group_stack_.push_back({is_.tellg(), field_count, false});
+        return true;
     }
 
-    void begin_group() {
-        // Anonymous group within a list
-        // First item has full schema, subsequent items skip schema
-        if (!list_item_indices_.empty()) {
-            list_item_indices_.back()++;
-            bool is_first_item = (list_item_indices_.back() == 1);
-            if (!is_first_item) {
-                in_anonymous_group_++;
-            }
+    auto begin_group() -> bool {
+        // Anonymous group (within list) - read type tag
+        uint8_t type_tag = read_type_tag();
+        if (type_tag != binary_format::TYPE_GROUP) {
+            return false;
         }
-        group_field_counts_.push_back(0);
+        uint64_t field_count;
+        read_raw(field_count);
+        // Anonymous groups within lists are still seekable (not is_list)
+        group_stack_.push_back({is_.tellg(), field_count, false});
+        return true;
     }
 
     void end_group() {
-        if (!group_field_counts_.empty()) {
-            group_field_counts_.pop_back();
-        }
-        // Decrement anonymous counter if we're in anonymous mode
-        if (in_anonymous_group_ > 0) {
-            in_anonymous_group_--;
+        if (!group_stack_.empty()) {
+            group_stack_.pop_back();
         }
     }
 
-    // =========================================================================
-    // Count groups (for deserializing vectors of compounds)
-    // =========================================================================
-
-    std::size_t count_groups(const char* name) {
-        ensure_header();
-
-        // Save position
-        std::streampos pos = is_.tellg();
-
-        // Read and verify name
-        std::string field_name = read_name();
-        if (field_name != name) {
-            throw std::runtime_error(
-                "Expected field '" + std::string(name) + "' but found '" + field_name + "'");
-        }
-
-        uint8_t type_tag;
-        read_raw(type_tag);
-
+    auto begin_list(const char* name) -> bool {
+        if (!seek_field(name)) return false;
+        uint8_t type_tag = read_type_tag();
         if (type_tag != binary_format::TYPE_LIST) {
             throw std::runtime_error("Expected list type for field '" + std::string(name) + "'");
         }
+        uint64_t item_count;
+        read_raw(item_count);
+        group_stack_.push_back({is_.tellg(), item_count, true});
+        return true;
+    }
 
+    void end_list() { end_group(); }
+
+    // --- Query ---
+
+    auto has_field(const char* name) -> bool {
+        auto pos = is_.tellg();
+        bool found = seek_field(name);
+        is_.seekg(pos);
+        return found;
+    }
+
+    auto count_items(const char* name) -> std::size_t {
+        auto pos = is_.tellg();
+        if (!seek_field(name)) {
+            is_.seekg(pos);
+            return 0;
+        }
+        uint8_t type_tag = read_type_tag();
+        if (type_tag != binary_format::TYPE_LIST && type_tag != binary_format::TYPE_GROUP) {
+            is_.seekg(pos);
+            return 0;
+        }
         uint64_t count;
         read_raw(count);
-
-        // Restore position
         is_.seekg(pos);
-
         return static_cast<std::size_t>(count);
     }
 
-    std::size_t count_fields(const char* list_name, const char* /*field_name*/) {
-        // For binary format, the count is stored in the stream and is the same
-        // regardless of the field name within the list
-        return count_groups(list_name);
-    }
-
-    std::size_t count_strings(const char* list_name) {
-        // For binary format, the count is the same as count_groups
-        return count_groups(list_name);
-    }
-
-    void begin_list(const char* name) {
-        ensure_header();
-        verify_name(name);
-        
-        uint8_t type_tag;
-        read_raw(type_tag);
-        
-        if (type_tag != binary_format::TYPE_LIST) {
-            throw std::runtime_error("Expected list type for field '" + std::string(name) + "'");
-        }
-        
-        uint64_t item_count;
-        read_raw(item_count);
-        group_field_counts_.push_back(item_count);
-        list_item_indices_.push_back(0);  // Track item index for this list
-    }
-
-    void end_list() {
-        if (!list_item_indices_.empty()) {
-            list_item_indices_.pop_back();
-        }
-        end_group();
-    }
-
-    // Check if we're at the end of the current group
-    // For binary format, we track field counts, so check if we've read all fields
-    bool at_group_end() {
-        if (group_field_counts_.empty()) return true;
-        return group_field_counts_.back() == 0;
-    }
-
-    // Peek at the next field name without consuming it
-    std::string peek_identifier() {
-        ensure_header();
-        std::streampos pos = is_.tellg();
-        std::string name = read_name();
-        is_.seekg(pos);
-        return name;
-    }
+    // Legacy compatibility
+    auto count_groups(const char* name) -> std::size_t { return count_items(name); }
+    auto count_strings(const char* name) -> std::size_t { return count_items(name); }
 
 private:
     std::istream& is_;
-    bool header_read_;
-    std::vector<uint64_t> group_field_counts_;
-    std::vector<uint64_t> list_item_indices_;  // Track current item index in each list
-    int in_anonymous_group_ = 0;  // Counter for nested anonymous groups
+
+    struct group_info_t {
+        std::streampos start;
+        uint64_t remaining;
+        bool is_list;
+    };
+    std::vector<group_info_t> group_stack_;
+    bool header_read_ = false;
 
     void ensure_header() {
-        if (!header_read_) {
-            uint32_t magic;
-            read_raw(magic);
-            if (magic != binary_format::MAGIC) {
-                throw std::runtime_error("Invalid binary archive: bad magic number");
-            }
-
-            uint8_t version;
-            read_raw(version);
-            if (version != binary_format::VERSION) {
-                throw std::runtime_error(
-                    "Unsupported binary archive version: " + std::to_string(version));
-            }
-
-            header_read_ = true;
+        if (header_read_) return;
+        uint32_t magic;
+        read_raw(magic);
+        if (magic != binary_format::MAGIC) {
+            throw std::runtime_error("Invalid binary archive: bad magic number");
         }
-        // Decrement field count for parent group when reading a field
-        if (!group_field_counts_.empty() && in_anonymous_group_ == 0) {
-            if (group_field_counts_.back() > 0) {
-                group_field_counts_.back()--;
-            }
+        uint8_t version;
+        read_raw(version);
+        if (version != binary_format::VERSION) {
+            throw std::runtime_error("Unsupported binary archive version: " + std::to_string(version));
         }
+        header_read_ = true;
     }
 
-    std::string read_name() {
+    auto read_type_tag() -> uint8_t {
+        uint8_t tag;
+        read_raw(tag);
+        return tag;
+    }
+
+    auto read_name() -> std::string {
         uint64_t length;
         read_raw(length);
-        
         std::string name(length, '\0');
         if (length > 0) {
             is_.read(name.data(), static_cast<std::streamsize>(length));
@@ -386,26 +262,17 @@ private:
         return name;
     }
 
-    void verify_name(const char* expected) {
-        // Skip name reading inside anonymous groups (after first item)
-        if (in_anonymous_group_ > 0) {
-            return;
+    auto read_string_data() -> std::string {
+        uint64_t length;
+        read_raw(length);
+        std::string value(length, '\0');
+        if (length > 0) {
+            is_.read(value.data(), static_cast<std::streamsize>(length));
+            if (!is_) {
+                throw std::runtime_error("Failed to read string data");
+            }
         }
-        std::string actual = read_name();
-        if (actual != expected) {
-            throw std::runtime_error(
-                "Expected field '" + std::string(expected) + "' but found '" + actual + "'");
-        }
-    }
-    
-    uint8_t read_type_tag() {
-        // Skip type tag reading inside anonymous groups (after first item)
-        if (in_anonymous_group_ > 0) {
-            return 0;  // Return dummy value, caller should not use it
-        }
-        uint8_t tag;
-        read_raw(tag);
-        return tag;
+        return value;
     }
 
     template<typename T>
@@ -417,24 +284,7 @@ private:
     }
 
     template<typename T>
-    T read_element(uint8_t elem_tag) {
-        // In anonymous mode, use the C++ type to determine how to read
-        if (in_anonymous_group_ > 0) {
-            if constexpr (std::is_floating_point_v<T>) {
-                double v;
-                read_raw(v);
-                return static_cast<T>(v);
-            } else if constexpr (sizeof(T) <= 4) {
-                int32_t v;
-                read_raw(v);
-                return static_cast<T>(v);
-            } else {
-                int64_t v;
-                read_raw(v);
-                return static_cast<T>(v);
-            }
-        }
-        
+    auto read_element(uint8_t elem_tag) -> T {
         if (elem_tag == binary_format::ELEM_FLOAT64) {
             double v;
             read_raw(v);
@@ -447,9 +297,78 @@ private:
             int64_t v;
             read_raw(v);
             return static_cast<T>(v);
-        } else {
-            throw std::runtime_error("Unknown element type tag");
         }
+        throw std::runtime_error("Unknown element type tag");
+    }
+
+    // Skip a field value (for seeking)
+    void skip_field_value(uint8_t type_tag) {
+        if (type_tag == binary_format::TYPE_FLOAT64) {
+            double v;
+            read_raw(v);
+        } else if (type_tag == binary_format::TYPE_INT32) {
+            int32_t v;
+            read_raw(v);
+        } else if (type_tag == binary_format::TYPE_INT64) {
+            int64_t v;
+            read_raw(v);
+        } else if (type_tag == binary_format::TYPE_STRING) {
+            uint64_t len;
+            read_raw(len);
+            is_.seekg(len, std::ios::cur);
+        } else if (type_tag == binary_format::TYPE_ARRAY) {
+            uint8_t elem_tag;
+            read_raw(elem_tag);
+            uint64_t count;
+            read_raw(count);
+            std::size_t elem_size = (elem_tag == binary_format::ELEM_INT32) ? 4 : 8;
+            is_.seekg(count * elem_size, std::ios::cur);
+        } else if (type_tag == binary_format::TYPE_GROUP) {
+            uint64_t field_count;
+            read_raw(field_count);
+            for (uint64_t i = 0; i < field_count; ++i) {
+                read_name();  // skip field name
+                uint8_t nested_tag = read_type_tag();
+                skip_field_value(nested_tag);
+            }
+        } else if (type_tag == binary_format::TYPE_LIST) {
+            uint64_t item_count;
+            read_raw(item_count);
+            for (uint64_t i = 0; i < item_count; ++i) {
+                uint8_t item_tag = read_type_tag();
+                skip_field_value(item_tag);
+            }
+        }
+    }
+
+    // Seek to a field by name within the current group
+    auto seek_field(const char* name) -> bool {
+        ensure_header();
+
+        auto start = group_stack_.empty() ? std::streampos(5) : group_stack_.back().start;
+        is_.seekg(start);
+
+        // If in a list, we can't seek by name - just return false
+        if (!group_stack_.empty() && group_stack_.back().is_list) {
+            return false;
+        }
+
+        // Scan through fields in current group
+        uint64_t fields_to_scan = group_stack_.empty() ? UINT64_MAX : group_stack_.back().remaining;
+
+        for (uint64_t i = 0; i < fields_to_scan && is_; ++i) {
+            auto field_name = read_name();
+            if (field_name.empty() && !is_) {
+                return false;  // EOF
+            }
+            if (field_name == name) {
+                return true;
+            }
+            // Skip this field's value
+            uint8_t type_tag = read_type_tag();
+            skip_field_value(type_tag);
+        }
+        return false;
     }
 };
 

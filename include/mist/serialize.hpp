@@ -105,13 +105,13 @@ concept ArchiveWriter = requires(A& ar, const char* name) {
 
 template<typename A>
 concept ArchiveReader = requires(A& ar, const char* name, int& i, double& d) {
-    { ar.read_scalar(name, i) } -> std::same_as<void>;
-    { ar.read_scalar(name, d) } -> std::same_as<void>;
-    { ar.begin_group(name) } -> std::same_as<void>;
-    { ar.begin_group() } -> std::same_as<void>;
+    { ar.read_scalar(name, i) } -> std::same_as<bool>;
+    { ar.read_scalar(name, d) } -> std::same_as<bool>;
+    { ar.begin_group(name) } -> std::same_as<bool>;
+    { ar.begin_group() } -> std::same_as<bool>;
     { ar.end_group() } -> std::same_as<void>;
-    { ar.count_groups(name) } -> std::same_as<std::size_t>;
-    { ar.count_fields(name, name) } -> std::same_as<std::size_t>;
+    { ar.has_field(name) } -> std::same_as<bool>;
+    { ar.count_items(name) } -> std::same_as<std::size_t>;
 };
 
 // Concepts for anonymous serialization (used in lists)
@@ -122,7 +122,7 @@ concept HasAnonymousSerialize = requires(A& ar, const T& value) {
 
 template<typename A, typename T>
 concept HasAnonymousDeserialize = requires(A& ar, T& value) {
-    { deserialize_anonymous(ar, value) } -> std::same_as<void>;
+    { deserialize_anonymous(ar, value) } -> std::same_as<bool>;
 };
 
 // =============================================================================
@@ -167,35 +167,35 @@ void serialize(A& ar, const char* name, const cached_t<T, S>& value);
 
 template<ArchiveReader A, typename T>
     requires std::is_arithmetic_v<T>
-void deserialize(A& ar, const char* name, T& value);
+auto deserialize(A& ar, const char* name, T& value) -> bool;
 
 template<ArchiveReader A>
-void deserialize(A& ar, const char* name, std::string& value);
+auto deserialize(A& ar, const char* name, std::string& value) -> bool;
 
 template<ArchiveReader A, typename E>
     requires HasEnumStrings<E>
-void deserialize(A& ar, const char* name, E& value);
+auto deserialize(A& ar, const char* name, E& value) -> bool;
 
 template<ArchiveReader A, typename T, std::size_t N>
-void deserialize(A& ar, const char* name, vec_t<T, N>& value);
+auto deserialize(A& ar, const char* name, vec_t<T, N>& value) -> bool;
 
 template<ArchiveReader A, typename T>
     requires std::is_arithmetic_v<T>
-void deserialize(A& ar, const char* name, std::vector<T>& value);
+auto deserialize(A& ar, const char* name, std::vector<T>& value) -> bool;
 
 template<ArchiveReader A, typename T>
     requires HasFields<T>
-void deserialize(A& ar, const char* name, std::vector<T>& value);
+auto deserialize(A& ar, const char* name, std::vector<T>& value) -> bool;
 
 template<ArchiveReader A, typename T>
     requires HasFields<T>
-void deserialize(A& ar, const char* name, T& value);
+auto deserialize(A& ar, const char* name, T& value) -> bool;
 
 template<ArchiveReader A, typename T>
-void deserialize(A& ar, const char* name, std::optional<T>& value);
+auto deserialize(A& ar, const char* name, std::optional<T>& value) -> bool;
 
 template<ArchiveReader A, typename T, std::size_t S>
-void deserialize(A& ar, const char* name, cached_t<T, S>& value);
+auto deserialize(A& ar, const char* name, cached_t<T, S>& value) -> bool;
 
 // =============================================================================
 // Serialize implementations
@@ -366,67 +366,70 @@ void serialize(A& ar, const char* name, const std::vector<T>& value) {
 // Deserialize implementations
 // =============================================================================
 
-// Scalar types
+// Scalar types - returns true if field was found
 template<ArchiveReader A, typename T>
     requires std::is_arithmetic_v<T>
-void deserialize(A& ar, const char* name, T& value) {
-    ar.read_scalar(name, value);
+auto deserialize(A& ar, const char* name, T& value) -> bool {
+    return ar.read_scalar(name, value);
 }
 
-// std::string
+// std::string - returns true if field was found
 template<ArchiveReader A>
-void deserialize(A& ar, const char* name, std::string& value) {
-    ar.read_string(name, value);
+auto deserialize(A& ar, const char* name, std::string& value) -> bool {
+    return ar.read_string(name, value);
 }
 
-// Enums with ADL to_string/from_string
+// Enums with ADL to_string/from_string - returns true if field was found
 template<ArchiveReader A, typename E>
     requires HasEnumStrings<E>
-void deserialize(A& ar, const char* name, E& value) {
+auto deserialize(A& ar, const char* name, E& value) -> bool {
     std::string str;
-    ar.read_string(name, str);
+    if (!ar.read_string(name, str)) return false;
     value = from_string(std::type_identity<E>{}, str);
+    return true;
 }
 
-// std::pair<T1, T2>
+// std::pair<T1, T2> - returns true if field was found
 template<ArchiveReader A, typename T1, typename T2>
-void deserialize(A& ar, const char* name, std::pair<T1, T2>& value) {
-    ar.begin_group(name);
+auto deserialize(A& ar, const char* name, std::pair<T1, T2>& value) -> bool {
+    if (!ar.begin_group(name)) return false;
     deserialize(ar, "first", value.first);
     deserialize(ar, "second", value.second);
     ar.end_group();
+    return true;
 }
 
-// vec_t<T, N>
+// vec_t<T, N> - returns true if field was found
 template<ArchiveReader A, typename T, std::size_t N>
-void deserialize(A& ar, const char* name, vec_t<T, N>& value) {
-    ar.read_array(name, value);
+auto deserialize(A& ar, const char* name, vec_t<T, N>& value) -> bool {
+    return ar.read_array(name, value);
 }
 
-// std::vector<T> where T is arithmetic
+// std::vector<T> where T is arithmetic - returns true if field was found
 template<ArchiveReader A, typename T>
     requires std::is_arithmetic_v<T>
-void deserialize(A& ar, const char* name, std::vector<T>& value) {
-    ar.read_array(name, value);
+auto deserialize(A& ar, const char* name, std::vector<T>& value) -> bool {
+    return ar.read_array(name, value);
 }
 
-// std::vector<std::string>
+// std::vector<std::string> - returns true if field was found
 template<ArchiveReader A>
-void deserialize(A& ar, const char* name, std::vector<std::string>& value) {
+auto deserialize(A& ar, const char* name, std::vector<std::string>& value) -> bool {
     std::size_t count = ar.count_strings(name);
-    ar.begin_list(name);
+    if (!ar.begin_list(name)) return false;
     value.resize(count);
     for (auto& elem : value) {
         ar.read_string(elem);
     }
     ar.end_list();
+    return true;
 }
 
-// std::vector<std::pair<T1, T2>>
+// std::vector<std::pair<T1, T2>> - returns true if field was found
 template<ArchiveReader A, typename T1, typename T2>
-void deserialize(A& ar, const char* name, std::vector<std::pair<T1, T2>>& value) {
-    std::size_t count = ar.count_groups(name);
-    ar.begin_list(name);
+auto deserialize(A& ar, const char* name, std::vector<std::pair<T1, T2>>& value) -> bool {
+    std::size_t count = ar.count_items(name);
+    if (!ar.begin_list(name)) return false;
     value.resize(count);
     for (auto& elem : value) {
         ar.begin_group();
@@ -435,13 +438,14 @@ void deserialize(A& ar, const char* name, std::vector<std::pair<T1, T2>>& value)
         ar.end_group();
     }
     ar.end_list();
+    return true;
 }
 
-// std::map<std::string, T>
+// std::map<std::string, T> - returns true if field was found
 template<ArchiveReader A, typename T>
-void deserialize(A& ar, const char* name, std::map<std::string, T>& value) {
-    std::size_t count = ar.count_groups(name);
-    ar.begin_list(name);
+auto deserialize(A& ar, const char* name, std::map<std::string, T>& value) -> bool {
+    std::size_t count = ar.count_items(name);
+    if (!ar.begin_list(name)) return false;
     value.clear();
     for (std::size_t i = 0; i < count; ++i) {
         ar.begin_group();
@@ -453,14 +457,15 @@ void deserialize(A& ar, const char* name, std::map<std::string, T>& value) {
         ar.end_group();
     }
     ar.end_list();
+    return true;
 }
 
-// std::vector<T> where T is a compound type
+// std::vector<T> where T is a compound type - returns true if field was found
 template<ArchiveReader A, typename T>
     requires HasFields<T>
-void deserialize(A& ar, const char* name, std::vector<T>& value) {
-    std::size_t count = ar.count_groups(name);
-    ar.begin_list(name);
+auto deserialize(A& ar, const char* name, std::vector<T>& value) -> bool {
+    std::size_t count = ar.count_items(name);
+    if (!ar.begin_list(name)) return false;
     value.resize(count);
     for (auto& elem : value) {
         ar.begin_group();
@@ -470,23 +475,25 @@ void deserialize(A& ar, const char* name, std::vector<T>& value) {
         ar.end_group();
     }
     ar.end_list();
+    return true;
 }
 
-// Compound types with fields()
+// Compound types with fields() - returns true if field was found
 template<ArchiveReader A, typename T>
     requires HasFields<T>
-void deserialize(A& ar, const char* name, T& value) {
-    ar.begin_group(name);
+auto deserialize(A& ar, const char* name, T& value) -> bool {
+    if (!ar.begin_group(name)) return false;
     std::apply([&ar](auto&&... fields) {
         (deserialize(ar, fields.name, fields.value), ...);
     }, value.fields());
     ar.end_group();
+    return true;
 }
 
-// std::optional<T>
+// std::optional<T> - returns true if field was found
 template<ArchiveReader A, typename T>
-void deserialize(A& ar, const char* name, std::optional<T>& value) {
-    ar.begin_group(name);
+auto deserialize(A& ar, const char* name, std::optional<T>& value) -> bool {
+    if (!ar.begin_group(name)) return false;
     bool has_value = false;
     deserialize(ar, "has_value", has_value);
     if (has_value) {
@@ -497,13 +504,14 @@ void deserialize(A& ar, const char* name, std::optional<T>& value) {
         value = std::nullopt;
     }
     ar.end_group();
+    return true;
 }
 
-// cached_t<T, S> (ndarray) - named version
+// cached_t<T, S> (ndarray) - named version, returns true if field was found
 template<ArchiveReader A, typename T, std::size_t S>
-void deserialize(A& ar, const char* name, cached_t<T, S>& arr) {
+auto deserialize(A& ar, const char* name, cached_t<T, S>& arr) -> bool {
     static_assert(std::is_arithmetic_v<T>, "cached_t deserialization requires arithmetic element type");
-    ar.begin_group(name);
+    if (!ar.begin_group(name)) return false;
     ivec_t<S> st;
     uvec_t<S> sh;
     deserialize(ar, "start", st);
@@ -511,13 +519,14 @@ void deserialize(A& ar, const char* name, cached_t<T, S>& arr) {
     arr = cached_t<T, S>(index_space(st, sh), memory::host);
     ar.read_data("data", data(arr), size(arr));
     ar.end_group();
+    return true;
 }
 
 // cached_t<T, S> (ndarray) - anonymous version for use in lists
 template<ArchiveReader A, typename T, std::size_t S>
-void deserialize_anonymous(A& ar, cached_t<T, S>& arr) {
+auto deserialize_anonymous(A& ar, cached_t<T, S>& arr) -> bool {
     static_assert(std::is_arithmetic_v<T>, "cached_t deserialization requires arithmetic element type");
-    ar.begin_group();
+    if (!ar.begin_group()) return false;
     ivec_t<S> st;
     uvec_t<S> sh;
     deserialize(ar, "start", st);
@@ -525,14 +534,15 @@ void deserialize_anonymous(A& ar, cached_t<T, S>& arr) {
     arr = cached_t<T, S>(index_space(st, sh), memory::host);
     ar.read_data("data", data(arr), size(arr));
     ar.end_group();
+    return true;
 }
 
-// std::vector<T> where T has anonymous deserialization
+// std::vector<T> where T has anonymous deserialization - returns true if field was found
 template<ArchiveReader A, typename T>
     requires HasAnonymousDeserialize<A, T>
-void deserialize(A& ar, const char* name, std::vector<T>& value) {
-    std::size_t count = ar.count_groups(name);
-    ar.begin_list(name);
+auto deserialize(A& ar, const char* name, std::vector<T>& value) -> bool {
+    std::size_t count = ar.count_items(name);
+    if (!ar.begin_list(name)) return false;
     value.clear();
     value.reserve(count);
     for (std::size_t i = 0; i < count; ++i) {
@@ -541,6 +551,7 @@ void deserialize(A& ar, const char* name, std::vector<T>& value) {
         value.push_back(std::move(elem));
     }
     ar.end_list();
+    return true;
 }
 
 // =============================================================================

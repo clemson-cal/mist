@@ -1,16 +1,16 @@
 #pragma once
 
+#include <iomanip>
 #include <ostream>
-#include <stdexcept>
+#include <sstream>
 #include <string>
 #include <vector>
-#include <iomanip>
 #include "core.hpp"
 
 namespace mist {
 
 // =============================================================================
-// ASCII Writer
+// ASCII Writer - writes key-based format
 // =============================================================================
 
 class ascii_writer {
@@ -18,9 +18,7 @@ public:
     explicit ascii_writer(std::ostream& os, int indent_size = 4)
         : os_(os), indent_size_(indent_size), indent_level_(0) {}
 
-    // =========================================================================
-    // Scalar types
-    // =========================================================================
+    // --- Scalars ---
 
     template<typename T>
         requires std::is_arithmetic_v<T>
@@ -29,23 +27,17 @@ public:
         os_ << name << " = " << format_value(value) << "\n";
     }
 
-    // =========================================================================
-    // String type
-    // =========================================================================
-
     void write_string(const char* name, const std::string& value) {
         write_indent();
-        os_ << name << " = \"" << escape_string(value) << "\"\n";
+        os_ << name << " = \"" << escape(value) << "\"\n";
     }
 
     void write_string(const std::string& value) {
         write_indent();
-        os_ << "\"" << escape_string(value) << "\"\n";
+        os_ << "\"" << escape(value) << "\"\n";
     }
 
-    // =========================================================================
-    // Arrays (fixed-size vec_t)
-    // =========================================================================
+    // --- Arrays ---
 
     template<typename T, std::size_t N>
     void write_array(const char* name, const vec_t<T, N>& value) {
@@ -57,10 +49,6 @@ public:
         }
         os_ << "]\n";
     }
-
-    // =========================================================================
-    // Arrays (dynamic std::vector)
-    // =========================================================================
 
     template<typename T>
         requires std::is_arithmetic_v<T>
@@ -74,9 +62,21 @@ public:
         os_ << "]\n";
     }
 
-    // =========================================================================
-    // Groups (named and anonymous)
-    // =========================================================================
+    // --- Bulk data ---
+
+    template<typename T>
+        requires std::is_arithmetic_v<T>
+    void write_data(const char* name, const T* ptr, std::size_t count) {
+        write_indent();
+        os_ << name << " = [";
+        for (std::size_t i = 0; i < count; ++i) {
+            if (i > 0) os_ << ", ";
+            os_ << format_value(ptr[i]);
+        }
+        os_ << "]\n";
+    }
+
+    // --- Groups ---
 
     void begin_group(const char* name) {
         write_indent();
@@ -96,31 +96,8 @@ public:
         os_ << "}\n";
     }
 
-    // List operations (for vectors of compound types)
-    // In ASCII format, lists are identical to groups
-    void begin_list(const char* name) {
-        begin_group(name);
-    }
-
-    void end_list() {
-        end_group();
-    }
-
-    // =========================================================================
-    // Bulk data (for ndarray)
-    // =========================================================================
-
-    template<typename T>
-        requires std::is_arithmetic_v<T>
-    void write_data(const char* name, const T* ptr, std::size_t count) {
-        write_indent();
-        os_ << name << " = [";
-        for (std::size_t i = 0; i < count; ++i) {
-            if (i > 0) os_ << ", ";
-            os_ << format_value(ptr[i]);
-        }
-        os_ << "]\n";
-    }
+    void begin_list(const char* name) { begin_group(name); }
+    void end_list() { end_group(); }
 
 private:
     std::ostream& os_;
@@ -134,12 +111,11 @@ private:
     }
 
     template<typename T>
-    static std::string format_value(const T& value) {
+    static auto format_value(const T& value) -> std::string {
         if constexpr (std::is_floating_point_v<T>) {
             std::ostringstream oss;
             oss << std::setprecision(15) << value;
-            std::string s = oss.str();
-            // Ensure floating point values have a decimal point
+            auto s = oss.str();
             if (s.find('.') == std::string::npos && s.find('e') == std::string::npos) {
                 s += ".0";
             }
@@ -149,7 +125,7 @@ private:
         }
     }
 
-    static std::string escape_string(const std::string& s) {
+    static auto escape(const std::string& s) -> std::string {
         std::string result;
         result.reserve(s.size());
         for (char c : s) {
