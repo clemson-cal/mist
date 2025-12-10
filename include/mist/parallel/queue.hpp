@@ -17,10 +17,8 @@ template<typename T>
 class blocking_queue {
 public:
     void send(T item) {
-        {
-            std::unique_lock<std::mutex> lock(_mutex);
-            _queue.push(std::move(item));
-        }
+        std::unique_lock<std::mutex> lock(_mutex);
+        _queue.push(std::move(item));
         _cv.notify_one();
     }
 
