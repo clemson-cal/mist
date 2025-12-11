@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mist"
+version = "0.1.0"
+description = "Python tools for mist simulation framework"
+requires-python = ">=3.8"
+dependencies = [
+    "numpy",
+    "matplotlib",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[project.scripts]
+mist-plot-products = "mist.plot_products:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mist*"]

@@ -604,16 +604,28 @@ class BinaryReader:
                     self._read_uint8()  # TYPE_STRING
                     items.append(self._read_string_value())
                 return name, items
-            else:
-                # List of compound objects - first type tag is start of first item's first field
-                # Put the type tag back conceptually by handling in _read_list_item_with_schema
-                self._file.seek(self._file.tell() - 1)  # rewind 1 byte
-                items = [self._read_list_item_with_schema()]
-                # Read remaining items without schema (just values)
-                schema = self._extract_schema(items[0])
+            elif first_type_tag == TYPE_GROUP:
+                # List of compound objects - each item has TYPE_GROUP + field_count + fields
+                items = []
+                # First item already read TYPE_GROUP
+                field_count = self._read_uint64()
+                first_item = {}
+                for _ in range(field_count):
+                    field_name, field_value = self._read_field()
+                    first_item[field_name] = field_value
+                items.append(first_item)
+                # Remaining items
                 for _ in range(item_count - 1):
-                    items.append(self._read_list_item_without_schema(schema))
+                    self._read_uint8()  # TYPE_GROUP tag
+                    fc = self._read_uint64()
+                    item = {}
+                    for _ in range(fc):
+                        fn, fv = self._read_field()
+                        item[fn] = fv
+                    items.append(item)
                 return name, items
+            else:
+                raise ParseError(f"Unexpected type tag in list: {first_type_tag}")
         else:
             raise ParseError(f"Unknown type tag: {type_tag}")
 
@@ -749,16 +761,34 @@ class BinaryReader:
         return result
 
     def read_all(self) -> dict:
-        """Read entire binary archive into nested dict."""
+        """Read entire binary archive into nested dict.
+
+        This handles files that contain multiple concatenated binary archives
+        (e.g., products files where each product is serialized with a separate header).
+        """
         self._ensure_header()
         result = {}
 
         while True:
             # Check if we're at EOF
             pos = self._file.tell()
-            if not self._file.read(1):
+            peek = self._file.read(1)
+            if not peek:
                 break
             self._file.seek(pos)
+
+            # Check if we hit another header (concatenated archives)
+            if len(peek) >= 1:
+                # Peek at potential magic number
+                potential_magic = self._file.read(4)
+                if len(potential_magic) == 4:
+                    magic_val = struct.unpack("<I", potential_magic)[0]
+                    if magic_val == BINARY_MAGIC:
+                        # Skip the header (magic already read, now read version)
+                        self._file.read(1)  # version byte
+                        continue
+                # Not a magic header, rewind
+                self._file.seek(pos)
 
             name, value = self._read_field()
             result[name] = value

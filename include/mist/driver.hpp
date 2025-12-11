@@ -1234,13 +1234,16 @@ void driver_t<P>::handle_write_products(const std::optional<std::string>& filena
 
     auto file = std::ofstream{filename};
 
-    for (const auto& name : prog.driver_state.selected_products) {
-        const auto product = get_product(*prog.physics_state, name, exec_context);
-        if (format == driver::output_format::ascii) {
-            auto writer = ascii_writer{file};
+    if (format == driver::output_format::ascii) {
+        auto writer = ascii_writer{file};
+        for (const auto& name : prog.driver_state.selected_products) {
+            const auto product = get_product(*prog.physics_state, name, exec_context);
             serialize(writer, name.c_str(), product);
-        } else {
-            auto writer = binary_writer{file};
+        }
+    } else {
+        auto writer = binary_writer{file};
+        for (const auto& name : prog.driver_state.selected_products) {
+            const auto product = get_product(*prog.physics_state, name, exec_context);
             serialize(writer, name.c_str(), product);
         }
     }

@@ -33,7 +33,16 @@ install_manifest.txt
 .DS_Store
 
 # Python virtual env
-.venv
+.venv/
+
+# Python build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
 
 # Compilation database
 compile_commands.json
