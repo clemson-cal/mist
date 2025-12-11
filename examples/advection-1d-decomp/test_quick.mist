@@ -1,0 +1,6 @@
+set exec num_threads=1
+set initial num_partitions=1
+set initial num_zones=100
+init
+n++
+stop

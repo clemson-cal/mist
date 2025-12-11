@@ -266,52 +266,48 @@ auto initial_state(const advection::exec_context_t& ctx) -> advection::state_t {
     return {std::move(patches), 0.0};
 }
 
-// Request structure for ghost exchange
-struct ghost_request_t {
-    int requester;
-    cached_t<double, 1>* buffer;
-    index_space_t<1> requested_space;
-};
-
 // Unigrid Cartesian topology for 1D periodic domain
+// Satisfies parallel::Topology<unigrid_topology_1d, patch_state_t>
 struct unigrid_topology_1d {
+    using buffer_t = cached_t<double, 1>;
+    using space_t = index_space_t<1>;
+
     int num_zones;
 
-    // Find which patch owns a given global index
-    auto owner(int global_index, const std::vector<patch_state_t>& patches) const -> int {
-        for (std::size_t p = 0; p < patches.size(); ++p) {
-            if (global_index >= patches[p].i0 && global_index < patches[p].i1) {
-                return static_cast<int>(p);
+    // Returns indices of contexts that own data in the requested space
+    auto owners(space_t requested_space, const std::vector<patch_state_t>& patches) const
+        -> std::vector<std::size_t>
+    {
+        auto result = std::vector<std::size_t>{};
+        auto req_start = start(requested_space)[0];
+        auto req_size = shape(requested_space)[0];
+
+        for (std::size_t i = 0; i < req_size; ++i) {
+            auto global_idx = (req_start + static_cast<int>(i) + num_zones) % num_zones;
+            for (std::size_t p = 0; p < patches.size(); ++p) {
+                if (global_idx >= patches[p].i0 && global_idx < patches[p].i1) {
+                    if (result.empty() || result.back() != p) {
+                        result.push_back(p);
+                    }
+                    break;
+                }
             }
         }
-        return -1; // Should not happen with valid periodic indices
+        return result;
     }
 
-    // Execute ghost exchange: collect requests, route to owners, fill
-    void exchange(std::vector<patch_state_t>& patches) const {
-        auto requests = std::vector<ghost_request_t>{};
+    // Copies overlapping data from source to destination
+    void copy(buffer_t& dst, const buffer_t& src, space_t requested_space) const {
+        auto req_start = start(requested_space)[0];
+        auto req_size = shape(requested_space)[0];
+        auto src_space = space(src);
+        auto src_start = start(src_space)[0];
+        auto src_end = src_start + static_cast<int>(shape(src_space)[0]);
 
-        for (std::size_t p = 0; p < patches.size(); ++p) {
-            ghost_exchange_t::need(patches[p], [&](cached_t<double, 1>& buf) {
-                requests.push_back({static_cast<int>(p), &buf, space(buf)});
-            });
-        }
-
-        // Route each request to owning patch(es) and fill
-        for (auto& req : requests) {
-            auto req_start = start(req.requested_space)[0];
-            auto req_size = shape(req.requested_space)[0];
-
-            for (std::size_t i = 0; i < req_size; ++i) {
-                auto global_idx = (req_start + static_cast<int>(i) + num_zones) % num_zones;
-                auto owner_idx = owner(global_idx, patches);
-
-                ghost_exchange_t::fill(patches[owner_idx], [&](cached_t<double, 1>& src) {
-                    auto src_space = space(src);
-                    if (global_idx >= start(src_space)[0] && global_idx < start(src_space)[0] + static_cast<int>(shape(src_space)[0])) {
-                        (*req.buffer)[req_start + static_cast<int>(i)] = src[global_idx];
-                    }
-                });
+        for (std::size_t i = 0; i < req_size; ++i) {
+            auto global_idx = (req_start + static_cast<int>(i) + num_zones) % num_zones;
+            if (global_idx >= src_start && global_idx < src_end) {
+                dst[req_start + static_cast<int>(i)] = src[global_idx];
             }
         }
     }
@@ -334,14 +330,10 @@ void advance(
         patch.new_step(v, dx, dt);
     }
 
-    // Ghost exchange via topology
+    // Execute pipeline: Exchange stage (ghost_exchange_t) + Compute stage (flux_and_update_t)
+    using advection_pipeline = parallel::pipeline<patch_state_t, ghost_exchange_t, flux_and_update_t>;
     auto topology = unigrid_topology_1d{static_cast<int>(exec.initial.num_zones)};
-    topology.exchange(state.patches);
-
-    // Compute flux and update
-    for (auto& patch : state.patches) {
-        patch = flux_and_update_t::value(std::move(patch));
-    }
+    parallel::execute(advection_pipeline{}, state.patches, topology, exec.scheduler);
 
     state.time += dt;
 }

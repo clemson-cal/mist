@@ -1,0 +1,6 @@
+reset
+set initial num_partitions=2
+set initial num_zones=1000
+init
+repeat 0.01 t write message
+t -> 0.1
