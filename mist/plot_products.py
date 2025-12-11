@@ -110,7 +110,9 @@ def plot_products(filename, fields=None, x_field=None, output=None, title=None):
         return
 
     # Create plot
-    fig, axes = plt.subplots(len(fields), 1, figsize=(10, 3 * len(fields)), squeeze=False)
+    fig, axes = plt.subplots(
+        len(fields), 1, figsize=(10, 6 * len(fields)), squeeze=False
+    )
 
     for ax, field_name in zip(axes.flat, fields):
         y_data = products[field_name]

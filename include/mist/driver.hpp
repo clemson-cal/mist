@@ -4,6 +4,7 @@
 #include <array>
 #include <chrono>
 #include <concepts>
+#include <csignal>
 #include <cstdlib>
 #include <fstream>
 #include <functional>
@@ -97,6 +98,45 @@ inline scheme_t auto_scheme(std::ostream& os) {
 }
 
 } // namespace mist::color
+
+// =============================================================================
+// Signal Handling for Ctrl-C
+// =============================================================================
+
+namespace mist::signal {
+
+inline volatile std::sig_atomic_t interrupted = 0;
+
+inline void handler(int) {
+    interrupted = 1;
+}
+
+// RAII guard to install/restore signal handler
+struct interrupt_guard_t {
+    std::sig_atomic_t previous_state;
+    void (*previous_handler)(int);
+
+    interrupt_guard_t() {
+        previous_state = interrupted;
+        interrupted = 0;
+        previous_handler = std::signal(SIGINT, handler);
+    }
+
+    ~interrupt_guard_t() {
+        std::signal(SIGINT, previous_handler);
+        interrupted = previous_state;
+    }
+
+    [[nodiscard]] bool is_interrupted() const {
+        return interrupted != 0;
+    }
+
+    void clear() {
+        interrupted = 0;
+    }
+};
+
+} // namespace mist::signal
 
 // =============================================================================
 // Physics Concept
@@ -815,12 +855,17 @@ void driver_t<P>::advance_to_target(const std::string& var_name, double target, 
         return;
     }
 
+    auto guard = signal::interrupt_guard_t{};
+
     // If target_iteration is specified, advance until iteration reaches target
     if (target_iteration.has_value()) {
-        while (prog.driver_state.iteration < target_iteration.value()) {
+        while (prog.driver_state.iteration < target_iteration.value() && !guard.is_interrupted()) {
             double dt = courant_time(*prog.physics_state, exec_context);
             do_timestep(dt);
             execute_recurring_commands();
+        }
+        if (guard.is_interrupted()) {
+            *err << "\n" << err_colors.warning << "interrupted" << err_colors.reset << "\n";
         }
         return;
     }
@@ -828,7 +873,7 @@ void driver_t<P>::advance_to_target(const std::string& var_name, double target, 
     // Otherwise advance based on time variable
     if (var_name == "t") {
         // Exact time-stepping for t
-        while (get_time(*prog.physics_state, var_name) < target) {
+        while (get_time(*prog.physics_state, var_name) < target && !guard.is_interrupted()) {
             double dt_cfl = courant_time(*prog.physics_state, exec_context);
             double t = get_time(*prog.physics_state, var_name);
             double dt = std::min(dt_cfl, target - t);
@@ -837,11 +882,15 @@ void driver_t<P>::advance_to_target(const std::string& var_name, double target, 
         }
     } else {
         // Nearest for other variables (just past target)
-        while (get_time(*prog.physics_state, var_name) <= target) {
+        while (get_time(*prog.physics_state, var_name) <= target && !guard.is_interrupted()) {
             double dt = courant_time(*prog.physics_state, exec_context);
             do_timestep(dt);
             execute_recurring_commands();
         }
+    }
+
+    if (guard.is_interrupted()) {
+        *err << "\n" << err_colors.warning << "interrupted" << err_colors.reset << "\n";
     }
 }
 
