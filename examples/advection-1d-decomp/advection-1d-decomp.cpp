@@ -31,15 +31,6 @@ auto cell_center_x(int i, double dx) -> double {
     return (i + 0.5) * dx;
 }
 
-// =============================================================================
-// Ghost message
-// =============================================================================
-
-struct ghost_message_t {
-    int    source_rank;
-    double l_guard;
-    double r_guard;
-};
 
 // =============================================================================
 // Patch state - unified context that flows through pipeline
@@ -48,8 +39,7 @@ struct ghost_message_t {
 struct patch_state_t {
     int rank = 0;
     int npartitions = 1;
-    int l_rank = 0;
-    int r_rank = 0;
+    int num_zones = 0;
     int i0 = 0, i1 = 0;
 
     double v = 0.0;
@@ -58,29 +48,33 @@ struct patch_state_t {
 
     cached_t<double, 1> conserved;
 
-    double l_guard = 0.0;
-    double r_guard = 0.0;
+    // Guard buffers with global index spaces (set at construction)
+    cached_t<double, 1> l_recv;
+    cached_t<double, 1> r_recv;
 
     patch_state_t() = default;
 
-    patch_state_t(int rank_, int npartitions_, cached_t<double, 1> conserved_)
+    patch_state_t(int rank_, int npartitions_, int num_zones_, cached_t<double, 1> conserved_)
         : rank(rank_)
         , npartitions(npartitions_)
-        , l_rank((rank_ - 1 + npartitions_) % npartitions_)
-        , r_rank((rank_ + 1) % npartitions_)
+        , num_zones(num_zones_)
         , conserved(std::move(conserved_))
     {
         auto s = space(conserved);
         i0 = start(s)[0];
         i1 = i0 + shape(s)[0];
+
+        // Guard zones in global coordinates (with periodic wrapping)
+        auto l_guard_start = (i0 - 1 + num_zones_) % num_zones_;
+        auto r_guard_start = i1 % num_zones_;
+        l_recv = cache(fill(index_space(ivec(l_guard_start), uvec(1)), 0.0), memory::host, exec::cpu);
+        r_recv = cache(fill(index_space(ivec(r_guard_start), uvec(1)), 0.0), memory::host, exec::cpu);
     }
 
-    void set_step_params(double v_, double dx_, double dt_) {
+    void new_step(double v_, double dx_, double dt_) {
         v = v_;
         dx = dx_;
         dt = dt_;
-        l_guard = 0.0;
-        r_guard = 0.0;
     }
 };
 
@@ -88,73 +82,40 @@ struct patch_state_t {
 // Stage 1: Ghost exchange (Message stage)
 // =============================================================================
 
-class ghost_exchange_t {
-public:
-    using key_t = int;
-    using message_t = ghost_message_t;
-    using context_t = patch_state_t;
-
-    ghost_exchange_t(patch_state_t p) : patch(std::move(p)) {}
-
-    auto key() const -> key_t { return patch.rank; }
-
-    void messages(auto send) {
-        auto l_val = patch.conserved(ivec(patch.i0));
-        auto r_val = patch.conserved(ivec(patch.i1 - 1));
-        send(patch.l_rank, ghost_message_t{patch.rank, 0.0, l_val});
-        send(patch.r_rank, ghost_message_t{patch.rank, r_val, 0.0});
+struct ghost_exchange_t {
+    static void need(patch_state_t& ctx, auto request) {
+        request(ctx.l_recv);
+        request(ctx.r_recv);
     }
 
-    auto receive(message_t msg) -> std::optional<context_t> {
-        if (msg.source_rank == patch.l_rank) {
-            patch.l_guard = msg.l_guard;
-            received++;
-        } else if (msg.source_rank == patch.r_rank) {
-            patch.r_guard = msg.r_guard;
-            received++;
-        }
-        if (received == 2) {
-            return std::move(patch);
-        }
-        return std::nullopt;
+    static void fill(patch_state_t& ctx, auto provide) {
+        provide(ctx.conserved);
     }
-
-private:
-    patch_state_t patch;
-    int received = 0;
 };
 
 // =============================================================================
 // Stage 2: Flux and update (Compute stage)
 // =============================================================================
 
-class flux_and_update_t {
-public:
-    using context_t = patch_state_t;
-
-    flux_and_update_t(patch_state_t p) : patch(std::move(p)) {}
-
-    auto value() && -> context_t {
-        if (patch.v > 0) {
-            for (auto i = patch.i1 - 1; i >= patch.i0; --i) {
-                auto u_l = (i == patch.i0) ? patch.l_guard : patch.conserved[i - 1];
-                auto flux_l = patch.v * u_l;
-                auto flux_r = patch.v * patch.conserved[i];
-                patch.conserved[i] = patch.conserved[i] - patch.dt / patch.dx * (flux_r - flux_l);
+struct flux_and_update_t {
+    static auto value(patch_state_t ctx) -> patch_state_t {
+        if (ctx.v > 0) {
+            for (auto i = ctx.i1 - 1; i >= ctx.i0; --i) {
+                auto u_l = (i == ctx.i0) ? ctx.l_recv[0] : ctx.conserved[i - 1];
+                auto flux_l = ctx.v * u_l;
+                auto flux_r = ctx.v * ctx.conserved[i];
+                ctx.conserved[i] = ctx.conserved[i] - ctx.dt / ctx.dx * (flux_r - flux_l);
             }
         } else {
-            for (auto i = patch.i0; i < patch.i1; ++i) {
-                auto u_r = (i == patch.i1 - 1) ? patch.r_guard : patch.conserved[i + 1];
-                auto flux_l = patch.v * patch.conserved[i];
-                auto flux_r = patch.v * u_r;
-                patch.conserved[i] = patch.conserved[i] - patch.dt / patch.dx * (flux_r - flux_l);
+            for (auto i = ctx.i0; i < ctx.i1; ++i) {
+                auto u_r = (i == ctx.i1 - 1) ? ctx.r_recv[0] : ctx.conserved[i + 1];
+                auto flux_l = ctx.v * ctx.conserved[i];
+                auto flux_r = ctx.v * u_r;
+                ctx.conserved[i] = ctx.conserved[i] - ctx.dt / ctx.dx * (flux_r - flux_l);
             }
         }
-        return std::move(patch);
+        return ctx;
     }
-
-private:
-    patch_state_t patch;
 };
 
 // =============================================================================
@@ -166,6 +127,7 @@ void serialize(A& ar, const patch_state_t& patch) {
     ar.begin_group();
     serialize(ar, "rank", patch.rank);
     serialize(ar, "npartitions", patch.npartitions);
+    serialize(ar, "num_zones", patch.num_zones);
     serialize(ar, "conserved", patch.conserved);
     ar.end_group();
 }
@@ -175,12 +137,14 @@ auto deserialize(A& ar, patch_state_t& patch) -> bool {
     if (!ar.begin_group()) return false;
     auto rank = 0;
     auto npartitions = 1;
+    auto num_zones = 0;
     auto conserved = cached_t<double, 1>{};
     deserialize(ar, "rank", rank);
     deserialize(ar, "npartitions", npartitions);
+    deserialize(ar, "num_zones", num_zones);
     deserialize(ar, "conserved", conserved);
     ar.end_group();
-    patch = patch_state_t(rank, npartitions, std::move(conserved));
+    patch = patch_state_t(rank, npartitions, num_zones, std::move(conserved));
     return true;
 }
 
@@ -287,6 +251,7 @@ auto initial_state(const advection::exec_context_t& ctx) -> advection::state_t {
 
     auto& ini = ctx.initial;
     auto npartitions = static_cast<int>(ini.num_partitions);
+    auto num_zones = static_cast<int>(ini.num_zones);
     auto global_space = index_space(ivec(0), uvec(ini.num_zones));
     auto dx = ini.domain_length / ini.num_zones;
     auto L = ini.domain_length;
@@ -296,10 +261,61 @@ auto initial_state(const advection::exec_context_t& ctx) -> advection::state_t {
         auto u = lazy(s, [&](auto i) {
             return std::sin(2.0 * M_PI * cell_center_x(i[0], dx) / L);
         });
-        return patch_state_t(p, npartitions, cache(u, memory::host, exec::cpu));
+        return patch_state_t(p, npartitions, num_zones, cache(u, memory::host, exec::cpu));
     }));
     return {std::move(patches), 0.0};
 }
+
+// Request structure for ghost exchange
+struct ghost_request_t {
+    int requester;
+    cached_t<double, 1>* buffer;
+    index_space_t<1> requested_space;
+};
+
+// Unigrid Cartesian topology for 1D periodic domain
+struct unigrid_topology_1d {
+    int num_zones;
+
+    // Find which patch owns a given global index
+    auto owner(int global_index, const std::vector<patch_state_t>& patches) const -> int {
+        for (std::size_t p = 0; p < patches.size(); ++p) {
+            if (global_index >= patches[p].i0 && global_index < patches[p].i1) {
+                return static_cast<int>(p);
+            }
+        }
+        return -1; // Should not happen with valid periodic indices
+    }
+
+    // Execute ghost exchange: collect requests, route to owners, fill
+    void exchange(std::vector<patch_state_t>& patches) const {
+        auto requests = std::vector<ghost_request_t>{};
+
+        for (std::size_t p = 0; p < patches.size(); ++p) {
+            ghost_exchange_t::need(patches[p], [&](cached_t<double, 1>& buf) {
+                requests.push_back({static_cast<int>(p), &buf, space(buf)});
+            });
+        }
+
+        // Route each request to owning patch(es) and fill
+        for (auto& req : requests) {
+            auto req_start = start(req.requested_space)[0];
+            auto req_size = shape(req.requested_space)[0];
+
+            for (std::size_t i = 0; i < req_size; ++i) {
+                auto global_idx = (req_start + static_cast<int>(i) + num_zones) % num_zones;
+                auto owner_idx = owner(global_idx, patches);
+
+                ghost_exchange_t::fill(patches[owner_idx], [&](cached_t<double, 1>& src) {
+                    auto src_space = space(src);
+                    if (global_idx >= start(src_space)[0] && global_idx < start(src_space)[0] + static_cast<int>(shape(src_space)[0])) {
+                        (*req.buffer)[req_start + static_cast<int>(i)] = src[global_idx];
+                    }
+                });
+            }
+        }
+    }
+};
 
 void advance(
     advection::state_t& state,
@@ -310,19 +326,22 @@ void advance(
         throw std::runtime_error("only rk_order=1 (forward Euler) is supported");
     }
 
-    auto npartitions = static_cast<int>(state.patches.size());
     auto dx = exec.initial.domain_length / exec.initial.num_zones;
     auto v = exec.config.advection_velocity;
 
     // Set step parameters on all patches
     for (auto& patch : state.patches) {
-        patch.set_step_params(v, dx, dt);
+        patch.new_step(v, dx, dt);
     }
 
-    // Execute pipeline in-place on patches vector
-    using advection_pipeline = parallel::pipeline<patch_state_t, ghost_exchange_t, flux_and_update_t>;
-    auto comm = parallel::local_communicator<ghost_message_t>(npartitions);
-    parallel::execute(advection_pipeline{}, state.patches, comm, exec.scheduler);
+    // Ghost exchange via topology
+    auto topology = unigrid_topology_1d{static_cast<int>(exec.initial.num_zones)};
+    topology.exchange(state.patches);
+
+    // Compute flux and update
+    for (auto& patch : state.patches) {
+        patch = flux_and_update_t::value(std::move(patch));
+    }
 
     state.time += dt;
 }
