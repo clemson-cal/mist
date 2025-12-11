@@ -179,7 +179,7 @@ struct recurring_command_t {
     double interval = 0.0;
     std::string unit;
     std::string sub_command;
-    double last_executed = 0.0;
+    std::optional<double> last_executed;
 
     auto fields() const {
         return std::make_tuple(
@@ -880,7 +880,13 @@ void driver_t<P>::execute_recurring_commands() {
     for (auto& rcmd : prog.driver_state.recurring_commands) {
         try {
             const auto current_value = get_time(*prog.physics_state, rcmd.unit);
-            if (current_value >= rcmd.last_executed + rcmd.interval) {
+
+            // Initialize last_executed on first check
+            if (!rcmd.last_executed.has_value()) {
+                rcmd.last_executed = current_value;
+            }
+
+            if (current_value >= *rcmd.last_executed + rcmd.interval) {
                 const auto subcmd = parse_command(rcmd.sub_command);
                 if (subcmd.cmd == command_t::type::invalid) {
                     *err << err_colors.error << "error in recurring command: "
@@ -1248,25 +1254,14 @@ void driver_t<P>::handle_show_message() {
 
 template<Physics P>
 void driver_t<P>::handle_repeat_add(double interval, const std::string& unit, const std::string& sub_cmd) {
-    if (!prog.physics_state.has_value()) {
-        *err << err_colors.error << "error: " << err_colors.reset
-             << "physics state not initialized; use 'init' command first\n";
-        return;
-    }
-    try {
-        const auto current_value = get_time(*prog.physics_state, unit);
-        auto rcmd = driver::recurring_command_t{};
-        rcmd.interval = interval;
-        rcmd.unit = unit;
-        rcmd.sub_command = sub_cmd;
-        rcmd.last_executed = current_value;
-        prog.driver_state.recurring_commands.push_back(rcmd);
-        *out << colors.info << "add recurring command: " << colors.reset
-             << "every " << colors.value << interval << colors.reset << " " << unit
-             << " -> " << colors.value << sub_cmd << colors.reset << "\n";
-    } catch (const std::exception& e) {
-        *err << err_colors.error << "error: " << err_colors.reset << e.what() << "\n";
-    }
+    auto rcmd = driver::recurring_command_t{};
+    rcmd.interval = interval;
+    rcmd.unit = unit;
+    rcmd.sub_command = sub_cmd;
+    prog.driver_state.recurring_commands.push_back(rcmd);
+    *out << colors.info << "add recurring command: " << colors.reset
+         << "every " << colors.value << interval << colors.reset << " " << unit
+         << " -> " << colors.value << sub_cmd << colors.reset << "\n";
 }
 
 template<Physics P>
