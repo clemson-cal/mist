@@ -83,7 +83,7 @@ auto apply_compute_stages(Context ctx) -> Context {
 // Operates in-place on the input contexts vector
 // =============================================================================
 
-template<typename Context, Message M, Compute... Cs, typename Comm, typename Sched>
+template<typename Context, Message M, Compute... Cs, typename Comm, Scheduler Sched>
 void execute(
     pipeline<Context, M, Cs...>,
     std::vector<Context>& contexts,

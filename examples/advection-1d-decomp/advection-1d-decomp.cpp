@@ -258,13 +258,13 @@ struct advection {
     struct exec_context_t {
         const config_t& config;
         const initial_t& initial;
-        mutable std::unique_ptr<parallel::thread_pool_t> pool;
+        mutable parallel::scheduler_t scheduler;
 
         exec_context_t(const config_t& cfg, const initial_t& ini)
-            : config(cfg), initial(ini), pool(std::make_unique<parallel::thread_pool_t>(4)) {}
+            : config(cfg), initial(ini) {}
 
         void set_num_threads(std::size_t n) {
-            pool = std::make_unique<parallel::thread_pool_t>(n);
+            scheduler.set_num_threads(n);
         }
     };
 };
@@ -322,7 +322,7 @@ void advance(
     // Execute pipeline in-place on patches vector
     using advection_pipeline = parallel::pipeline<patch_state_t, ghost_exchange_t, flux_and_update_t>;
     auto comm = parallel::local_communicator<ghost_message_t>(npartitions);
-    parallel::execute(advection_pipeline{}, state.patches, comm, *exec.pool);
+    parallel::execute(advection_pipeline{}, state.patches, comm, exec.scheduler);
 
     state.time += dt;
 }
