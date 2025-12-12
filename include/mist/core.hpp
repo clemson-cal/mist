@@ -332,6 +332,20 @@ constexpr bool contains(const index_space_t<S>& space, const index_space_t<S>& o
 }
 
 template<std::size_t S>
+constexpr bool overlaps(const index_space_t<S>& a, const index_space_t<S>& b) {
+    for (std::size_t i = 0; i < S; ++i) {
+        auto a_start = a._start._data[i];
+        auto a_end = a_start + static_cast<int>(a._shape._data[i]);
+        auto b_start = b._start._data[i];
+        auto b_end = b_start + static_cast<int>(b._shape._data[i]);
+        if (a_end <= b_start || b_end <= a_start) {
+            return false;
+        }
+    }
+    return size(a) > 0 && size(b) > 0;
+}
+
+template<std::size_t S>
 constexpr index_space_t<S> subspace(const index_space_t<S>& space, unsigned int num_partitions, unsigned int which_partition, unsigned int axis) {
     auto large_partition_size = space._shape._data[axis] / num_partitions + 1;
     auto small_partition_size = space._shape._data[axis] / num_partitions;

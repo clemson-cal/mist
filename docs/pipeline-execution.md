@@ -142,17 +142,16 @@ can_advance = compute_done[stage][peer].load()
 The topology must provide:
 
 ```cpp
-// Check if peer owns any data in the requested space
-bool owns(std::size_t peer_idx, space_t requested_space) const;
-
-// Return bitset of peers that might request data from this peer
-std::bitset<MaxPeers> potential_requesters(std::size_t peer_idx) const;
-
 // Copy data from src to dst for the requested region
 void copy(buffer_t& dst, const buffer_t& src, space_t requested_space) const;
+
+// Returns true if two spaces are neighbors (could exchange guards)
+bool connected(space_t a, space_t b) const;
 ```
 
-For a 1D periodic domain with N peers, `potential_requesters(i)` returns `{(i-1+N)%N, (i+1)%N}` - the left and right neighbors.
+The `overlaps(space_a, space_b)` function from `core.hpp` is used to determine if a provider's space overlaps a request. The `connected()` method identifies potential requesters based on spatial adjacency.
+
+For a 1D periodic domain, `connected(a, b)` returns true if `a` and `b` are adjacent (with wrapping).
 
 ## Why Peers Wait for Requesters
 

@@ -86,7 +86,6 @@ auto apply_compute_stages(Context ctx) -> Context {
 // The topology defines buffer_t and space_t types.
 //
 // Required methods:
-// - owners(space, contexts): returns indices of contexts owning data in space
 // - copy(dst, src, space): copies data from src to dst for the requested region
 // - connected(space_a, space_b): returns true if these spaces are neighbors
 //   (i.e., one might request guard data that overlaps the other)
@@ -99,12 +98,9 @@ concept Topology = requires {
     const T& topo,
     typename T::space_t space_a,
     typename T::space_t space_b,
-    const std::vector<Context>& contexts,
     typename T::buffer_t& dst,
     const typename T::buffer_t& src
 ) {
-    // Returns indices of contexts that own data in the requested space
-    { topo.owners(space_a, contexts) } -> std::convertible_to<std::vector<std::size_t>>;
     // Copies overlapping data from source to destination
     { topo.copy(dst, src, space_a) } -> std::same_as<void>;
     // Returns true if two spaces are neighbors (could exchange guards)
@@ -143,13 +139,15 @@ void execute(
         });
     }
 
-    // Phase 2: Route requests to owners and fill
+    // Phase 2: Route requests to providers whose space overlaps
     for (auto& req : requests) {
-        auto owner_indices = topo.owners(req.requested_space, contexts);
-        for (auto owner_idx : owner_indices) {
-            E::fill(contexts[owner_idx], [&](buffer_t& src) {
-                topo.copy(*req.buffer, src, req.requested_space);
-            });
+        for (std::size_t provider_idx = 0; provider_idx < contexts.size(); ++provider_idx) {
+            auto provided_space = E::provides(contexts[provider_idx]);
+            if (overlaps(req.requested_space, provided_space)) {
+                E::fill(contexts[provider_idx], [&](buffer_t& src) {
+                    topo.copy(*req.buffer, src, req.requested_space);
+                });
+            }
         }
     }
 
@@ -297,20 +295,14 @@ void execute(
                 for (auto& req : pending_requests[peer_idx]) {
                     if (req.fulfilled) continue;
 
-                    // Find provider among peers at this stage
+                    // Find provider among peers at this stage whose space overlaps
                     for (std::size_t provider_idx = 0; provider_idx < num_peers; ++provider_idx) {
                         if (peers[provider_idx].stage != stage_idx) continue;
 
-                        // Check if provider owns the requested space
-                        auto owners = topo.owners(req.requested_space, contexts);
-                        bool is_owner = false;
-                        for (auto o : owners) {
-                            if (o == provider_idx) {
-                                is_owner = true;
-                                break;
-                            }
+                        // Check if provider's space overlaps the requested space
+                        if (!overlaps(req.requested_space, peers[provider_idx].provided_space)) {
+                            continue;
                         }
-                        if (!is_owner) continue;
 
                         Stage::fill(contexts[provider_idx], [&](buffer_t& src) {
                             topo.copy(*req.buffer, src, req.requested_space);

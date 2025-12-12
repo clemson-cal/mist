@@ -67,8 +67,10 @@ struct patch_state_t {
         // Guard zones in global coordinates (with periodic wrapping)
         auto l_guard_start = (i0 - 1 + num_zones_) % num_zones_;
         auto r_guard_start = i1 % num_zones_;
-        l_recv = cache(fill(index_space(ivec(l_guard_start), uvec(1)), 0.0), memory::host, exec::cpu);
-        r_recv = cache(fill(index_space(ivec(r_guard_start), uvec(1)), 0.0), memory::host, exec::cpu);
+        auto l_guard_space = index_space(ivec(l_guard_start), uvec(1));
+        auto r_guard_space = index_space(ivec(r_guard_start), uvec(1));
+        l_recv = cache(zeros<double>(l_guard_space), memory::host, exec::cpu);
+        r_recv = cache(zeros<double>(r_guard_space), memory::host, exec::cpu);
     }
 
     void new_step(double v_, double dx_, double dt_) {
@@ -281,28 +283,6 @@ struct unigrid_topology_1d {
     using space_t = index_space_t<1>;
 
     int num_zones;
-
-    // Returns indices of contexts that own data in the requested space
-    auto owners(space_t requested_space, const std::vector<patch_state_t>& patches) const
-        -> std::vector<std::size_t>
-    {
-        auto result = std::vector<std::size_t>{};
-        auto req_start = start(requested_space)[0];
-        auto req_size = shape(requested_space)[0];
-
-        for (std::size_t i = 0; i < req_size; ++i) {
-            auto global_idx = (req_start + static_cast<int>(i) + num_zones) % num_zones;
-            for (std::size_t p = 0; p < patches.size(); ++p) {
-                if (global_idx >= patches[p].i0 && global_idx < patches[p].i1) {
-                    if (result.empty() || result.back() != p) {
-                        result.push_back(p);
-                    }
-                    break;
-                }
-            }
-        }
-        return result;
-    }
 
     // Copies overlapping data from source to destination
     void copy(buffer_t& dst, const buffer_t& src, space_t requested_space) const {
