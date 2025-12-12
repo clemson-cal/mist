@@ -635,6 +635,24 @@ void copy(cached_vec_t<T, N, S, L>& dst, const cached_vec_t<T, N, S, L>& src) {
     detail::memcpy_any(dst._data, src._data, size(dst._space) * N, dst._location, src._location);
 }
 
+// Copy overlapping region from src to dst (index spaces may differ)
+// Only copies elements where both spaces overlap
+template<typename T, std::size_t S>
+void copy_overlapping(cached_t<T, S>& dst, const cached_t<T, S>& src) {
+    auto dst_space = space(dst);
+    auto src_space = space(src);
+
+    if (!overlaps(dst_space, src_space)) {
+        return;
+    }
+
+    for (auto idx : dst_space) {
+        if (contains(src_space, idx)) {
+            dst[idx] = src[idx];
+        }
+    }
+}
+
 // =============================================================================
 // safe_at: Host/device transparent access with proxy
 // =============================================================================
