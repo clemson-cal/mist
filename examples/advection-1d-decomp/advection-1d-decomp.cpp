@@ -95,34 +95,24 @@ struct flux_and_update_t {
         auto i0 = start(ctx.interior)[0];
         auto i1 = upper(ctx.interior)[0];
 
-        // Helper to get left neighbor value (outflow BC at domain left boundary)
-        auto get_u_left = [&](int i) {
-            if (i == i0) {
-                auto l_idx = start(space(ctx.l_recv))[0];
-                return (l_idx < 0) ? ctx.conserved[i0] : ctx.l_recv[l_idx];
-            }
-            return ctx.conserved[i - 1];
-        };
+        // Combine guards and interior into unified view
+        auto u = union_<double, 1>(ctx.l_recv, ctx.conserved, ctx.r_recv);
 
-        // Helper to get right neighbor value (outflow BC at domain right boundary)
-        auto get_u_right = [&](int i) {
-            if (i == i1 - 1) {
-                auto r_idx = start(space(ctx.r_recv))[0];
-                return (r_idx >= ctx.num_zones) ? ctx.conserved[i1 - 1] : ctx.r_recv[r_idx];
-            }
-            return ctx.conserved[i + 1];
+        // Outflow BC: clamp indices to valid range
+        auto get = [&](int i) {
+            return u(ivec(std::clamp(i, 0, ctx.num_zones - 1)));
         };
 
         if (ctx.v > 0) {
             for (auto i = i1 - 1; i >= i0; --i) {
-                auto flux_l = ctx.v * get_u_left(i);
+                auto flux_l = ctx.v * get(i - 1);
                 auto flux_r = ctx.v * ctx.conserved[i];
                 ctx.conserved[i] = ctx.conserved[i] - ctx.dt / ctx.dx * (flux_r - flux_l);
             }
         } else {
             for (auto i = i0; i < i1; ++i) {
                 auto flux_l = ctx.v * ctx.conserved[i];
-                auto flux_r = ctx.v * get_u_right(i);
+                auto flux_r = ctx.v * get(i + 1);
                 ctx.conserved[i] = ctx.conserved[i] - ctx.dt / ctx.dx * (flux_r - flux_l);
             }
         }

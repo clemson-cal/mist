@@ -798,6 +798,46 @@ auto coords(const index_space_t<S>& space, const dvec_t<S>& origin, const dvec_t
     });
 }
 
+// union_: combine multiple arrays into one lazy array
+// Arrays are stored in std::array and looked up by index containment
+// The combined space is the bounding box of all input spaces
+namespace detail {
+    template<typename T, std::size_t N, std::size_t S>
+    index_space_t<S> bounding_box(const std::array<const cached_t<T, S>*, N>& arrays) {
+        ivec_t<S> lo = start(space(*arrays[0]));
+        ivec_t<S> hi = upper(space(*arrays[0]));
+        for (std::size_t n = 1; n < N; ++n) {
+            auto s = space(*arrays[n]);
+            for (std::size_t d = 0; d < S; ++d) {
+                lo._data[d] = std::min(lo._data[d], start(s)._data[d]);
+                hi._data[d] = std::max(hi._data[d], upper(s)._data[d]);
+            }
+        }
+        uvec_t<S> sh;
+        for (std::size_t d = 0; d < S; ++d) {
+            sh._data[d] = static_cast<unsigned int>(hi._data[d] - lo._data[d]);
+        }
+        return index_space(lo, sh);
+    }
+}
+
+template<typename T, std::size_t S, typename... Arrays>
+    requires (std::same_as<Arrays, cached_t<T, S>> && ...)
+auto union_(const Arrays&... arrays) {
+    constexpr std::size_t N = sizeof...(Arrays);
+    auto ptrs = std::array<const cached_t<T, S>*, N>{&arrays...};
+    auto combined_space = detail::bounding_box(ptrs);
+
+    return lazy(combined_space, [ptrs](ivec_t<S> idx) {
+        for (std::size_t n = 0; n < N; ++n) {
+            if (contains(space(*ptrs[n]), idx)) {
+                return (*ptrs[n])(idx);
+            }
+        }
+        return T{};  // Default if not found (shouldn't happen with proper usage)
+    });
+}
+
 // =============================================================================
 // Reduction operations
 // =============================================================================
