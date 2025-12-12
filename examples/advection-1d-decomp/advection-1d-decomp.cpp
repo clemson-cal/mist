@@ -62,8 +62,48 @@ struct patch_t {
 };
 
 // =============================================================================
-// Stage 1: Ghost exchange (Message stage)
+// Pipeline stages
 // =============================================================================
+
+struct initial_state_t {
+    double dx;
+    double L;
+
+    auto value(patch_t p) const -> patch_t {
+        auto& u = p.conserved;
+        for_each(p.interior, [&](ivec_t<1> i) {
+            u(i) = std::sin(2.0 * M_PI * cell_center_x(i[0], dx) / L);
+        });
+        return p;
+    }
+};
+
+struct compute_local_dt_t {
+    double cfl;
+    double v;
+    double dx;
+
+    auto value(patch_t p) const -> patch_t {
+        p.v = v;
+        p.dx = dx;
+        p.dt = cfl * dx / std::abs(v);
+        return p;
+    }
+};
+
+struct global_dt_t {
+    using value_type = double;
+
+    static double init() { return std::numeric_limits<double>::max(); }
+
+    double reduce(double acc, const patch_t& p) const {
+        return std::min(acc, p.dt);
+    }
+
+    void finalize(double dt, patch_t& p) const {
+        p.dt = dt;
+    }
+};
 
 struct ghost_exchange_t {
     auto provides(const patch_t& p) const -> index_space_t<1> {
@@ -79,10 +119,6 @@ struct ghost_exchange_t {
         provide(p.conserved);
     }
 };
-
-// =============================================================================
-// Stage 2: Flux and update (Compute stage)
-// =============================================================================
 
 struct compute_flux_t {
     auto value(patch_t p) const -> patch_t {
@@ -120,41 +156,6 @@ struct update_conserved_t {
             u(i) -= dtdx * (fhat(i + ivec(1)) - fhat(i));
         });
         return p;
-    }
-};
-
-// =============================================================================
-// Stage 3: Compute local dt (Compute stage)
-// =============================================================================
-
-struct compute_local_dt_t {
-    double cfl;
-    double v;
-    double dx;
-
-    auto value(patch_t p) const -> patch_t {
-        p.v = v;
-        p.dx = dx;
-        p.dt = cfl * dx / std::abs(v);
-        return p;
-    }
-};
-
-// =============================================================================
-// Stage 4: Global dt reduction (Reduce stage)
-// =============================================================================
-
-struct global_dt_t {
-    using value_type = double;
-
-    static double init() { return std::numeric_limits<double>::max(); }
-
-    double reduce(double acc, const patch_t& p) const {
-        return std::min(acc, p.dt);
-    }
-
-    void finalize(double dt, patch_t& p) const {
-        p.dt = dt;
     }
 };
 
@@ -294,19 +295,6 @@ auto default_physics_config(std::type_identity<advection>) -> advection::config_
 auto default_initial_config(std::type_identity<advection>) -> advection::initial_t {
     return {.num_zones = 200, .num_partitions = 4, .domain_length = 1.0};
 }
-
-struct initial_state_t {
-    double dx;
-    double L;
-
-    auto value(patch_t p) const -> patch_t {
-        auto& u = p.conserved;
-        for_each(p.interior, [&](ivec_t<1> i) {
-            u(i) = std::sin(2.0 * M_PI * cell_center_x(i[0], dx) / L);
-        });
-        return p;
-    }
-};
 
 auto initial_state(const advection::exec_context_t& ctx) -> advection::state_t {
     using std::views::iota;
