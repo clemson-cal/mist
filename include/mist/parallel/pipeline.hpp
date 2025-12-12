@@ -82,6 +82,15 @@ struct pipeline_t {
     const auto& get() const { return std::get<I>(stages); }
 };
 
+template<typename T>
+struct is_pipeline : std::false_type {};
+
+template<typename... Stages>
+struct is_pipeline<pipeline_t<Stages...>> : std::true_type {};
+
+template<typename T>
+inline constexpr bool is_pipeline_v = is_pipeline<T>::value;
+
 template<typename... Stages>
 auto pipeline(Stages... stages) -> pipeline_t<Stages...> {
     return {std::make_tuple(std::move(stages)...)};
@@ -220,6 +229,18 @@ void execute(
     std::apply([&](const Stages&... stages) {
         (detail::execute_stage(stages, contexts, topo, sched), ...);
     }, pipe.stages);
+}
+
+// Convenience overload: execute a single stage without wrapping in pipeline
+template<typename Stage, typename Context, typename Topo, Scheduler Sched>
+    requires (!is_pipeline_v<Stage>) && Topology<Topo, Context>
+void execute(
+    const Stage& stage,
+    std::vector<Context>& contexts,
+    const Topo& topo,
+    Sched& sched
+) {
+    detail::execute_stage(stage, contexts, topo, sched);
 }
 
 } // namespace parallel

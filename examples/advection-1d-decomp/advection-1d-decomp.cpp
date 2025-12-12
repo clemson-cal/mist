@@ -38,7 +38,6 @@ auto cell_center_x(int i, double dx) -> double {
 // =============================================================================
 
 struct patch_t {
-    int num_zones = 0;
     index_space_t<1> interior;
 
     double v = 0.0;
@@ -52,16 +51,13 @@ struct patch_t {
 
     patch_t() = default;
 
-    patch_t(int n, cached_t<double, 1> u)
-        : num_zones(n)
-        , interior(space(u))
-        , conserved(std::move(u))
+    patch_t(index_space_t<1> s)
+        : interior(s)
+        , conserved(cache(zeros<double>(s), memory::host, exec::cpu))
+        , godunov_flux(cache(zeros<double>(index_space(start(s), uvec(upper(s)[0] - start(s)[0] + 1))), memory::host, exec::cpu))
+        , l_recv(cache(zeros<double>(index_space(start(s) - ivec(1), uvec(1))), memory::host, exec::cpu))
+        , r_recv(cache(zeros<double>(index_space(upper(s), uvec(1))), memory::host, exec::cpu))
     {
-        auto lo = start(interior);
-        auto hi = upper(interior);
-        l_recv = cache(zeros<double>(index_space(lo - ivec(1), uvec(1))), memory::host, exec::cpu);
-        r_recv = cache(zeros<double>(index_space(hi, uvec(1))), memory::host, exec::cpu);
-        godunov_flux = cache(zeros<double>(index_space(lo, uvec(hi[0] - lo[0] + 1))), memory::host, exec::cpu);
     }
 };
 
@@ -98,7 +94,6 @@ struct compute_flux_t {
         auto& ul = p.l_recv;
         auto& ur = p.r_recv;
 
-        // fhat_i = a * u_{i-1} (v > 0) or a * u_i (v < 0)
         if (v > 0) {
             fhat[lo] = v * ul[lo - 1];
             for_each(index_space(ivec(lo + 1), uvec(hi - lo)), [&](ivec_t<1> i) {
@@ -170,7 +165,6 @@ struct global_dt_t {
 template<ArchiveWriter A>
 void serialize(A& ar, const patch_t& p) {
     ar.begin_group();
-    serialize(ar, "num_zones", p.num_zones);
     serialize(ar, "conserved", p.conserved);
     ar.end_group();
 }
@@ -178,14 +172,30 @@ void serialize(A& ar, const patch_t& p) {
 template<ArchiveReader A>
 auto deserialize(A& ar, patch_t& p) -> bool {
     if (!ar.begin_group()) return false;
-    auto n = 0;
     auto u = cached_t<double, 1>{};
-    deserialize(ar, "num_zones", n);
     deserialize(ar, "conserved", u);
     ar.end_group();
-    p = patch_t(n, std::move(u));
+    p = patch_t(space(u));
+    copy(p.conserved, u);
     return true;
 }
+
+// =============================================================================
+// Unigrid Cartesian topology for 1D domain with outflow boundaries
+// =============================================================================
+
+struct unigrid_topology_1d {
+    using buffer_t = cached_t<double, 1>;
+    using space_t = index_space_t<1>;
+
+    void copy(buffer_t& dst, const buffer_t& src, space_t) const {
+        copy_overlapping(dst, src);
+    }
+
+    bool connected(space_t a, space_t b) const {
+        return (upper(a)[0] == start(b)[0]) || (upper(b)[0] == start(a)[0]);
+    }
+};
 
 // =============================================================================
 // 1D Linear Advection Physics Module with Domain Decomposition
@@ -262,6 +272,7 @@ struct advection {
         const config_t& config;
         const initial_t& initial;
         mutable parallel::scheduler_t scheduler;
+        unigrid_topology_1d topology;
 
         exec_context_t(const config_t& cfg, const initial_t& ini)
             : config(cfg), initial(ini) {}
@@ -284,43 +295,37 @@ auto default_initial_config(std::type_identity<advection>) -> advection::initial
     return {.num_zones = 200, .num_partitions = 4, .domain_length = 1.0};
 }
 
+struct initial_state_t {
+    double dx;
+    double L;
+
+    auto value(patch_t p) const -> patch_t {
+        auto& u = p.conserved;
+        for_each(p.interior, [&](ivec_t<1> i) {
+            u(i) = std::sin(2.0 * M_PI * cell_center_x(i[0], dx) / L);
+        });
+        return p;
+    }
+};
+
 auto initial_state(const advection::exec_context_t& ctx) -> advection::state_t {
     using std::views::iota;
     using std::views::transform;
 
     auto& ini = ctx.initial;
     auto np = static_cast<int>(ini.num_partitions);
-    auto n = static_cast<int>(ini.num_zones);
     auto S = index_space(ivec(0), uvec(ini.num_zones));
     auto dx = ini.domain_length / ini.num_zones;
     auto L = ini.domain_length;
 
     auto patches = to_vector(iota(0, np) | transform([&](int p) {
-        auto s = subspace(S, np, p, 0);
-        auto u = cache(lazy(s, [&](auto i) {
-            return std::sin(2.0 * M_PI * cell_center_x(i[0], dx) / L);
-        }), memory::host, exec::cpu);
-        return patch_t(n, std::move(u));
+        return patch_t(subspace(S, np, p, 0));
     }));
+
+    parallel::execute(initial_state_t{dx, L}, patches, ctx.topology, ctx.scheduler);
+
     return {std::move(patches), 0.0};
 }
-
-// Unigrid Cartesian topology for 1D domain with outflow boundaries
-// Satisfies parallel::Topology<unigrid_topology_1d, patch_t>
-struct unigrid_topology_1d {
-    using buffer_t = cached_t<double, 1>;
-    using space_t = index_space_t<1>;
-
-    // Copies overlapping data from source to destination
-    void copy(buffer_t& dst, const buffer_t& src, space_t) const {
-        copy_overlapping(dst, src);
-    }
-
-    // Returns true if two spaces are adjacent (could exchange guards)
-    bool connected(space_t a, space_t b) const {
-        return (upper(a)[0] == start(b)[0]) || (upper(b)[0] == start(a)[0]);
-    }
-};
 
 void advance(advection::state_t& state, const advection::exec_context_t& ctx) {
     if (ctx.config.rk_order != 1) {
@@ -331,7 +336,6 @@ void advance(advection::state_t& state, const advection::exec_context_t& ctx) {
     auto v = ctx.config.advection_velocity;
     auto cfl = ctx.config.cfl;
 
-    auto topo = unigrid_topology_1d{};
     auto pipe = parallel::pipeline(
         compute_local_dt_t{cfl, v, dx},
         global_dt_t{},
@@ -339,7 +343,7 @@ void advance(advection::state_t& state, const advection::exec_context_t& ctx) {
         compute_flux_t{},
         update_conserved_t{}
     );
-    parallel::execute(pipe, state.patches, topo, ctx.scheduler);
+    parallel::execute(pipe, state.patches, ctx.topology, ctx.scheduler);
 
     state.time += state.patches[0].dt;
 }
