@@ -44,19 +44,15 @@ struct patch_t {
     double dx = 0.0;
     double dt = 0.0;
 
-    cached_t<double, 1> conserved;
+    cached_t<double, 1> conserved;    // includes 1 guard zone on each side
     cached_t<double, 1> godunov_flux;
-    cached_t<double, 1> l_recv;
-    cached_t<double, 1> r_recv;
 
     patch_t() = default;
 
     patch_t(index_space_t<1> s)
         : interior(s)
-        , conserved(cache(zeros<double>(s), memory::host, exec::cpu))
+        , conserved(cache(zeros<double>(expand(s, 1)), memory::host, exec::cpu))
         , godunov_flux(cache(zeros<double>(index_space(start(s), uvec(upper(s)[0] - start(s)[0] + 1))), memory::host, exec::cpu))
-        , l_recv(cache(zeros<double>(index_space(start(s) - ivec(1), uvec(1))), memory::host, exec::cpu))
-        , r_recv(cache(zeros<double>(index_space(upper(s), uvec(1))), memory::host, exec::cpu))
     {
     }
 };
@@ -107,39 +103,39 @@ struct global_dt_t {
 
 struct ghost_exchange_t {
     auto provides(const patch_t& p) const -> index_space_t<1> {
-        return space(p.conserved);
+        return p.interior;
     }
 
     void need(patch_t& p, auto request) const {
-        request(p.l_recv);
-        request(p.r_recv);
+        auto lo = start(p.interior)[0];
+        auto hi = upper(p.interior)[0];
+        auto l_guard = index_space(ivec(lo - 1), uvec(1));
+        auto r_guard = index_space(ivec(hi), uvec(1));
+        request(view(p.conserved, l_guard));
+        request(view(p.conserved, r_guard));
     }
 
     void fill(patch_t& p, auto provide) const {
-        provide(p.conserved);
+        provide(view(p.conserved, p.interior));
     }
 };
 
 struct compute_flux_t {
     auto value(patch_t p) const -> patch_t {
-        auto lo = start(p.interior)[0];
-        auto hi = upper(p.interior)[0];
         auto v = p.v;
         auto& fhat = p.godunov_flux;
         auto& u = p.conserved;
-        auto& ul = p.l_recv;
-        auto& ur = p.r_recv;
 
+        // fhat_i = v * u_{i-1} (v > 0) or v * u_i (v < 0)
+        // Guard zones in u allow uniform access across all faces
         if (v > 0) {
-            fhat[lo] = v * ul[lo - 1];
-            for_each(index_space(ivec(lo + 1), uvec(hi - lo)), [&](ivec_t<1> i) {
+            for_each(space(fhat), [&](ivec_t<1> i) {
                 fhat(i) = v * u(i - ivec(1));
             });
         } else {
-            for_each(index_space(ivec(lo), uvec(hi - lo)), [&](ivec_t<1> i) {
+            for_each(space(fhat), [&](ivec_t<1> i) {
                 fhat(i) = v * u(i);
             });
-            fhat[hi] = v * ur[hi];
         }
 
         return p;
@@ -186,11 +182,11 @@ auto deserialize(A& ar, patch_t& p) -> bool {
 // =============================================================================
 
 struct unigrid_topology_1d {
-    using buffer_t = cached_t<double, 1>;
+    using buffer_t = array_view_t<double, 1>;
     using space_t = index_space_t<1>;
 
-    void copy(buffer_t& dst, const buffer_t& src, space_t) const {
-        copy_overlapping(dst, src);
+    void copy(buffer_t dst, const buffer_t& src, space_t) const {
+        copy_overlapping(dst, array_view_t<const double, 1>(src._space, src._data, src._strides));
     }
 
     bool connected(space_t a, space_t b) const {

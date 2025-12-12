@@ -133,15 +133,15 @@ void execute_exchange(
 
     struct request_t {
         std::size_t requester;
-        buffer_t* buffer;
+        buffer_t buffer;
         space_t requested_space;
     };
 
     // Collect all requests
     auto requests = std::vector<request_t>{};
     for (std::size_t i = 0; i < contexts.size(); ++i) {
-        stage.need(contexts[i], [&](buffer_t& buf) {
-            requests.push_back({i, &buf, space(buf)});
+        stage.need(contexts[i], [&](buffer_t buf) {
+            requests.push_back({i, buf, space(buf)});
         });
     }
 
@@ -150,8 +150,8 @@ void execute_exchange(
         for (std::size_t j = 0; j < contexts.size(); ++j) {
             auto provided = stage.provides(contexts[j]);
             if (overlaps(req.requested_space, provided)) {
-                stage.fill(contexts[j], [&](buffer_t& src) {
-                    topo.copy(*req.buffer, src, req.requested_space);
+                stage.fill(contexts[j], [&](buffer_t src) {
+                    topo.copy(req.buffer, src, req.requested_space);
                 });
             }
         }
