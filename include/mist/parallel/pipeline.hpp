@@ -1,10 +1,8 @@
 #pragma once
 
 #include <algorithm>
-#include <atomic>
 #include <concepts>
 #include <functional>
-#include <thread>
 #include <tuple>
 #include <vector>
 #include "queue.hpp"
@@ -187,13 +185,13 @@ struct guard_request_t {
 };
 
 // Per-peer state for pipeline execution
-template<typename Context, typename Space>
+template<typename Space>
 struct peer_state_t {
     std::size_t stage = 0;                      // Current stage index
     bool requests_collected = false;            // Has need() been called this stage?
     bool guards_filled = false;                 // All guard requests fulfilled?
     bool compute_spawned = false;               // Compute task submitted?
-    std::atomic<bool> compute_done{false};      // Compute task completed?
+    bool compute_done = false;                  // Compute task completed?
     std::vector<std::size_t> potential_requesters;  // Peers that might request from us
     std::vector<std::size_t> requesters_served;     // Peers we've served this stage
     Space provided_space;                       // Index space we provide (from Exchange::provides)
@@ -222,10 +220,13 @@ void execute(
     if (num_peers == 0) return;
 
     // Per-peer state
-    auto peers = std::vector<peer_state_t<Context, space_t>>(num_peers);
+    auto peers = std::vector<peer_state_t<space_t>>(num_peers);
 
     // Pending guard requests: [peer_idx] -> list of requests
     auto pending_requests = std::vector<std::vector<guard_request_t<buffer_t, space_t>>>(num_peers);
+
+    // Queue for compute completion notifications
+    auto compute_done_queue = blocking_queue<std::size_t>{};
 
     // Stage type flags (computed once)
     auto stage_is_exchange = std::vector<bool>(num_stages);
@@ -340,23 +341,47 @@ void execute(
 
                 peer.compute_spawned = true;
                 auto* ctx_ptr = &contexts[peer_idx];
-                auto* done_ptr = &peer.compute_done;
 
-                sched.spawn([ctx_ptr, done_ptr]() {
+                sched.spawn([ctx_ptr, peer_idx, &compute_done_queue]() {
                     *ctx_ptr = Stage::value(std::move(*ctx_ptr));
-                    done_ptr->store(true, std::memory_order_release);
+                    compute_done_queue.send(peer_idx);
                 });
             }
         }
     };
 
+    // Helper to check if any peer is waiting on compute
+    auto any_waiting_on_compute = [&]() {
+        for (std::size_t peer_idx = 0; peer_idx < num_peers; ++peer_idx) {
+            auto& peer = peers[peer_idx];
+            if (peer.stage < num_stages &&
+                !stage_is_exchange[peer.stage] &&
+                peer.compute_spawned &&
+                !peer.compute_done) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    // Helper to drain completed computes from queue (non-blocking)
+    auto drain_compute_done = [&]() {
+        while (auto maybe_idx = compute_done_queue.try_recv()) {
+            peers[*maybe_idx].compute_done = true;
+        }
+    };
+
     // Main loop
     while (completed_count < num_peers) {
+        // Drain any completed compute notifications
+        drain_compute_done();
+
         // Process each stage
         std::size_t stage_idx = 0;
         ((process_stage.template operator()<Stages>(stage_idx++)), ...);
 
         // Advance peers that are ready
+        bool any_advanced = false;
         for (std::size_t peer_idx = 0; peer_idx < num_peers; ++peer_idx) {
             auto& peer = peers[peer_idx];
             if (peer.stage >= num_stages) continue;
@@ -387,7 +412,7 @@ void execute(
                 }
             } else {
                 // Compute: advance when done
-                can_advance = peer.compute_done.load(std::memory_order_acquire);
+                can_advance = peer.compute_done;
             }
 
             if (can_advance) {
@@ -396,18 +421,22 @@ void execute(
                 peer.requests_collected = false;
                 peer.guards_filled = false;
                 peer.compute_spawned = false;
-                peer.compute_done.store(false, std::memory_order_relaxed);
+                peer.compute_done = false;
                 peer.requesters_served.clear();
                 pending_requests[peer_idx].clear();
 
                 if (peer.stage >= num_stages) {
                     completed_count++;
                 }
+                any_advanced = true;
             }
         }
 
-        // Yield to allow compute tasks to make progress
-        std::this_thread::yield();
+        // If no progress and waiting on compute, block for a completion
+        if (!any_advanced && any_waiting_on_compute()) {
+            auto done_idx = compute_done_queue.recv();
+            peers[done_idx].compute_done = true;
+        }
     }
 }
 
