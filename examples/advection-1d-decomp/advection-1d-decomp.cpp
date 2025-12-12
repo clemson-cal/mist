@@ -33,10 +33,10 @@ auto cell_center_x(int i, double dx) -> double {
 
 
 // =============================================================================
-// Patch state - unified context that flows through pipeline
+// Patch - unified context that flows through pipeline
 // =============================================================================
 
-struct patch_state_t {
+struct patch_t {
     int num_zones = 0;
     index_space_t<1> interior;
 
@@ -48,14 +48,13 @@ struct patch_state_t {
     cached_t<double, 1> l_recv;
     cached_t<double, 1> r_recv;
 
-    patch_state_t() = default;
+    patch_t() = default;
 
-    patch_state_t(int num_zones_, cached_t<double, 1> conserved_)
-        : num_zones(num_zones_)
-        , interior(space(conserved_))
-        , conserved(std::move(conserved_))
+    patch_t(int n, cached_t<double, 1> u)
+        : num_zones(n)
+        , interior(space(u))
+        , conserved(std::move(u))
     {
-        // Guard zones at virtual indices (may be outside [0, num_zones) for boundary patches)
         l_recv = cache(zeros<double>(index_space(start(interior) - ivec(1), uvec(1))), memory::host, exec::cpu);
         r_recv = cache(zeros<double>(index_space(upper(interior), uvec(1))), memory::host, exec::cpu);
     }
@@ -72,17 +71,17 @@ struct patch_state_t {
 // =============================================================================
 
 struct ghost_exchange_t {
-    static auto provides(const patch_state_t& ctx) -> index_space_t<1> {
-        return space(ctx.conserved);
+    auto provides(const patch_t& p) const -> index_space_t<1> {
+        return space(p.conserved);
     }
 
-    static void need(patch_state_t& ctx, auto request) {
-        request(ctx.l_recv);
-        request(ctx.r_recv);
+    void need(patch_t& p, auto request) const {
+        request(p.l_recv);
+        request(p.r_recv);
     }
 
-    static void fill(patch_state_t& ctx, auto provide) {
-        provide(ctx.conserved);
+    void fill(patch_t& p, auto provide) const {
+        provide(p.conserved);
     }
 };
 
@@ -91,56 +90,60 @@ struct ghost_exchange_t {
 // =============================================================================
 
 struct flux_and_update_t {
-    static auto value(patch_state_t ctx) -> patch_state_t {
-        auto i0 = start(ctx.interior)[0];
-        auto i1 = upper(ctx.interior)[0];
+    auto value(patch_t p) const -> patch_t {
+        auto S = index_space(ivec(0), uvec(p.num_zones));
+        auto u = join<double, 1>(p.l_recv, p.conserved, p.r_recv);
 
-        // Combine guards and interior into unified view
-        auto u = join<double, 1>(ctx.l_recv, ctx.conserved, ctx.r_recv);
-
-        // Outflow BC: clamp indices to valid range
-        auto get = [&](int i) {
-            return u(ivec(std::clamp(i, 0, ctx.num_zones - 1)));
-        };
-
-        if (ctx.v > 0) {
-            for (auto i = i1 - 1; i >= i0; --i) {
-                auto flux_l = ctx.v * get(i - 1);
-                auto flux_r = ctx.v * ctx.conserved[i];
-                ctx.conserved[i] = ctx.conserved[i] - ctx.dt / ctx.dx * (flux_r - flux_l);
-            }
-        } else {
-            for (auto i = i0; i < i1; ++i) {
-                auto flux_l = ctx.v * ctx.conserved[i];
-                auto flux_r = ctx.v * get(i + 1);
-                ctx.conserved[i] = ctx.conserved[i] - ctx.dt / ctx.dx * (flux_r - flux_l);
-            }
-        }
-        return ctx;
+        for_each(p.interior, [&](ivec_t<1> i) {
+            auto fl = p.v * u(clamp(i - ivec(1), S));
+            auto fr = p.v * u(clamp(i, S));
+            p.conserved(i) += p.dt / p.dx * (fl - fr);
+        });
+        return p;
     }
 };
 
 // =============================================================================
-// Custom serialization for patch_state_t
+// Stage 3: Global mass check (Reduce stage) - example, not used in pipeline
+// =============================================================================
+
+struct global_mass_t {
+    using value_type = double;
+
+    static double init() { return 0.0; }
+
+    double reduce(double acc, const patch_t& p) const {
+        return acc + sum(p.conserved) * p.dx;
+    }
+
+    void finalize(double mass, patch_t& p) const {
+        // Could store in patch if needed, here we just demonstrate the pattern
+        (void)mass;
+        (void)p;
+    }
+};
+
+// =============================================================================
+// Custom serialization for patch_t
 // =============================================================================
 
 template<ArchiveWriter A>
-void serialize(A& ar, const patch_state_t& patch) {
+void serialize(A& ar, const patch_t& p) {
     ar.begin_group();
-    serialize(ar, "num_zones", patch.num_zones);
-    serialize(ar, "conserved", patch.conserved);
+    serialize(ar, "num_zones", p.num_zones);
+    serialize(ar, "conserved", p.conserved);
     ar.end_group();
 }
 
 template<ArchiveReader A>
-auto deserialize(A& ar, patch_state_t& patch) -> bool {
+auto deserialize(A& ar, patch_t& p) -> bool {
     if (!ar.begin_group()) return false;
-    auto num_zones = 0;
-    auto conserved = cached_t<double, 1>{};
-    deserialize(ar, "num_zones", num_zones);
-    deserialize(ar, "conserved", conserved);
+    auto n = 0;
+    auto u = cached_t<double, 1>{};
+    deserialize(ar, "num_zones", n);
+    deserialize(ar, "conserved", u);
     ar.end_group();
-    patch = patch_state_t(num_zones, std::move(conserved));
+    p = patch_t(n, std::move(u));
     return true;
 }
 
@@ -195,7 +198,7 @@ struct advection {
     };
 
     struct state_t {
-        std::vector<patch_state_t> patches;
+        std::vector<patch_t> patches;
         double time;
 
         auto fields() const {
@@ -246,24 +249,24 @@ auto initial_state(const advection::exec_context_t& ctx) -> advection::state_t {
     using std::views::transform;
 
     auto& ini = ctx.initial;
-    auto npartitions = static_cast<int>(ini.num_partitions);
-    auto num_zones = static_cast<int>(ini.num_zones);
-    auto global_space = index_space(ivec(0), uvec(ini.num_zones));
+    auto np = static_cast<int>(ini.num_partitions);
+    auto n = static_cast<int>(ini.num_zones);
+    auto S = index_space(ivec(0), uvec(ini.num_zones));
     auto dx = ini.domain_length / ini.num_zones;
     auto L = ini.domain_length;
 
-    auto patches = to_vector(iota(0, npartitions) | transform([&](int p) {
-        auto s = subspace(global_space, npartitions, p, 0);
-        auto u = lazy(s, [&](auto i) {
+    auto patches = to_vector(iota(0, np) | transform([&](int p) {
+        auto s = subspace(S, np, p, 0);
+        auto u = cache(lazy(s, [&](auto i) {
             return std::sin(2.0 * M_PI * cell_center_x(i[0], dx) / L);
-        });
-        return patch_state_t(num_zones, cache(u, memory::host, exec::cpu));
+        }), memory::host, exec::cpu);
+        return patch_t(n, std::move(u));
     }));
     return {std::move(patches), 0.0};
 }
 
 // Unigrid Cartesian topology for 1D domain with outflow boundaries
-// Satisfies parallel::Topology<unigrid_topology_1d, patch_state_t>
+// Satisfies parallel::Topology<unigrid_topology_1d, patch_t>
 struct unigrid_topology_1d {
     using buffer_t = cached_t<double, 1>;
     using space_t = index_space_t<1>;
@@ -279,27 +282,21 @@ struct unigrid_topology_1d {
     }
 };
 
-void advance(
-    advection::state_t& state,
-    double dt,
-    const advection::exec_context_t& exec
-) {
-    if (exec.config.rk_order != 1) {
+void advance(advection::state_t& state, double dt, const advection::exec_context_t& ctx) {
+    if (ctx.config.rk_order != 1) {
         throw std::runtime_error("only rk_order=1 (forward Euler) is supported");
     }
 
-    auto dx = exec.initial.domain_length / exec.initial.num_zones;
-    auto v = exec.config.advection_velocity;
+    auto dx = ctx.initial.domain_length / ctx.initial.num_zones;
+    auto v = ctx.config.advection_velocity;
 
-    // Set step parameters on all patches
-    for (auto& patch : state.patches) {
-        patch.new_step(v, dx, dt);
+    for (auto& p : state.patches) {
+        p.new_step(v, dx, dt);
     }
 
-    // Execute pipeline: Exchange stage (ghost_exchange_t) + Compute stage (flux_and_update_t)
-    using advection_pipeline = parallel::pipeline<ghost_exchange_t, flux_and_update_t>;
-    auto topology = unigrid_topology_1d{};
-    parallel::execute(advection_pipeline{}, state.patches, topology, exec.scheduler);
+    auto topo = unigrid_topology_1d{};
+    auto pipe = parallel::pipeline(ghost_exchange_t{}, flux_and_update_t{});
+    parallel::execute(pipe, state.patches, topo, ctx.scheduler);
 
     state.time += dt;
 }
@@ -347,9 +344,8 @@ auto get_timeseries(
 ) -> double {
     using std::views::transform;
 
-    if (name == "time") {
+    if (name == "time")
         return state.time;
-    }
 
     const auto dx = ini.domain_length / ini.num_zones;
     const auto& patches = state.patches;
@@ -357,13 +353,12 @@ auto get_timeseries(
     auto mins = patches | transform([](const auto& p) { return min(p.conserved); });
     auto maxs = patches | transform([](const auto& p) { return max(p.conserved); });
 
-    if (name == "total_mass") {
+    if (name == "total_mass")
         return std::accumulate(sums.begin(), sums.end(), 0.0) * dx;
-    } else if (name == "min_value") {
+    if (name == "min_value")
         return std::ranges::min(mins);
-    } else if (name == "max_value") {
+    if (name == "max_value")
         return std::ranges::max(maxs);
-    }
 
     throw std::runtime_error("unknown timeseries column: " + name);
 }
@@ -382,12 +377,14 @@ auto get_product(
         return to_vector(state.patches | transform([](const auto& p) {
             return cache(map(p.conserved, std::identity{}), memory::host, exec::cpu);
         }));
-    } else if (name == "cell_x") {
+    }
+    if (name == "cell_x") {
         return to_vector(state.patches | transform([dx](const auto& p) {
             auto s = space(p.conserved);
             return cache(lazy(s, [dx](auto idx) { return cell_center_x(idx[0], dx); }), memory::host, exec::cpu);
         }));
-    } else if (name == "advection_velocity") {
+    }
+    if (name == "advection_velocity") {
         return to_vector(state.patches | transform([v](const auto& p) {
             auto s = space(p.conserved);
             return cache(fill(s, v), memory::host, exec::cpu);

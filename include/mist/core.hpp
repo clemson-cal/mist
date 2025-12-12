@@ -307,6 +307,20 @@ constexpr ivec_t<S> upper(const index_space_t<S>& space) {
 }
 
 template<std::size_t S>
+MIST_HD constexpr ivec_t<S> clamp(const ivec_t<S>& index, const index_space_t<S>& space) {
+    auto result = index;
+    auto u = upper(space);
+    for (std::size_t i = 0; i < S; ++i) {
+        if (result._data[i] < space._start._data[i]) {
+            result._data[i] = space._start._data[i];
+        } else if (result._data[i] >= u._data[i]) {
+            result._data[i] = u._data[i] - 1;
+        }
+    }
+    return result;
+}
+
+template<std::size_t S>
 MIST_HD constexpr unsigned int size(const index_space_t<S>& space) {
     unsigned int total = 1;
     for (std::size_t i = 0; i < S; ++i) {
