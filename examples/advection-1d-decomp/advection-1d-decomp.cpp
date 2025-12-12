@@ -103,16 +103,20 @@ struct ghost_exchange_t {
 
 struct flux_and_update_t {
     static auto value(patch_state_t ctx) -> patch_state_t {
+        // Get the global indices for guard zone data
+        auto l_guard_idx = start(space(ctx.l_recv))[0];
+        auto r_guard_idx = start(space(ctx.r_recv))[0];
+
         if (ctx.v > 0) {
             for (auto i = ctx.i1 - 1; i >= ctx.i0; --i) {
-                auto u_l = (i == ctx.i0) ? ctx.l_recv[0] : ctx.conserved[i - 1];
+                auto u_l = (i == ctx.i0) ? ctx.l_recv[l_guard_idx] : ctx.conserved[i - 1];
                 auto flux_l = ctx.v * u_l;
                 auto flux_r = ctx.v * ctx.conserved[i];
                 ctx.conserved[i] = ctx.conserved[i] - ctx.dt / ctx.dx * (flux_r - flux_l);
             }
         } else {
             for (auto i = ctx.i0; i < ctx.i1; ++i) {
-                auto u_r = (i == ctx.i1 - 1) ? ctx.r_recv[0] : ctx.conserved[i + 1];
+                auto u_r = (i == ctx.i1 - 1) ? ctx.r_recv[r_guard_idx] : ctx.conserved[i + 1];
                 auto flux_l = ctx.v * ctx.conserved[i];
                 auto flux_r = ctx.v * u_r;
                 ctx.conserved[i] = ctx.conserved[i] - ctx.dt / ctx.dx * (flux_r - flux_l);
