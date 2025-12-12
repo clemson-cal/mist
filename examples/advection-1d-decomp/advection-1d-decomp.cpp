@@ -46,6 +46,7 @@ struct patch_t {
     double dt = 0.0;
 
     cached_t<double, 1> conserved;
+    cached_t<double, 1> godunov_flux;
     cached_t<double, 1> l_recv;
     cached_t<double, 1> r_recv;
 
@@ -56,14 +57,11 @@ struct patch_t {
         , interior(space(u))
         , conserved(std::move(u))
     {
-        l_recv = cache(zeros<double>(index_space(start(interior) - ivec(1), uvec(1))), memory::host, exec::cpu);
-        r_recv = cache(zeros<double>(index_space(upper(interior), uvec(1))), memory::host, exec::cpu);
-    }
-
-    void new_step(double v_, double dx_, double dt_) {
-        v = v_;
-        dx = dx_;
-        dt = dt_;
+        auto lo = start(interior);
+        auto hi = upper(interior);
+        l_recv = cache(zeros<double>(index_space(lo - ivec(1), uvec(1))), memory::host, exec::cpu);
+        r_recv = cache(zeros<double>(index_space(hi, uvec(1))), memory::host, exec::cpu);
+        godunov_flux = cache(zeros<double>(index_space(lo, uvec(hi[0] - lo[0] + 1))), memory::host, exec::cpu);
     }
 };
 
@@ -90,15 +88,41 @@ struct ghost_exchange_t {
 // Stage 2: Flux and update (Compute stage)
 // =============================================================================
 
-struct flux_and_update_t {
+struct compute_flux_t {
     auto value(patch_t p) const -> patch_t {
-        auto S = index_space(ivec(0), uvec(p.num_zones));
-        auto u = join<double, 1>(p.l_recv, p.conserved, p.r_recv);
+        auto lo = start(p.interior)[0];
+        auto hi = upper(p.interior)[0];
+        auto v = p.v;
+        auto& fhat = p.godunov_flux;
+        auto& u = p.conserved;
+        auto& ul = p.l_recv;
+        auto& ur = p.r_recv;
+
+        // fhat_i = a * u_{i-1} (v > 0) or a * u_i (v < 0)
+        if (v > 0) {
+            fhat[lo] = v * ul[lo - 1];
+            for_each(index_space(ivec(lo + 1), uvec(hi - lo)), [&](ivec_t<1> i) {
+                fhat(i) = v * u(i - ivec(1));
+            });
+        } else {
+            for_each(index_space(ivec(lo), uvec(hi - lo)), [&](ivec_t<1> i) {
+                fhat(i) = v * u(i);
+            });
+            fhat[hi] = v * ur[hi];
+        }
+
+        return p;
+    }
+};
+
+struct update_conserved_t {
+    auto value(patch_t p) const -> patch_t {
+        auto& u = p.conserved;
+        auto& fhat = p.godunov_flux;
+        auto dtdx = p.dt / p.dx;
 
         for_each(p.interior, [&](ivec_t<1> i) {
-            auto fl = p.v * u(clamp(i - ivec(1), S));
-            auto fr = p.v * u(clamp(i, S));
-            p.conserved(i) += p.dt / p.dx * (fl - fr);
+            u(i) -= dtdx * (fhat(i + ivec(1)) - fhat(i));
         });
         return p;
     }
@@ -307,16 +331,13 @@ void advance(advection::state_t& state, const advection::exec_context_t& ctx) {
     auto v = ctx.config.advection_velocity;
     auto cfl = ctx.config.cfl;
 
-    // for (auto& patch : state.patches) {
-    //     patch.dt = cfl * dx / std::abs(v);
-    // }
-
     auto topo = unigrid_topology_1d{};
     auto pipe = parallel::pipeline(
         compute_local_dt_t{cfl, v, dx},
         global_dt_t{},
         ghost_exchange_t{},
-        flux_and_update_t{}
+        compute_flux_t{},
+        update_conserved_t{}
     );
     parallel::execute(pipe, state.patches, topo, ctx.scheduler);
 
