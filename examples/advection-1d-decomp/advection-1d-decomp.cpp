@@ -307,7 +307,7 @@ void advance(
     }
 
     // Execute pipeline: Exchange stage (ghost_exchange_t) + Compute stage (flux_and_update_t)
-    using advection_pipeline = parallel::pipeline<patch_state_t, ghost_exchange_t, flux_and_update_t>;
+    using advection_pipeline = parallel::pipeline<ghost_exchange_t, flux_and_update_t>;
     auto topology = unigrid_topology_1d{};
     parallel::execute(advection_pipeline{}, state.patches, topology, exec.scheduler);
 

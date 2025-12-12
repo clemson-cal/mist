@@ -45,23 +45,54 @@ concept Exchange = requires(
 template<typename S, typename Context>
 struct is_compute_stage : std::bool_constant<Compute<S, Context>> {};
 
-// Type trait to detect if a stage has need/fill/provides (Exchange-like)
+// Type trait to detect if a stage has provides (Exchange-like)
+// Note: need/fill have template parameters so we can't detect them with decltype(&S::need)
 template<typename S, typename = void>
 struct is_exchange_stage : std::false_type {};
 
 template<typename S>
-struct is_exchange_stage<S, std::void_t<
-    decltype(&S::provides),
-    decltype(&S::need),
-    decltype(&S::fill)
->> : std::true_type {};
+struct is_exchange_stage<S, std::void_t<decltype(&S::provides)>> : std::true_type {};
+
+// Type trait to extract Context type from a stage
+namespace detail {
+    // Helper to extract context from provides() signature
+    template<typename R, typename C>
+    C extract_context_from_provides(R(*)(const C&));
+
+    template<typename R, typename C>
+    C extract_context_from_provides(R(*)(C));
+
+    // Helper to extract context from value() signature
+    template<typename C>
+    C extract_context_from_value(C(*)(C));
+}
+
+template<typename S, bool IsExchange = is_exchange_stage<S>::value>
+struct stage_context;
+
+// For Exchange stages: Context is the argument to provides()
+template<typename S>
+struct stage_context<S, true> {
+    using type = decltype(detail::extract_context_from_provides(&S::provides));
+};
+
+// For Compute stages: Context is the return type of value()
+template<typename S>
+struct stage_context<S, false> {
+    using type = decltype(detail::extract_context_from_value(&S::value));
+};
+
+template<typename S>
+using stage_context_t = typename stage_context<S>::type;
 
 // =============================================================================
 // Pipeline: type list for composing stages
 // =============================================================================
 
-template<typename Context, typename... Stages>
-struct pipeline {};
+template<typename... Stages>
+struct pipeline {
+    using context_t = stage_context_t<std::tuple_element_t<0, std::tuple<Stages...>>>;
+};
 
 // =============================================================================
 // Apply a sequence of Compute stages to a context (fused execution)
@@ -109,19 +140,19 @@ concept Topology = requires {
 
 // Simple execute: single Exchange stage followed by Compute stages (barrier-based)
 template<
-    typename Context,
     typename E,
     typename... Cs,
     typename Topo,
     Scheduler Sched
 >
-    requires Topology<Topo, Context> && (Compute<Cs, Context> && ...)
+    requires Topology<Topo, stage_context_t<E>> && (Compute<Cs, stage_context_t<E>> && ...)
 void execute(
-    pipeline<Context, E, Cs...>,
-    std::vector<Context>& contexts,
+    pipeline<E, Cs...>,
+    std::vector<stage_context_t<E>>& contexts,
     Topo& topo,
     Sched& sched
 ) {
+    using Context = stage_context_t<E>;
     using buffer_t = typename Topo::buffer_t;
     using space_t = typename Topo::space_t;
 
@@ -198,18 +229,18 @@ struct peer_state_t {
 // Generalized execute for arbitrary stage sequences
 // Uses vectors for dynamic peer counts (can scale to thousands of peers)
 template<
-    typename Context,
     typename... Stages,
     typename Topo,
     Scheduler Sched
 >
-    requires Topology<Topo, Context>
+    requires Topology<Topo, stage_context_t<std::tuple_element_t<0, std::tuple<Stages...>>>>
 void execute(
-    pipeline<Context, Stages...>,
-    std::vector<Context>& contexts,
+    pipeline<Stages...>,
+    std::vector<stage_context_t<std::tuple_element_t<0, std::tuple<Stages...>>>>& contexts,
     Topo& topo,
     Sched& sched
 ) {
+    using Context = stage_context_t<std::tuple_element_t<0, std::tuple<Stages...>>>;
     constexpr std::size_t num_stages = sizeof...(Stages);
     using buffer_t = typename Topo::buffer_t;
     using space_t = typename Topo::space_t;
