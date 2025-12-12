@@ -96,7 +96,7 @@ struct flux_and_update_t {
         auto i1 = upper(ctx.interior)[0];
 
         // Combine guards and interior into unified view
-        auto u = union_<double, 1>(ctx.l_recv, ctx.conserved, ctx.r_recv);
+        auto u = join<double, 1>(ctx.l_recv, ctx.conserved, ctx.r_recv);
 
         // Outflow BC: clamp indices to valid range
         auto get = [&](int i) {

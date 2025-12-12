@@ -798,7 +798,7 @@ auto coords(const index_space_t<S>& space, const dvec_t<S>& origin, const dvec_t
     });
 }
 
-// union_: combine multiple arrays into one lazy array
+// join: combine multiple arrays into one lazy array
 // Arrays are stored in std::array and looked up by index containment
 // The combined space is the bounding box of all input spaces
 namespace detail {
@@ -823,7 +823,7 @@ namespace detail {
 
 template<typename T, std::size_t S, typename... Arrays>
     requires (std::same_as<Arrays, cached_t<T, S>> && ...)
-auto union_(const Arrays&... arrays) {
+auto join(const Arrays&... arrays) {
     constexpr std::size_t N = sizeof...(Arrays);
     auto ptrs = std::array<const cached_t<T, S>*, N>{&arrays...};
     auto combined_space = detail::bounding_box(ptrs);
