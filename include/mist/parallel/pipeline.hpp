@@ -1,11 +1,11 @@
 #pragma once
 
-#include <array>
+#include <algorithm>
 #include <atomic>
-#include <bitset>
 #include <concepts>
 #include <functional>
 #include <thread>
+#include <tuple>
 #include <vector>
 #include "queue.hpp"
 #include "scheduler.hpp"
@@ -26,6 +26,7 @@ concept Compute = requires(Context ctx) {
 };
 
 // Exchange stage: request/provide pattern for guard zone filling
+// - provides(ctx): returns the index space this context can provide data from
 // - need(ctx, request): declares buffers that need data via request(buffer)
 // - fill(ctx, provide): provides owned data via provide(data)
 // Buffers carry their own index space; topology routes requests to owners.
@@ -33,9 +34,11 @@ concept Compute = requires(Context ctx) {
 template<typename S, typename Context, typename Buffer>
 concept Exchange = requires(
     Context& ctx,
+    const Context& const_ctx,
     std::function<void(Buffer&)> request,
     std::function<void(Buffer&)> provide
 ) {
+    { S::provides(const_ctx) };  // Returns space_t
     { S::need(ctx, request) } -> std::same_as<void>;
     { S::fill(ctx, provide) } -> std::same_as<void>;
 };
@@ -44,12 +47,13 @@ concept Exchange = requires(
 template<typename S, typename Context>
 struct is_compute_stage : std::bool_constant<Compute<S, Context>> {};
 
-// Type trait to detect if a stage has need/fill (Exchange-like)
+// Type trait to detect if a stage has need/fill/provides (Exchange-like)
 template<typename S, typename = void>
 struct is_exchange_stage : std::false_type {};
 
 template<typename S>
 struct is_exchange_stage<S, std::void_t<
+    decltype(&S::provides),
     decltype(&S::need),
     decltype(&S::fill)
 >> : std::true_type {};
@@ -82,35 +86,31 @@ auto apply_compute_stages(Context ctx) -> Context {
 
 // Topology concept: routes requests to owning contexts and copies data
 // The topology defines buffer_t and space_t types.
+//
+// Required methods:
+// - owners(space, contexts): returns indices of contexts owning data in space
+// - copy(dst, src, space): copies data from src to dst for the requested region
+// - connected(space_a, space_b): returns true if these spaces are neighbors
+//   (i.e., one might request guard data that overlaps the other)
+//
 template<typename T, typename Context>
 concept Topology = requires {
     typename T::buffer_t;
     typename T::space_t;
 } && requires(
     const T& topo,
-    typename T::space_t requested_space,
+    typename T::space_t space_a,
+    typename T::space_t space_b,
     const std::vector<Context>& contexts,
     typename T::buffer_t& dst,
     const typename T::buffer_t& src
 ) {
     // Returns indices of contexts that own data in the requested space
-    { topo.owners(requested_space, contexts) } -> std::convertible_to<std::vector<std::size_t>>;
+    { topo.owners(space_a, contexts) } -> std::convertible_to<std::vector<std::size_t>>;
     // Copies overlapping data from source to destination
-    { topo.copy(dst, src, requested_space) } -> std::same_as<void>;
-};
-
-// Extended Topology concept for generalized pipeline execution
-// Adds owns() and potential_requesters() for efficient peer-to-peer coordination
-template<typename T, typename Context, std::size_t MaxPeers>
-concept TopologyExtended = Topology<T, Context> && requires(
-    const T& topo,
-    std::size_t peer_idx,
-    typename T::space_t requested_space
-) {
-    // Check if peer owns data in the requested space
-    { topo.owns(peer_idx, requested_space) } -> std::convertible_to<bool>;
-    // Returns bitset of peers that might request data from this peer
-    { topo.potential_requesters(peer_idx) } -> std::convertible_to<std::bitset<MaxPeers>>;
+    { topo.copy(dst, src, space_a) } -> std::same_as<void>;
+    // Returns true if two spaces are neighbors (could exchange guards)
+    { topo.connected(space_a, space_b) } -> std::convertible_to<bool>;
 };
 
 // Simple execute: single Exchange stage followed by Compute stages (barrier-based)
@@ -178,9 +178,6 @@ void execute(
 // Peers proceed eagerly as soon as their dependencies are satisfied.
 // =============================================================================
 
-// Maximum number of guard requests per peer (sufficient for 3D with corners)
-constexpr std::size_t max_requests_per_peer = 26;
-
 // Request descriptor for guard zone filling
 template<typename Buffer, typename Space>
 struct guard_request_t {
@@ -189,336 +186,221 @@ struct guard_request_t {
     bool fulfilled = false;
 };
 
-// Process a single Exchange stage for peers currently at that stage
-template<
-    std::size_t MaxPeers,
-    std::size_t NumStages,
-    typename ExchangeStage,
-    typename Context,
-    typename Topo
->
-void process_exchange_stage(
-    std::size_t stage_idx,
-    std::array<std::size_t, MaxPeers>& peer_stage,
-    std::array<Context, MaxPeers>& peer_ctx,
-    std::array<std::bitset<MaxPeers>, NumStages>& guards_filled,
-    std::array<std::bitset<MaxPeers>, NumStages>& requests_collected,
-    std::array<std::bitset<MaxPeers>, NumStages * MaxPeers>& requesters_served,
-    std::array<guard_request_t<typename Topo::buffer_t, typename Topo::space_t>,
-               NumStages * MaxPeers * max_requests_per_peer>& pending_requests,
-    std::array<std::bitset<max_requests_per_peer>, NumStages * MaxPeers>& request_fulfilled,
-    std::size_t num_peers,
-    const Topo& topo
-) {
-    using buffer_t = typename Topo::buffer_t;
-
-    for (std::size_t peer_idx = 0; peer_idx < num_peers; ++peer_idx) {
-        if (peer_stage[peer_idx] != stage_idx) {
-            continue;
-        }
-
-        auto& ctx = peer_ctx[peer_idx];
-
-        // Collect requests once when peer first arrives at this stage
-        if (!requests_collected[stage_idx].test(peer_idx)) {
-            std::size_t req_idx = 0;
-            ExchangeStage::need(ctx, [&](buffer_t& buf) {
-                if (req_idx < max_requests_per_peer) {
-                    auto idx = stage_idx * MaxPeers * max_requests_per_peer +
-                               peer_idx * max_requests_per_peer + req_idx;
-                    pending_requests[idx] = {&buf, space(buf), false};
-                    req_idx++;
-                }
-            });
-            requests_collected[stage_idx].set(peer_idx);
-        }
-
-        // Try to fill pending requests from providers at this stage
-        bool all_filled = true;
-        for (std::size_t r = 0; r < max_requests_per_peer; ++r) {
-            auto req_idx = stage_idx * MaxPeers * max_requests_per_peer +
-                           peer_idx * max_requests_per_peer + r;
-            auto& req = pending_requests[req_idx];
-
-            if (req.buffer == nullptr) {
-                continue;
-            }
-
-            auto fulfilled_idx = stage_idx * MaxPeers + peer_idx;
-            if (request_fulfilled[fulfilled_idx].test(r)) {
-                continue;
-            }
-
-            // Find provider among peers at this stage
-            for (std::size_t provider_idx = 0; provider_idx < num_peers; ++provider_idx) {
-                if (peer_stage[provider_idx] != stage_idx) {
-                    continue;
-                }
-                if (!topo.owns(provider_idx, req.requested_space)) {
-                    continue;
-                }
-
-                ExchangeStage::fill(peer_ctx[provider_idx], [&](buffer_t& src) {
-                    topo.copy(*req.buffer, src, req.requested_space);
-                });
-                request_fulfilled[fulfilled_idx].set(r);
-                requesters_served[stage_idx * MaxPeers + provider_idx].set(peer_idx);
-                break;
-            }
-
-            if (!request_fulfilled[fulfilled_idx].test(r)) {
-                all_filled = false;
-            }
-        }
-
-        if (all_filled) {
-            guards_filled[stage_idx].set(peer_idx);
-        }
-    }
-}
-
-// Process a single Compute stage for peers currently at that stage
-template<
-    std::size_t MaxPeers,
-    std::size_t NumStages,
-    typename ComputeStage,
-    typename Context,
-    Scheduler Sched
->
-void process_compute_stage(
-    std::size_t stage_idx,
-    std::array<std::size_t, MaxPeers>& peer_stage,
-    std::array<Context, MaxPeers>& peer_ctx,
-    std::array<std::bitset<MaxPeers>, NumStages>& compute_spawned,
-    std::array<std::atomic<bool>, NumStages * MaxPeers>& compute_done,
-    std::size_t num_peers,
-    Sched& sched
-) {
-    for (std::size_t peer_idx = 0; peer_idx < num_peers; ++peer_idx) {
-        if (peer_stage[peer_idx] != stage_idx) {
-            continue;
-        }
-        if (compute_spawned[stage_idx].test(peer_idx)) {
-            continue;
-        }
-
-        compute_spawned[stage_idx].set(peer_idx);
-
-        auto* ctx_ptr = &peer_ctx[peer_idx];
-        auto* done_ptr = &compute_done[stage_idx * MaxPeers + peer_idx];
-
-        sched.spawn([ctx_ptr, done_ptr]() {
-            *ctx_ptr = ComputeStage::value(std::move(*ctx_ptr));
-            done_ptr->store(true, std::memory_order_release);
-        });
-    }
-}
-
-// Check if a peer can advance from an Exchange stage
-template<std::size_t MaxPeers, std::size_t NumStages, typename Topo>
-bool can_advance_exchange(
-    std::size_t peer_idx,
-    std::size_t stage_idx,
-    const std::array<std::bitset<MaxPeers>, NumStages>& guards_filled,
-    const std::array<std::bitset<MaxPeers>, NumStages * MaxPeers>& requesters_served,
-    const Topo& topo
-) {
-    if (!guards_filled[stage_idx].test(peer_idx)) {
-        return false;
-    }
-    auto potential = topo.potential_requesters(peer_idx);
-    auto served = requesters_served[stage_idx * MaxPeers + peer_idx];
-    return (potential & ~served).none();
-}
-
-// Check if a peer can advance from a Compute stage
-template<std::size_t MaxPeers, std::size_t NumStages>
-bool can_advance_compute(
-    std::size_t peer_idx,
-    std::size_t stage_idx,
-    const std::array<std::atomic<bool>, NumStages * MaxPeers>& compute_done
-) {
-    return compute_done[stage_idx * MaxPeers + peer_idx].load(std::memory_order_acquire);
-}
-
-// Helper to process stage by index at compile time
-template<
-    std::size_t StageIdx,
-    std::size_t MaxPeers,
-    std::size_t NumStages,
-    typename Context,
-    typename Topo,
-    typename Sched,
-    typename... Stages
->
-struct stage_processor;
-
-// Base case: no more stages
-template<
-    std::size_t StageIdx,
-    std::size_t MaxPeers,
-    std::size_t NumStages,
-    typename Context,
-    typename Topo,
-    typename Sched
->
-struct stage_processor<StageIdx, MaxPeers, NumStages, Context, Topo, Sched> {
-    static void process(
-        std::size_t,
-        std::array<std::size_t, MaxPeers>&,
-        std::array<Context, MaxPeers>&,
-        std::array<std::bitset<MaxPeers>, NumStages>&,
-        std::array<std::bitset<MaxPeers>, NumStages>&,
-        std::array<std::bitset<MaxPeers>, NumStages * MaxPeers>&,
-        std::array<guard_request_t<typename Topo::buffer_t, typename Topo::space_t>,
-                   NumStages * MaxPeers * max_requests_per_peer>&,
-        std::array<std::bitset<max_requests_per_peer>, NumStages * MaxPeers>&,
-        std::array<std::bitset<MaxPeers>, NumStages>&,
-        std::array<std::atomic<bool>, NumStages * MaxPeers>&,
-        std::size_t,
-        const Topo&,
-        Sched&
-    ) {}
-
-    static bool is_exchange(std::size_t) { return false; }
-};
-
-// Recursive case
-template<
-    std::size_t StageIdx,
-    std::size_t MaxPeers,
-    std::size_t NumStages,
-    typename Context,
-    typename Topo,
-    typename Sched,
-    typename Stage,
-    typename... Rest
->
-struct stage_processor<StageIdx, MaxPeers, NumStages, Context, Topo, Sched, Stage, Rest...> {
-    using next = stage_processor<StageIdx + 1, MaxPeers, NumStages, Context, Topo, Sched, Rest...>;
-
-    static void process(
-        std::size_t stage_idx,
-        std::array<std::size_t, MaxPeers>& peer_stage,
-        std::array<Context, MaxPeers>& peer_ctx,
-        std::array<std::bitset<MaxPeers>, NumStages>& guards_filled,
-        std::array<std::bitset<MaxPeers>, NumStages>& requests_collected,
-        std::array<std::bitset<MaxPeers>, NumStages * MaxPeers>& requesters_served,
-        std::array<guard_request_t<typename Topo::buffer_t, typename Topo::space_t>,
-                   NumStages * MaxPeers * max_requests_per_peer>& pending_requests,
-        std::array<std::bitset<max_requests_per_peer>, NumStages * MaxPeers>& request_fulfilled,
-        std::array<std::bitset<MaxPeers>, NumStages>& compute_spawned,
-        std::array<std::atomic<bool>, NumStages * MaxPeers>& compute_done,
-        std::size_t num_peers,
-        const Topo& topo,
-        Sched& sched
-    ) {
-        if (stage_idx == StageIdx) {
-            if constexpr (is_exchange_stage<Stage>::value) {
-                process_exchange_stage<MaxPeers, NumStages, Stage>(
-                    stage_idx, peer_stage, peer_ctx, guards_filled, requests_collected,
-                    requesters_served, pending_requests, request_fulfilled, num_peers, topo
-                );
-            } else {
-                process_compute_stage<MaxPeers, NumStages, Stage>(
-                    stage_idx, peer_stage, peer_ctx, compute_spawned, compute_done, num_peers, sched
-                );
-            }
-        } else {
-            next::process(
-                stage_idx, peer_stage, peer_ctx, guards_filled, requests_collected,
-                requesters_served, pending_requests, request_fulfilled, compute_spawned,
-                compute_done, num_peers, topo, sched
-            );
-        }
-    }
-
-    static bool is_exchange(std::size_t stage_idx) {
-        if (stage_idx == StageIdx) {
-            return is_exchange_stage<Stage>::value;
-        }
-        return next::is_exchange(stage_idx);
-    }
+// Per-peer state for pipeline execution
+template<typename Context, typename Space>
+struct peer_state_t {
+    std::size_t stage = 0;                      // Current stage index
+    bool requests_collected = false;            // Has need() been called this stage?
+    bool guards_filled = false;                 // All guard requests fulfilled?
+    bool compute_spawned = false;               // Compute task submitted?
+    std::atomic<bool> compute_done{false};      // Compute task completed?
+    std::vector<std::size_t> potential_requesters;  // Peers that might request from us
+    std::vector<std::size_t> requesters_served;     // Peers we've served this stage
+    Space provided_space;                       // Index space we provide (from Exchange::provides)
 };
 
 // Generalized execute for arbitrary stage sequences
+// Uses vectors for dynamic peer counts (can scale to thousands of peers)
 template<
-    std::size_t MaxPeers,
     typename Context,
     typename... Stages,
     typename Topo,
     Scheduler Sched
 >
-    requires TopologyExtended<Topo, Context, MaxPeers>
+    requires Topology<Topo, Context>
 void execute(
     pipeline<Context, Stages...>,
-    std::array<Context, MaxPeers>& contexts,
-    std::size_t num_peers,
+    std::vector<Context>& contexts,
     Topo& topo,
     Sched& sched
 ) {
     constexpr std::size_t num_stages = sizeof...(Stages);
     using buffer_t = typename Topo::buffer_t;
     using space_t = typename Topo::space_t;
-    using processor = stage_processor<0, MaxPeers, num_stages, Context, Topo, Sched, Stages...>;
+
+    const std::size_t num_peers = contexts.size();
+    if (num_peers == 0) return;
 
     // Per-peer state
-    auto peer_stage = std::array<std::size_t, MaxPeers>{};
-    for (std::size_t i = 0; i < num_peers; ++i) {
-        peer_stage[i] = 0;
-    }
-    for (std::size_t i = num_peers; i < MaxPeers; ++i) {
-        peer_stage[i] = num_stages; // Mark unused slots as completed
+    auto peers = std::vector<peer_state_t<Context, space_t>>(num_peers);
+
+    // Pending guard requests: [peer_idx] -> list of requests
+    auto pending_requests = std::vector<std::vector<guard_request_t<buffer_t, space_t>>>(num_peers);
+
+    // Stage type flags (computed once)
+    auto stage_is_exchange = std::vector<bool>(num_stages);
+    {
+        std::size_t idx = 0;
+        ((stage_is_exchange[idx++] = is_exchange_stage<Stages>::value), ...);
     }
 
-    // Per-stage state for Exchange
-    auto guards_filled = std::array<std::bitset<MaxPeers>, num_stages>{};
-    auto requests_collected = std::array<std::bitset<MaxPeers>, num_stages>{};
-    auto requesters_served = std::array<std::bitset<MaxPeers>, num_stages * MaxPeers>{};
-    auto pending_requests = std::array<guard_request_t<buffer_t, space_t>,
-                                        num_stages * MaxPeers * max_requests_per_peer>{};
-    auto request_fulfilled = std::array<std::bitset<max_requests_per_peer>, num_stages * MaxPeers>{};
+    // Helper to get the first Exchange stage type for computing provided spaces
+    // We need this to call Exchange::provides on each context
+    using first_exchange_or_void = typename std::conditional<
+        (is_exchange_stage<Stages>::value || ...),
+        std::tuple_element_t<0, std::tuple<Stages...>>,
+        void
+    >::type;
 
-    // Per-stage state for Compute
-    auto compute_spawned = std::array<std::bitset<MaxPeers>, num_stages>{};
-    auto compute_done = std::array<std::atomic<bool>, num_stages * MaxPeers>{};
-    for (auto& d : compute_done) {
-        d.store(false, std::memory_order_relaxed);
+    // Compute provided spaces and connectivity (potential requesters)
+    // This only makes sense if there's at least one Exchange stage
+    if constexpr ((is_exchange_stage<Stages>::value || ...)) {
+        // Find the first Exchange stage to use for provides()
+        // For now, assume all Exchange stages use the same provides()
+        auto get_provides = []<typename S>(const Context& ctx) -> space_t {
+            if constexpr (is_exchange_stage<S>::value) {
+                return S::provides(ctx);
+            } else {
+                return space_t{};
+            }
+        };
+
+        // Collect provided spaces
+        for (std::size_t i = 0; i < num_peers; ++i) {
+            // Use fold expression to find first Exchange stage and call provides
+            bool found = false;
+            ((found || !(found = is_exchange_stage<Stages>::value) ||
+              (peers[i].provided_space = Stages::provides(contexts[i]), true)), ...);
+        }
+
+        // Compute connectivity: who might request from whom
+        for (std::size_t i = 0; i < num_peers; ++i) {
+            for (std::size_t j = 0; j < num_peers; ++j) {
+                if (i != j && topo.connected(peers[i].provided_space, peers[j].provided_space)) {
+                    peers[i].potential_requesters.push_back(j);
+                }
+            }
+        }
     }
 
     std::size_t completed_count = 0;
 
+    // Process stages using fold expression to dispatch by type
+    auto process_stage = [&]<typename Stage>(std::size_t stage_idx) {
+        if constexpr (is_exchange_stage<Stage>::value) {
+            // Exchange stage processing
+            for (std::size_t peer_idx = 0; peer_idx < num_peers; ++peer_idx) {
+                auto& peer = peers[peer_idx];
+                if (peer.stage != stage_idx) continue;
+
+                // Collect requests once
+                if (!peer.requests_collected) {
+                    Stage::need(contexts[peer_idx], [&](buffer_t& buf) {
+                        pending_requests[peer_idx].push_back({&buf, space(buf), false});
+                    });
+                    peer.requests_collected = true;
+                }
+
+                // Try to fill pending requests
+                bool all_filled = true;
+                for (auto& req : pending_requests[peer_idx]) {
+                    if (req.fulfilled) continue;
+
+                    // Find provider among peers at this stage
+                    for (std::size_t provider_idx = 0; provider_idx < num_peers; ++provider_idx) {
+                        if (peers[provider_idx].stage != stage_idx) continue;
+
+                        // Check if provider owns the requested space
+                        auto owners = topo.owners(req.requested_space, contexts);
+                        bool is_owner = false;
+                        for (auto o : owners) {
+                            if (o == provider_idx) {
+                                is_owner = true;
+                                break;
+                            }
+                        }
+                        if (!is_owner) continue;
+
+                        Stage::fill(contexts[provider_idx], [&](buffer_t& src) {
+                            topo.copy(*req.buffer, src, req.requested_space);
+                        });
+                        req.fulfilled = true;
+
+                        // Track that we served this requester
+                        auto& served = peers[provider_idx].requesters_served;
+                        if (std::find(served.begin(), served.end(), peer_idx) == served.end()) {
+                            served.push_back(peer_idx);
+                        }
+                        break;
+                    }
+
+                    if (!req.fulfilled) {
+                        all_filled = false;
+                    }
+                }
+
+                peer.guards_filled = all_filled;
+            }
+        } else {
+            // Compute stage processing
+            for (std::size_t peer_idx = 0; peer_idx < num_peers; ++peer_idx) {
+                auto& peer = peers[peer_idx];
+                if (peer.stage != stage_idx) continue;
+                if (peer.compute_spawned) continue;
+
+                peer.compute_spawned = true;
+                auto* ctx_ptr = &contexts[peer_idx];
+                auto* done_ptr = &peer.compute_done;
+
+                sched.spawn([ctx_ptr, done_ptr]() {
+                    *ctx_ptr = Stage::value(std::move(*ctx_ptr));
+                    done_ptr->store(true, std::memory_order_release);
+                });
+            }
+        }
+    };
+
+    // Main loop
     while (completed_count < num_peers) {
         // Process each stage
-        for (std::size_t stage_idx = 0; stage_idx < num_stages; ++stage_idx) {
-            processor::process(
-                stage_idx, peer_stage, contexts, guards_filled, requests_collected,
-                requesters_served, pending_requests, request_fulfilled, compute_spawned,
-                compute_done, num_peers, topo, sched
-            );
-        }
+        std::size_t stage_idx = 0;
+        ((process_stage.template operator()<Stages>(stage_idx++)), ...);
 
         // Advance peers that are ready
         for (std::size_t peer_idx = 0; peer_idx < num_peers; ++peer_idx) {
-            auto stage_idx = peer_stage[peer_idx];
-            if (stage_idx >= num_stages) {
-                continue;
-            }
+            auto& peer = peers[peer_idx];
+            if (peer.stage >= num_stages) continue;
 
             bool can_advance = false;
-            if (processor::is_exchange(stage_idx)) {
-                can_advance = can_advance_exchange<MaxPeers, num_stages>(
-                    peer_idx, stage_idx, guards_filled, requesters_served, topo
-                );
+
+            if (stage_is_exchange[peer.stage]) {
+                // Exchange: advance when guards filled AND all potential requesters served
+                if (peer.guards_filled) {
+                    can_advance = true;
+                    for (auto requester : peer.potential_requesters) {
+                        if (peers[requester].stage == peer.stage) {
+                            // Requester is at same stage - check if we've served them
+                            auto& served = peer.requesters_served;
+                            if (std::find(served.begin(), served.end(), requester) == served.end()) {
+                                can_advance = false;
+                                break;
+                            }
+                        }
+                        // If requester is at a later stage, they've already been served
+                        // If requester is at an earlier stage, they haven't arrived yet
+                        // and we must wait for them
+                        if (peers[requester].stage < peer.stage) {
+                            can_advance = false;
+                            break;
+                        }
+                    }
+                }
             } else {
-                can_advance = can_advance_compute<MaxPeers, num_stages>(
-                    peer_idx, stage_idx, compute_done
-                );
+                // Compute: advance when done
+                can_advance = peer.compute_done.load(std::memory_order_acquire);
             }
 
             if (can_advance) {
-                peer_stage[peer_idx] = stage_idx + 1;
-                if (peer_stage[peer_idx] >= num_stages) {
+                peer.stage++;
+                // Reset per-stage state for next stage
+                peer.requests_collected = false;
+                peer.guards_filled = false;
+                peer.compute_spawned = false;
+                peer.compute_done.store(false, std::memory_order_relaxed);
+                peer.requesters_served.clear();
+                pending_requests[peer_idx].clear();
+
+                if (peer.stage >= num_stages) {
                     completed_count++;
                 }
             }

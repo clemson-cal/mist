@@ -83,6 +83,10 @@ struct patch_state_t {
 // =============================================================================
 
 struct ghost_exchange_t {
+    static auto provides(const patch_state_t& ctx) -> index_space_t<1> {
+        return space(ctx.conserved);
+    }
+
     static void need(patch_state_t& ctx, auto request) {
         request(ctx.l_recv);
         request(ctx.r_recv);
@@ -310,6 +314,25 @@ struct unigrid_topology_1d {
                 dst[req_start + static_cast<int>(i)] = src[global_idx];
             }
         }
+    }
+
+    // Returns true if two spaces are neighbors (could exchange guards)
+    // For 1D periodic: spaces are connected if they are adjacent (with wrapping)
+    bool connected(space_t a, space_t b) const {
+        auto a_start = start(a)[0];
+        auto a_end = a_start + static_cast<int>(shape(a)[0]);
+        auto b_start = start(b)[0];
+        auto b_end = b_start + static_cast<int>(shape(b)[0]);
+
+        // Check if a's right edge touches b's left edge (or vice versa) with periodic wrapping
+        // a is left neighbor of b: a_end == b_start (mod num_zones)
+        // b is left neighbor of a: b_end == a_start (mod num_zones)
+        auto a_end_wrapped = a_end % num_zones;
+        auto b_end_wrapped = b_end % num_zones;
+        auto a_start_wrapped = (a_start % num_zones + num_zones) % num_zones;
+        auto b_start_wrapped = (b_start % num_zones + num_zones) % num_zones;
+
+        return (a_end_wrapped == b_start_wrapped) || (b_end_wrapped == a_start_wrapped);
     }
 };
 
