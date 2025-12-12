@@ -207,13 +207,13 @@ struct advection {
     struct config_t {
         int rk_order = 1;
         double cfl = 0.4;
-        double advection_velocity = 1.0;
+        double wavespeed = 1.0;
 
         auto fields() const {
             return std::make_tuple(
                 field("rk_order", rk_order),
                 field("cfl", cfl),
-                field("advection_velocity", advection_velocity)
+                field("wavespeed", wavespeed)
             );
         }
 
@@ -221,7 +221,7 @@ struct advection {
             return std::make_tuple(
                 field("rk_order", rk_order),
                 field("cfl", cfl),
-                field("advection_velocity", advection_velocity)
+                field("wavespeed", wavespeed)
             );
         }
     };
@@ -289,7 +289,7 @@ struct advection {
 // =============================================================================
 
 auto default_physics_config(std::type_identity<advection>) -> advection::config_t {
-    return {.rk_order = 1, .cfl = 0.4, .advection_velocity = 1.0};
+    return {.rk_order = 1, .cfl = 0.4, .wavespeed = 1.0};
 }
 
 auto default_initial_config(std::type_identity<advection>) -> advection::initial_t {
@@ -321,7 +321,7 @@ void advance(advection::state_t& state, const advection::exec_context_t& ctx) {
     }
 
     auto dx = ctx.initial.domain_length / ctx.initial.num_zones;
-    auto v = ctx.config.advection_velocity;
+    auto v = ctx.config.wavespeed;
     auto cfl = ctx.config.cfl;
 
     auto pipe = parallel::pipeline(
@@ -350,7 +350,7 @@ auto names_of_timeseries(std::type_identity<advection>) -> std::vector<std::stri
 }
 
 auto names_of_products(std::type_identity<advection>) -> std::vector<std::string> {
-    return {"concentration", "cell_x", "advection_velocity"};
+    return {"concentration", "cell_x", "wavespeed"};
 }
 
 auto get_time(
@@ -398,7 +398,7 @@ auto get_product(
     using std::views::transform;
 
     auto dx = ctx.initial.domain_length / ctx.initial.num_zones;
-    auto v = ctx.config.advection_velocity;
+    auto v = ctx.config.wavespeed;
 
     if (name == "concentration") {
         return to_vector(state.patches | transform([](const auto& p) {
@@ -411,7 +411,7 @@ auto get_product(
             return cache(lazy(s, [dx](auto idx) { return cell_center_x(idx[0], dx); }), memory::host, exec::cpu);
         }));
     }
-    if (name == "advection_velocity") {
+    if (name == "wavespeed") {
         return to_vector(state.patches | transform([v](const auto& p) {
             auto s = space(p.conserved);
             return cache(fill(s, v), memory::host, exec::cpu);

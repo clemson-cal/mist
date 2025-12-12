@@ -1,7 +1,11 @@
 reset
 set exec num_threads=0
-set initial num_partitions=2
-set initial num_zones=1000000
+set physics wavespeed=-1.0
+set initial num_partitions=20
+set initial num_zones=1000
 init
 repeat 0.01 t write message
 t -> 0.1
+select products
+write products
+quit

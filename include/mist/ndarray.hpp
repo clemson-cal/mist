@@ -31,13 +31,23 @@ template<std::size_t S, typename F>
 struct lazy_t;
 
 template<typename T, std::size_t S>
-struct cached_t;
+struct array_t;
 
 template<typename T, std::size_t S>
-struct cached_view_t;
+struct array_view_t;
 
 template<typename T, std::size_t N, std::size_t S, layout L = layout::aos>
-struct cached_vec_t;
+struct array_vec_t;
+
+// Aliases for backward compatibility
+template<typename T, std::size_t S>
+using cached_t = array_t<T, S>;
+
+template<typename T, std::size_t S>
+using cached_view_t = array_view_t<T, S>;
+
+template<typename T, std::size_t N, std::size_t S, layout L = layout::aos>
+using cached_vec_t = array_vec_t<T, N, S, L>;
 
 // =============================================================================
 // NdArray concept and refinements
@@ -112,11 +122,11 @@ auto lazy(const index_space_t<S>& space, F&& func) {
 }
 
 // =============================================================================
-// cached_t: Owning memory-backed array
+// array_t: Owning memory-backed array
 // =============================================================================
 
 template<typename T, std::size_t S>
-struct cached_t {
+struct array_t {
     using value_type = T;
     static constexpr std::size_t rank = S;
 
@@ -125,13 +135,13 @@ struct cached_t {
     memory _location;
 
     // Default constructor: creates empty array
-    cached_t()
+    array_t()
         : _space(index_space(ivec_t<S>{}, uvec_t<S>{})), _data(nullptr), _location(memory::host)
     {
     }
 
     // Constructor
-    cached_t(const index_space_t<S>& space, memory loc = memory::host)
+    array_t(const index_space_t<S>& space, memory loc = memory::host)
         : _space(space), _data(nullptr), _location(loc)
     {
         std::size_t n = size(space);
@@ -153,7 +163,7 @@ struct cached_t {
     }
 
     // Destructor
-    ~cached_t() {
+    ~array_t() {
         if (!_data) return;
         if (_location == memory::host) {
             delete[] _data;
@@ -165,11 +175,11 @@ struct cached_t {
     }
 
     // No copy
-    cached_t(const cached_t&) = delete;
-    cached_t& operator=(const cached_t&) = delete;
+    array_t(const array_t&) = delete;
+    array_t& operator=(const array_t&) = delete;
 
     // Move
-    cached_t(cached_t&& other) noexcept
+    array_t(array_t&& other) noexcept
         : _space(other._space)
         , _data(other._data)
         , _location(other._location)
@@ -177,7 +187,7 @@ struct cached_t {
         other._data = nullptr;
     }
 
-    cached_t& operator=(cached_t&& other) noexcept {
+    array_t& operator=(array_t&& other) noexcept {
         if (this != &other) {
             if (_data) {
                 if (_location == memory::host) {
@@ -216,58 +226,124 @@ struct cached_t {
 };
 
 template<typename T, std::size_t S>
-const index_space_t<S>& space(const cached_t<T, S>& a) { return a._space; }
+const index_space_t<S>& space(const array_t<T, S>& a) { return a._space; }
 
 template<typename T, std::size_t S>
-T* data(cached_t<T, S>& a) { return a._data; }
+T* data(array_t<T, S>& a) { return a._data; }
 
 template<typename T, std::size_t S>
-const T* data(const cached_t<T, S>& a) { return a._data; }
+const T* data(const array_t<T, S>& a) { return a._data; }
 
 template<typename T, std::size_t S>
-memory location(const cached_t<T, S>& a) { return a._location; }
+memory location(const array_t<T, S>& a) { return a._location; }
 
 // =============================================================================
-// cached_view_t: Non-owning memory-backed array
+// array_view_t: Non-owning view into array (supports strided access)
 // =============================================================================
 
 template<typename T, std::size_t S>
-struct cached_view_t {
+struct array_view_t {
     using value_type = T;
     static constexpr std::size_t rank = S;
 
-    index_space_t<S> _space;
-    T* _data;
+    index_space_t<S> _space;   // The subspace this view represents
+    T* _data;                   // Pointer to element at _space.start in parent
+    uvec_t<S> _strides;         // Parent's strides for offset calculation
 
-    cached_view_t(const index_space_t<S>& space, T* data)
-        : _space(space), _data(data) {}
+    // Constructor for contiguous view (strides derived from space)
+    array_view_t(const index_space_t<S>& space, T* data)
+        : _space(space), _data(data), _strides(compute_strides(shape(space))) {}
+
+    // Constructor for strided view (subspace of parent)
+    array_view_t(const index_space_t<S>& space, T* data, const uvec_t<S>& strides)
+        : _space(space), _data(data), _strides(strides) {}
 
     MIST_HD T& operator()(const ivec_t<S>& idx) {
-        return _data[ndoffset(_space, idx)];
+        return _data[strided_offset(idx)];
     }
 
     MIST_HD const T& operator()(const ivec_t<S>& idx) const {
-        return _data[ndoffset(_space, idx)];
+        return _data[strided_offset(idx)];
     }
 
     // Convenience for 1D arrays: accept integer index
     MIST_HD T& operator[](int i) requires (S == 1) {
-        return _data[ndoffset(_space, ivec(i))];
+        return _data[strided_offset(ivec(i))];
     }
 
     MIST_HD const T& operator[](int i) const requires (S == 1) {
-        return _data[ndoffset(_space, ivec(i))];
+        return _data[strided_offset(ivec(i))];
+    }
+
+private:
+    // Compute strides from shape (row-major)
+    static constexpr uvec_t<S> compute_strides(const uvec_t<S>& shape) {
+        uvec_t<S> strides{};
+        strides._data[S - 1] = 1;
+        for (std::size_t i = S - 1; i > 0; --i) {
+            strides._data[i - 1] = strides._data[i] * shape._data[i];
+        }
+        return strides;
+    }
+
+    // Compute offset using stored strides
+    MIST_HD constexpr std::size_t strided_offset(const ivec_t<S>& idx) const {
+        std::size_t offset = 0;
+        for (std::size_t i = 0; i < S; ++i) {
+            offset += static_cast<std::size_t>(idx._data[i] - _space._start._data[i]) * _strides._data[i];
+        }
+        return offset;
     }
 };
 
 template<typename T, std::size_t S>
-const index_space_t<S>& space(const cached_view_t<T, S>& a) { return a._space; }
+const index_space_t<S>& space(const array_view_t<T, S>& a) { return a._space; }
 
 template<typename T, std::size_t S>
-T* data(cached_view_t<T, S>& a) { return a._data; }
+T* data(array_view_t<T, S>& a) { return a._data; }
 
 template<typename T, std::size_t S>
-const T* data(const cached_view_t<T, S>& a) { return a._data; }
+const T* data(const array_view_t<T, S>& a) { return a._data; }
+
+// -----------------------------------------------------------------------------
+// view() - create views into arrays
+// -----------------------------------------------------------------------------
+
+// View of entire array
+template<typename T, std::size_t S>
+auto view(array_t<T, S>& a) -> array_view_t<T, S> {
+    return array_view_t<T, S>(a._space, a._data);
+}
+
+template<typename T, std::size_t S>
+auto view(const array_t<T, S>& a) -> array_view_t<const T, S> {
+    return array_view_t<const T, S>(a._space, a._data);
+}
+
+// View of subspace (strided access into parent)
+template<typename T, std::size_t S>
+auto view(array_t<T, S>& a, const index_space_t<S>& subspace) -> array_view_t<T, S> {
+    // Compute strides from parent's shape
+    uvec_t<S> strides{};
+    strides._data[S - 1] = 1;
+    for (std::size_t i = S - 1; i > 0; --i) {
+        strides._data[i - 1] = strides._data[i] * a._space._shape._data[i];
+    }
+    // Compute pointer to first element of subspace
+    T* ptr = a._data + ndoffset(a._space, start(subspace));
+    return array_view_t<T, S>(subspace, ptr, strides);
+}
+
+template<typename T, std::size_t S>
+auto view(const array_t<T, S>& a, const index_space_t<S>& subspace) -> array_view_t<const T, S> {
+    uvec_t<S> strides{};
+    strides._data[S - 1] = 1;
+    for (std::size_t i = S - 1; i > 0; --i) {
+        strides._data[i - 1] = strides._data[i] * a._space._shape._data[i];
+    }
+    const T* ptr = a._data + ndoffset(a._space, start(subspace));
+    return array_view_t<const T, S>(subspace, ptr, strides);
+}
 
 // =============================================================================
 // soa_ref_t: Proxy for SoA element access
@@ -290,11 +366,11 @@ struct soa_ref_t {
 };
 
 // =============================================================================
-// cached_vec_t: Vector-valued array with layout choice
+// array_vec_t: Vector-valued array with layout choice
 // =============================================================================
 
 template<typename T, std::size_t N, std::size_t S, layout L>
-struct cached_vec_t {
+struct array_vec_t {
     using value_type = vec_t<T, N>;
     static constexpr std::size_t rank = S;
     static constexpr layout data_layout = L;
@@ -304,7 +380,7 @@ struct cached_vec_t {
     memory _location;
 
     // Constructor
-    cached_vec_t(const index_space_t<S>& space, memory loc = memory::host)
+    array_vec_t(const index_space_t<S>& space, memory loc = memory::host)
         : _space(space), _data(nullptr), _location(loc)
     {
         std::size_t n = size(space) * N;
@@ -326,7 +402,7 @@ struct cached_vec_t {
     }
 
     // Destructor
-    ~cached_vec_t() {
+    ~array_vec_t() {
         if (!_data) return;
         if (_location == memory::host) {
             delete[] _data;
@@ -338,11 +414,11 @@ struct cached_vec_t {
     }
 
     // No copy
-    cached_vec_t(const cached_vec_t&) = delete;
-    cached_vec_t& operator=(const cached_vec_t&) = delete;
+    array_vec_t(const array_vec_t&) = delete;
+    array_vec_t& operator=(const array_vec_t&) = delete;
 
     // Move
-    cached_vec_t(cached_vec_t&& other) noexcept
+    array_vec_t(array_vec_t&& other) noexcept
         : _space(other._space)
         , _data(other._data)
         , _location(other._location)
@@ -350,7 +426,7 @@ struct cached_vec_t {
         other._data = nullptr;
     }
 
-    cached_vec_t& operator=(cached_vec_t&& other) noexcept {
+    array_vec_t& operator=(array_vec_t&& other) noexcept {
         if (this != &other) {
             if (_data) {
                 if (_location == memory::host) {
@@ -397,16 +473,16 @@ struct cached_vec_t {
 };
 
 template<typename T, std::size_t N, std::size_t S, layout L>
-const index_space_t<S>& space(const cached_vec_t<T, N, S, L>& a) { return a._space; }
+const index_space_t<S>& space(const array_vec_t<T, N, S, L>& a) { return a._space; }
 
 template<typename T, std::size_t N, std::size_t S, layout L>
-T* data(cached_vec_t<T, N, S, L>& a) { return a._data; }
+T* data(array_vec_t<T, N, S, L>& a) { return a._data; }
 
 template<typename T, std::size_t N, std::size_t S, layout L>
-const T* data(const cached_vec_t<T, N, S, L>& a) { return a._data; }
+const T* data(const array_vec_t<T, N, S, L>& a) { return a._data; }
 
 template<typename T, std::size_t N, std::size_t S, layout L>
-memory location(const cached_vec_t<T, N, S, L>& a) { return a._location; }
+memory location(const array_vec_t<T, N, S, L>& a) { return a._location; }
 
 // =============================================================================
 // map: Lazy element-wise transform
@@ -564,12 +640,30 @@ auto cache(const A& a, memory loc, exec e) {
 }
 
 // =============================================================================
-// copy: Copy between owned cached arrays with automatic reallocation
+// copy: Copy between arrays (requires matching spaces)
 // =============================================================================
 
-// Copy from cached_t to cached_t (reallocates dst if needed)
+// Copy between views (requires matching index spaces)
 template<typename T, std::size_t S>
-void copy(cached_t<T, S>& dst, const cached_t<T, S>& src) {
+void copy(array_view_t<T, S> dst, array_view_t<const T, S> src) {
+    // Spaces must match exactly
+    if (dst._space != src._space) {
+        throw std::runtime_error("copy: index spaces must match");
+    }
+    for (auto idx : dst._space) {
+        dst(idx) = src(idx);
+    }
+}
+
+// Copy from const view to mutable view (same types)
+template<typename T, std::size_t S>
+void copy(array_view_t<T, S> dst, array_view_t<T, S> src) {
+    copy(dst, array_view_t<const T, S>(src._space, src._data, src._strides));
+}
+
+// Copy from array_t to array_t (reallocates dst if needed)
+template<typename T, std::size_t S>
+void copy(array_t<T, S>& dst, const array_t<T, S>& src) {
     if (size(dst._space) != size(src._space)) {
         if (dst._data) {
             if (dst._location == memory::host) {
@@ -601,9 +695,9 @@ void copy(cached_t<T, S>& dst, const cached_t<T, S>& src) {
     detail::memcpy_any(dst._data, src._data, size(dst._space), dst._location, src._location);
 }
 
-// Copy from cached_vec_t to cached_vec_t (reallocates dst if needed)
+// Copy from array_vec_t to array_vec_t (reallocates dst if needed)
 template<typename T, std::size_t N, std::size_t S, layout L>
-void copy(cached_vec_t<T, N, S, L>& dst, const cached_vec_t<T, N, S, L>& src) {
+void copy(array_vec_t<T, N, S, L>& dst, const array_vec_t<T, N, S, L>& src) {
     if (size(dst._space) != size(src._space)) {
         if (dst._data) {
             if (dst._location == memory::host) {
@@ -635,10 +729,13 @@ void copy(cached_vec_t<T, N, S, L>& dst, const cached_vec_t<T, N, S, L>& src) {
     detail::memcpy_any(dst._data, src._data, size(dst._space) * N, dst._location, src._location);
 }
 
-// Copy overlapping region from src to dst (index spaces may differ)
-// Only copies elements where both spaces overlap
+// =============================================================================
+// copy_overlapping: Copy where index spaces overlap
+// =============================================================================
+
+// Copy overlapping region between views
 template<typename T, std::size_t S>
-void copy_overlapping(cached_t<T, S>& dst, const cached_t<T, S>& src) {
+void copy_overlapping(array_view_t<T, S> dst, array_view_t<const T, S> src) {
     auto dst_space = space(dst);
     auto src_space = space(src);
 
@@ -651,6 +748,12 @@ void copy_overlapping(cached_t<T, S>& dst, const cached_t<T, S>& src) {
             dst(idx) = src(idx);
         }
     }
+}
+
+// Copy overlapping region between arrays
+template<typename T, std::size_t S>
+void copy_overlapping(array_t<T, S>& dst, const array_t<T, S>& src) {
+    copy_overlapping(view(dst), view(src));
 }
 
 // =============================================================================
