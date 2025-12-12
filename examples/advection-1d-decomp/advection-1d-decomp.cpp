@@ -90,7 +90,9 @@ struct compute_local_dt_t {
 struct global_dt_t {
     using value_type = double;
 
-    static double init() { return std::numeric_limits<double>::max(); }
+    static double init() {
+        return std::numeric_limits<double>::max();
+    }
 
     double reduce(double acc, const patch_t& p) const {
         return std::min(acc, p.dt);
@@ -107,16 +109,16 @@ struct ghost_exchange_t {
     }
 
     void need(patch_t& p, auto request) const {
-        auto lo = start(p.interior)[0];
-        auto hi = upper(p.interior)[0];
-        auto l_guard = index_space(ivec(lo - 1), uvec(1));
-        auto r_guard = index_space(ivec(hi), uvec(1));
-        request(view(p.conserved, l_guard));
-        request(view(p.conserved, r_guard));
+        auto lo = start(p.interior);
+        auto hi = upper(p.interior);
+        auto l_guard = index_space(lo - ivec(1), uvec(1));
+        auto r_guard = index_space(hi - ivec(0), uvec(1));
+        request(p.conserved[l_guard]);
+        request(p.conserved[r_guard]);
     }
 
-    void fill(patch_t& p, auto provide) const {
-        provide(view(p.conserved, p.interior));
+    auto data(const patch_t& p) const -> array_view_t<const double, 1> {
+        return p.conserved[p.interior];
     }
 };
 
@@ -126,18 +128,14 @@ struct compute_flux_t {
         auto& fhat = p.godunov_flux;
         auto& u = p.conserved;
 
-        // fhat_i = v * u_{i-1} (v > 0) or v * u_i (v < 0)
-        // Guard zones in u allow uniform access across all faces
-        if (v > 0) {
+        if (v > 0.0)
             for_each(space(fhat), [&](ivec_t<1> i) {
                 fhat(i) = v * u(i - ivec(1));
             });
-        } else {
+        if (v < 0.0)
             for_each(space(fhat), [&](ivec_t<1> i) {
                 fhat(i) = v * u(i);
             });
-        }
-
         return p;
     }
 };
@@ -183,10 +181,11 @@ auto deserialize(A& ar, patch_t& p) -> bool {
 
 struct unigrid_topology_1d {
     using buffer_t = array_view_t<double, 1>;
+    using const_buffer_t = array_view_t<const double, 1>;
     using space_t = index_space_t<1>;
 
-    void copy(buffer_t dst, const buffer_t& src, space_t) const {
-        copy_overlapping(dst, array_view_t<const double, 1>(src._space, src._data, src._strides));
+    void copy(buffer_t dst, const_buffer_t src, space_t) const {
+        copy_overlapping(dst, src);
     }
 
     bool connected(space_t a, space_t b) const {

@@ -16,22 +16,16 @@ namespace parallel {
 // =============================================================================
 
 // Compute stage: per-peer transform (fully parallel)
-template<typename S, typename Context>
-concept Compute = requires(const S& s, Context ctx) {
-    { s.value(std::move(ctx)) } -> std::same_as<Context>;
-};
+template<typename S>
+concept ComputeStage = requires { &S::value; };
 
 // Exchange stage: peers request/provide data (barrier required)
 template<typename S>
-concept ExchangeStage = requires { &S::provides; };
+concept ExchangeStage = requires { &S::provides; &S::data; };
 
 // Reduce stage: fold across peers then broadcast result (barrier required)
 template<typename S>
 concept ReduceStage = requires { typename S::value_type; &S::init; &S::reduce; &S::finalize; };
-
-// A Compute stage is one that is neither Exchange nor Reduce
-template<typename S>
-concept ComputeStage = !ExchangeStage<S> && !ReduceStage<S>;
 
 // Type trait to extract Context type from a stage
 namespace detail {
@@ -103,13 +97,14 @@ auto pipeline(Stages... stages) -> pipeline_t<Stages...> {
 template<typename T, typename Context>
 concept Topology = requires {
     typename T::buffer_t;
+    typename T::const_buffer_t;
     typename T::space_t;
 } && requires(
     const T& topo,
     typename T::space_t space_a,
     typename T::space_t space_b,
-    typename T::buffer_t& dst,
-    const typename T::buffer_t& src
+    typename T::buffer_t dst,
+    typename T::const_buffer_t src
 ) {
     { topo.copy(dst, src, space_a) } -> std::same_as<void>;
     { topo.connected(space_a, space_b) } -> std::convertible_to<bool>;
@@ -150,9 +145,8 @@ void execute_exchange(
         for (std::size_t j = 0; j < contexts.size(); ++j) {
             auto provided = stage.provides(contexts[j]);
             if (overlaps(req.requested_space, provided)) {
-                stage.fill(contexts[j], [&](buffer_t src) {
-                    topo.copy(req.buffer, src, req.requested_space);
-                });
+                auto src = stage.data(contexts[j]);
+                topo.copy(req.buffer, src, req.requested_space);
             }
         }
     }

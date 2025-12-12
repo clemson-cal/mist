@@ -223,6 +223,10 @@ struct array_t {
     MIST_HD const T& operator[](int i) const requires (S == 1) {
         return _data[ndoffset(_space, ivec(i))];
     }
+
+    // Subspace view via operator[]
+    auto operator[](const index_space_t<S>& subspace) -> array_view_t<T, S>;
+    auto operator[](const index_space_t<S>& subspace) const -> array_view_t<const T, S>;
 };
 
 template<typename T, std::size_t S>
@@ -257,6 +261,12 @@ struct array_view_t {
     // Constructor for strided view (subspace of parent)
     array_view_t(const index_space_t<S>& space, T* data, const uvec_t<S>& strides)
         : _space(space), _data(data), _strides(strides) {}
+
+    // Converting constructor: array_view_t<U> -> array_view_t<const U>
+    template<typename U>
+        requires std::is_same_v<T, const U>
+    array_view_t(const array_view_t<U, S>& other)
+        : _space(other._space), _data(other._data), _strides(other._strides) {}
 
     MIST_HD T& operator()(const ivec_t<S>& idx) {
         return _data[strided_offset(idx)];
@@ -343,6 +353,20 @@ auto view(const array_t<T, S>& a, const index_space_t<S>& subspace) -> array_vie
     }
     const T* ptr = a._data + ndoffset(a._space, start(subspace));
     return array_view_t<const T, S>(subspace, ptr, strides);
+}
+
+// -----------------------------------------------------------------------------
+// array_t::operator[] implementations (deferred due to array_view_t dependency)
+// -----------------------------------------------------------------------------
+
+template<typename T, std::size_t S>
+auto array_t<T, S>::operator[](const index_space_t<S>& subspace) -> array_view_t<T, S> {
+    return view(*this, subspace);
+}
+
+template<typename T, std::size_t S>
+auto array_t<T, S>::operator[](const index_space_t<S>& subspace) const -> array_view_t<const T, S> {
+    return view(*this, subspace);
 }
 
 // =============================================================================
@@ -901,45 +925,45 @@ auto coords(const index_space_t<S>& space, const dvec_t<S>& origin, const dvec_t
     });
 }
 
-// join: combine multiple arrays into one lazy array
-// Arrays are stored in std::array and looked up by index containment
-// The combined space is the bounding box of all input spaces
-namespace detail {
-    template<typename T, std::size_t N, std::size_t S>
-    index_space_t<S> bounding_box(const std::array<const cached_t<T, S>*, N>& arrays) {
-        ivec_t<S> lo = start(space(*arrays[0]));
-        ivec_t<S> hi = upper(space(*arrays[0]));
-        for (std::size_t n = 1; n < N; ++n) {
-            auto s = space(*arrays[n]);
-            for (std::size_t d = 0; d < S; ++d) {
-                lo._data[d] = std::min(lo._data[d], start(s)._data[d]);
-                hi._data[d] = std::max(hi._data[d], upper(s)._data[d]);
-            }
-        }
-        uvec_t<S> sh;
-        for (std::size_t d = 0; d < S; ++d) {
-            sh._data[d] = static_cast<unsigned int>(hi._data[d] - lo._data[d]);
-        }
-        return index_space(lo, sh);
-    }
-}
-
-template<typename T, std::size_t S, typename... Arrays>
-    requires (std::same_as<Arrays, cached_t<T, S>> && ...)
-auto join(const Arrays&... arrays) {
-    constexpr std::size_t N = sizeof...(Arrays);
-    auto ptrs = std::array<const cached_t<T, S>*, N>{&arrays...};
-    auto combined_space = detail::bounding_box(ptrs);
-
-    return lazy(combined_space, [ptrs](ivec_t<S> idx) {
-        for (std::size_t n = 0; n < N; ++n) {
-            if (contains(space(*ptrs[n]), idx)) {
-                return (*ptrs[n])(idx);
-            }
-        }
-        return T{};  // Default if not found (shouldn't happen with proper usage)
-    });
-}
+// // join: combine multiple arrays into one lazy array
+// // Arrays are stored in std::array and looked up by index containment
+// // The combined space is the bounding box of all input spaces
+// namespace detail {
+//     template<typename T, std::size_t N, std::size_t S>
+//     index_space_t<S> bounding_box(const std::array<const cached_t<T, S>*, N>& arrays) {
+//         ivec_t<S> lo = start(space(*arrays[0]));
+//         ivec_t<S> hi = upper(space(*arrays[0]));
+//         for (std::size_t n = 1; n < N; ++n) {
+//             auto s = space(*arrays[n]);
+//             for (std::size_t d = 0; d < S; ++d) {
+//                 lo._data[d] = std::min(lo._data[d], start(s)._data[d]);
+//                 hi._data[d] = std::max(hi._data[d], upper(s)._data[d]);
+//             }
+//         }
+//         uvec_t<S> sh;
+//         for (std::size_t d = 0; d < S; ++d) {
+//             sh._data[d] = static_cast<unsigned int>(hi._data[d] - lo._data[d]);
+//         }
+//         return index_space(lo, sh);
+//     }
+// }
+//
+// template<typename T, std::size_t S, typename... Arrays>
+//     requires (std::same_as<Arrays, cached_t<T, S>> && ...)
+// auto join(const Arrays&... arrays) {
+//     constexpr std::size_t N = sizeof...(Arrays);
+//     auto ptrs = std::array<const cached_t<T, S>*, N>{&arrays...};
+//     auto combined_space = detail::bounding_box(ptrs);
+//
+//     return lazy(combined_space, [ptrs](ivec_t<S> idx) {
+//         for (std::size_t n = 0; n < N; ++n) {
+//             if (contains(space(*ptrs[n]), idx)) {
+//                 return (*ptrs[n])(idx);
+//             }
+//         }
+//         return T{};  // Default if not found (shouldn't happen with proper usage)
+//     });
+// }
 
 // =============================================================================
 // Reduction operations
