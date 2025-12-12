@@ -150,8 +150,7 @@ concept Physics = requires(
     typename P::initial_t ini,
     typename P::state_t s,
     typename P::product_t p,
-    const typename P::exec_context_t& ctx,
-    double dt) {
+    const typename P::exec_context_t& ctx) {
     typename P::config_t;
     typename P::initial_t;
     typename P::state_t;
@@ -161,7 +160,6 @@ concept Physics = requires(
     { default_physics_config(std::type_identity<P>{}) } -> std::same_as<typename P::config_t>;
     { default_initial_config(std::type_identity<P>{}) } -> std::same_as<typename P::initial_t>;
     { initial_state(ctx) } -> std::same_as<typename P::state_t>;
-    { courant_time(s, ctx) } -> std::same_as<double>;
     { zone_count(s, ctx) } -> std::same_as<std::size_t>;
 
     // Uniform interface for discovery
@@ -174,8 +172,8 @@ concept Physics = requires(
     { get_timeseries(cfg, ini, s, std::string{}) } -> std::same_as<double>;
     { get_product(s, std::string{}, ctx) } -> std::same_as<typename P::product_t>;
 
-    // Time-stepping with execution context
-    { advance(s, dt, ctx) } -> std::same_as<void>;
+    // Time-stepping: advance by one CFL timestep
+    { advance(s, ctx) } -> std::same_as<void>;
 };
 
 // =============================================================================
@@ -759,6 +757,7 @@ class driver_t {
     // Performance tracking
     double command_start_wall_time = 0.0;
     int command_start_iteration = 0;
+    double last_dt = 0.0;
 
 public:
     explicit driver_t(program_t<P>& prog, std::ostream& out = std::cout, std::ostream& err = std::cerr)
@@ -796,7 +795,7 @@ private:
     }
 
     // Time stepping
-    void do_timestep(double dt);
+    void do_timestep();
     void advance_to_target(const std::string& var_name, double target, std::optional<int> target_iteration = std::nullopt);
     void execute_recurring_commands();
 
@@ -839,11 +838,15 @@ private:
 // =============================================================================
 
 template<Physics P>
-void driver_t<P>::do_timestep(double dt) {
+void driver_t<P>::do_timestep() {
     if (!prog.physics_state.has_value()) {
         throw std::runtime_error("physics state not initialized; use 'init' command first");
     }
-    advance(*prog.physics_state, dt, exec_context);
+    const auto time_names = names_of_time(std::type_identity<P>{});
+    const auto t0 = get_time(*prog.physics_state, time_names[0]);
+    advance(*prog.physics_state, exec_context);
+    const auto t1 = get_time(*prog.physics_state, time_names[0]);
+    last_dt = t1 - t0;
     prog.driver_state.iteration++;
 }
 
@@ -860,8 +863,7 @@ void driver_t<P>::advance_to_target(const std::string& var_name, double target, 
     // If target_iteration is specified, advance until iteration reaches target
     if (target_iteration.has_value()) {
         while (prog.driver_state.iteration < target_iteration.value() && !guard.is_interrupted()) {
-            double dt = courant_time(*prog.physics_state, exec_context);
-            do_timestep(dt);
+            do_timestep();
             execute_recurring_commands();
         }
         if (guard.is_interrupted()) {
@@ -870,23 +872,10 @@ void driver_t<P>::advance_to_target(const std::string& var_name, double target, 
         return;
     }
 
-    // Otherwise advance based on time variable
-    if (var_name == "t") {
-        // Exact time-stepping for t
-        while (get_time(*prog.physics_state, var_name) < target && !guard.is_interrupted()) {
-            double dt_cfl = courant_time(*prog.physics_state, exec_context);
-            double t = get_time(*prog.physics_state, var_name);
-            double dt = std::min(dt_cfl, target - t);
-            do_timestep(dt);
-            execute_recurring_commands();
-        }
-    } else {
-        // Nearest for other variables (just past target)
-        while (get_time(*prog.physics_state, var_name) <= target && !guard.is_interrupted()) {
-            double dt = courant_time(*prog.physics_state, exec_context);
-            do_timestep(dt);
-            execute_recurring_commands();
-        }
+    // Advance until time variable reaches or exceeds target
+    while (get_time(*prog.physics_state, var_name) < target && !guard.is_interrupted()) {
+        do_timestep();
+        execute_recurring_commands();
     }
 
     if (guard.is_interrupted()) {
@@ -916,6 +905,8 @@ std::string driver_t<P>::iteration_message() {
             << c.value << std::scientific << std::showpos << std::setprecision(6)
             << get_time(*prog.physics_state, time_names[i]) << std::noshowpos << c.reset;
     }
+    oss << " " << c.label << "dt=" << c.reset
+        << c.value << std::scientific << std::setprecision(6) << last_dt << c.reset;
     oss << " " << c.label << "Mzps=" << c.reset
         << c.value << std::scientific << std::setprecision(6) << mzps << c.reset << "\n";
     return oss.str();

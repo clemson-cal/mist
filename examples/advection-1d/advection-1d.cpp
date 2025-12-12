@@ -172,25 +172,19 @@ void rk_step(
     state.time = (1.0 - alpha) * s_base.time + alpha * (state.time + dt);
 }
 
-// Advance function: implements RK time-stepping
+// Advance function: implements RK time-stepping with CFL dt
 void advance(
     advection_1d::state_t& state,
-    double dt,
     const advection_1d::exec_context_t& ctx
 ) {
-    rk_advance<advection_1d>(ctx.config.rk_order, state, ctx.rk_temp, dt, ctx);
-}
-
-// CFL timestep
-auto courant_time(
-    const advection_1d::state_t& state,
-    const advection_1d::exec_context_t& ctx
-) -> double {
     const auto n = size(state.conserved);
     const auto dx = ctx.initial.domain_length / n;
     const auto v = std::abs(ctx.config.advection_velocity);
-    return ctx.config.cfl * dx / v;
+    const auto dt = ctx.config.cfl * dx / v;
+
+    rk_advance<advection_1d>(ctx.config.rk_order, state, ctx.rk_temp, dt, ctx);
 }
+
 
 // Zone count for performance metrics
 auto zone_count(const advection_1d::state_t& state, const advection_1d::exec_context_t& ctx) -> std::size_t {

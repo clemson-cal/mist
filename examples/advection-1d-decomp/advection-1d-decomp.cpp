@@ -1,6 +1,7 @@
 #include <cmath>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <numeric>
 #include <ranges>
@@ -104,22 +105,37 @@ struct flux_and_update_t {
 };
 
 // =============================================================================
-// Stage 3: Global mass check (Reduce stage) - example, not used in pipeline
+// Stage 3: Compute local dt (Compute stage)
 // =============================================================================
 
-struct global_mass_t {
+struct compute_local_dt_t {
+    double cfl;
+    double v;
+    double dx;
+
+    auto value(patch_t p) const -> patch_t {
+        p.v = v;
+        p.dx = dx;
+        p.dt = cfl * dx / std::abs(v);
+        return p;
+    }
+};
+
+// =============================================================================
+// Stage 4: Global dt reduction (Reduce stage)
+// =============================================================================
+
+struct global_dt_t {
     using value_type = double;
 
-    static double init() { return 0.0; }
+    static double init() { return std::numeric_limits<double>::max(); }
 
     double reduce(double acc, const patch_t& p) const {
-        return acc + sum(p.conserved) * p.dx;
+        return std::min(acc, p.dt);
     }
 
-    void finalize(double mass, patch_t& p) const {
-        // Could store in patch if needed, here we just demonstrate the pattern
-        (void)mass;
-        (void)p;
+    void finalize(double dt, patch_t& p) const {
+        p.dt = dt;
     }
 };
 
@@ -282,37 +298,35 @@ struct unigrid_topology_1d {
     }
 };
 
-void advance(advection::state_t& state, double dt, const advection::exec_context_t& ctx) {
+void advance(advection::state_t& state, const advection::exec_context_t& ctx) {
     if (ctx.config.rk_order != 1) {
         throw std::runtime_error("only rk_order=1 (forward Euler) is supported");
     }
 
     auto dx = ctx.initial.domain_length / ctx.initial.num_zones;
     auto v = ctx.config.advection_velocity;
+    auto cfl = ctx.config.cfl;
 
-    for (auto& p : state.patches) {
-        p.new_step(v, dx, dt);
-    }
+    // for (auto& patch : state.patches) {
+    //     patch.dt = cfl * dx / std::abs(v);
+    // }
 
     auto topo = unigrid_topology_1d{};
-    auto pipe = parallel::pipeline(ghost_exchange_t{}, flux_and_update_t{});
+    auto pipe = parallel::pipeline(
+        compute_local_dt_t{cfl, v, dx},
+        global_dt_t{},
+        ghost_exchange_t{},
+        flux_and_update_t{}
+    );
     parallel::execute(pipe, state.patches, topo, ctx.scheduler);
 
-    state.time += dt;
-}
-
-auto courant_time(
-    const advection::state_t& state,
-    const advection::exec_context_t& ctx
-) -> double {
-    const auto dx = ctx.initial.domain_length / ctx.initial.num_zones;
-    const auto v = std::abs(ctx.config.advection_velocity);
-    return ctx.config.cfl * dx / v;
+    state.time += state.patches[0].dt;
 }
 
 auto zone_count(const advection::state_t& state, const advection::exec_context_t& ctx) -> std::size_t {
     return ctx.initial.num_zones;
 }
+
 
 auto names_of_time(std::type_identity<advection>) -> std::vector<std::string> {
     return {"t"};
