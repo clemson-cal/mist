@@ -302,6 +302,11 @@ constexpr const uvec_t<S>& shape(const index_space_t<S>& space) {
 }
 
 template<std::size_t S>
+constexpr ivec_t<S> upper(const index_space_t<S>& space) {
+    return space._start + map(space._shape, [](unsigned int v) { return static_cast<int>(v); });
+}
+
+template<std::size_t S>
 MIST_HD constexpr unsigned int size(const index_space_t<S>& space) {
     unsigned int total = 1;
     for (std::size_t i = 0; i < S; ++i) {

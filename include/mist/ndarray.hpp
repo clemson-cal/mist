@@ -648,7 +648,7 @@ void copy_overlapping(cached_t<T, S>& dst, const cached_t<T, S>& src) {
 
     for (auto idx : dst_space) {
         if (contains(src_space, idx)) {
-            dst[idx] = src[idx];
+            dst(idx) = src(idx);
         }
     }
 }

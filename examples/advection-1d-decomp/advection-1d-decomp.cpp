@@ -37,40 +37,27 @@ auto cell_center_x(int i, double dx) -> double {
 // =============================================================================
 
 struct patch_state_t {
-    int rank = 0;
-    int npartitions = 1;
     int num_zones = 0;
-    int i0 = 0, i1 = 0;
+    index_space_t<1> interior;
 
     double v = 0.0;
     double dx = 0.0;
     double dt = 0.0;
 
     cached_t<double, 1> conserved;
-
-    // Guard buffers with global index spaces (set at construction)
     cached_t<double, 1> l_recv;
     cached_t<double, 1> r_recv;
 
     patch_state_t() = default;
 
-    patch_state_t(int rank_, int npartitions_, int num_zones_, cached_t<double, 1> conserved_)
-        : rank(rank_)
-        , npartitions(npartitions_)
-        , num_zones(num_zones_)
+    patch_state_t(int num_zones_, cached_t<double, 1> conserved_)
+        : num_zones(num_zones_)
+        , interior(space(conserved_))
         , conserved(std::move(conserved_))
     {
-        auto s = space(conserved);
-        i0 = start(s)[0];
-        i1 = i0 + shape(s)[0];
-
-        // Guard zones in global coordinates (with periodic wrapping)
-        auto l_guard_start = (i0 - 1 + num_zones_) % num_zones_;
-        auto r_guard_start = i1 % num_zones_;
-        auto l_guard_space = index_space(ivec(l_guard_start), uvec(1));
-        auto r_guard_space = index_space(ivec(r_guard_start), uvec(1));
-        l_recv = cache(zeros<double>(l_guard_space), memory::host, exec::cpu);
-        r_recv = cache(zeros<double>(r_guard_space), memory::host, exec::cpu);
+        // Guard zones at virtual indices (may be outside [0, num_zones) for boundary patches)
+        l_recv = cache(zeros<double>(index_space(start(interior) - ivec(1), uvec(1))), memory::host, exec::cpu);
+        r_recv = cache(zeros<double>(index_space(upper(interior), uvec(1))), memory::host, exec::cpu);
     }
 
     void new_step(double v_, double dx_, double dt_) {
@@ -105,22 +92,37 @@ struct ghost_exchange_t {
 
 struct flux_and_update_t {
     static auto value(patch_state_t ctx) -> patch_state_t {
-        // Get the global indices for guard zone data
-        auto l_guard_idx = start(space(ctx.l_recv))[0];
-        auto r_guard_idx = start(space(ctx.r_recv))[0];
+        auto i0 = start(ctx.interior)[0];
+        auto i1 = upper(ctx.interior)[0];
+
+        // Helper to get left neighbor value (outflow BC at domain left boundary)
+        auto get_u_left = [&](int i) {
+            if (i == i0) {
+                auto l_idx = start(space(ctx.l_recv))[0];
+                return (l_idx < 0) ? ctx.conserved[i0] : ctx.l_recv[l_idx];
+            }
+            return ctx.conserved[i - 1];
+        };
+
+        // Helper to get right neighbor value (outflow BC at domain right boundary)
+        auto get_u_right = [&](int i) {
+            if (i == i1 - 1) {
+                auto r_idx = start(space(ctx.r_recv))[0];
+                return (r_idx >= ctx.num_zones) ? ctx.conserved[i1 - 1] : ctx.r_recv[r_idx];
+            }
+            return ctx.conserved[i + 1];
+        };
 
         if (ctx.v > 0) {
-            for (auto i = ctx.i1 - 1; i >= ctx.i0; --i) {
-                auto u_l = (i == ctx.i0) ? ctx.l_recv[l_guard_idx] : ctx.conserved[i - 1];
-                auto flux_l = ctx.v * u_l;
+            for (auto i = i1 - 1; i >= i0; --i) {
+                auto flux_l = ctx.v * get_u_left(i);
                 auto flux_r = ctx.v * ctx.conserved[i];
                 ctx.conserved[i] = ctx.conserved[i] - ctx.dt / ctx.dx * (flux_r - flux_l);
             }
         } else {
-            for (auto i = ctx.i0; i < ctx.i1; ++i) {
-                auto u_r = (i == ctx.i1 - 1) ? ctx.r_recv[r_guard_idx] : ctx.conserved[i + 1];
+            for (auto i = i0; i < i1; ++i) {
                 auto flux_l = ctx.v * ctx.conserved[i];
-                auto flux_r = ctx.v * u_r;
+                auto flux_r = ctx.v * get_u_right(i);
                 ctx.conserved[i] = ctx.conserved[i] - ctx.dt / ctx.dx * (flux_r - flux_l);
             }
         }
@@ -135,8 +137,6 @@ struct flux_and_update_t {
 template<ArchiveWriter A>
 void serialize(A& ar, const patch_state_t& patch) {
     ar.begin_group();
-    serialize(ar, "rank", patch.rank);
-    serialize(ar, "npartitions", patch.npartitions);
     serialize(ar, "num_zones", patch.num_zones);
     serialize(ar, "conserved", patch.conserved);
     ar.end_group();
@@ -145,16 +145,12 @@ void serialize(A& ar, const patch_state_t& patch) {
 template<ArchiveReader A>
 auto deserialize(A& ar, patch_state_t& patch) -> bool {
     if (!ar.begin_group()) return false;
-    auto rank = 0;
-    auto npartitions = 1;
     auto num_zones = 0;
     auto conserved = cached_t<double, 1>{};
-    deserialize(ar, "rank", rank);
-    deserialize(ar, "npartitions", npartitions);
     deserialize(ar, "num_zones", num_zones);
     deserialize(ar, "conserved", conserved);
     ar.end_group();
-    patch = patch_state_t(rank, npartitions, num_zones, std::move(conserved));
+    patch = patch_state_t(num_zones, std::move(conserved));
     return true;
 }
 
@@ -271,52 +267,25 @@ auto initial_state(const advection::exec_context_t& ctx) -> advection::state_t {
         auto u = lazy(s, [&](auto i) {
             return std::sin(2.0 * M_PI * cell_center_x(i[0], dx) / L);
         });
-        return patch_state_t(p, npartitions, num_zones, cache(u, memory::host, exec::cpu));
+        return patch_state_t(num_zones, cache(u, memory::host, exec::cpu));
     }));
     return {std::move(patches), 0.0};
 }
 
-// Unigrid Cartesian topology for 1D periodic domain
+// Unigrid Cartesian topology for 1D domain with outflow boundaries
 // Satisfies parallel::Topology<unigrid_topology_1d, patch_state_t>
 struct unigrid_topology_1d {
     using buffer_t = cached_t<double, 1>;
     using space_t = index_space_t<1>;
 
-    int num_zones;
-
     // Copies overlapping data from source to destination
-    void copy(buffer_t& dst, const buffer_t& src, space_t requested_space) const {
-        auto req_start = start(requested_space)[0];
-        auto req_size = shape(requested_space)[0];
-        auto src_space = space(src);
-        auto src_start = start(src_space)[0];
-        auto src_end = src_start + static_cast<int>(shape(src_space)[0]);
-
-        for (std::size_t i = 0; i < req_size; ++i) {
-            auto global_idx = (req_start + static_cast<int>(i) + num_zones) % num_zones;
-            if (global_idx >= src_start && global_idx < src_end) {
-                dst[req_start + static_cast<int>(i)] = src[global_idx];
-            }
-        }
+    void copy(buffer_t& dst, const buffer_t& src, space_t) const {
+        copy_overlapping(dst, src);
     }
 
-    // Returns true if two spaces are neighbors (could exchange guards)
-    // For 1D periodic: spaces are connected if they are adjacent (with wrapping)
+    // Returns true if two spaces are adjacent (could exchange guards)
     bool connected(space_t a, space_t b) const {
-        auto a_start = start(a)[0];
-        auto a_end = a_start + static_cast<int>(shape(a)[0]);
-        auto b_start = start(b)[0];
-        auto b_end = b_start + static_cast<int>(shape(b)[0]);
-
-        // Check if a's right edge touches b's left edge (or vice versa) with periodic wrapping
-        // a is left neighbor of b: a_end == b_start (mod num_zones)
-        // b is left neighbor of a: b_end == a_start (mod num_zones)
-        auto a_end_wrapped = a_end % num_zones;
-        auto b_end_wrapped = b_end % num_zones;
-        auto a_start_wrapped = (a_start % num_zones + num_zones) % num_zones;
-        auto b_start_wrapped = (b_start % num_zones + num_zones) % num_zones;
-
-        return (a_end_wrapped == b_start_wrapped) || (b_end_wrapped == a_start_wrapped);
+        return (upper(a)[0] == start(b)[0]) || (upper(b)[0] == start(a)[0]);
     }
 };
 
@@ -339,7 +308,7 @@ void advance(
 
     // Execute pipeline: Exchange stage (ghost_exchange_t) + Compute stage (flux_and_update_t)
     using advection_pipeline = parallel::pipeline<patch_state_t, ghost_exchange_t, flux_and_update_t>;
-    auto topology = unigrid_topology_1d{static_cast<int>(exec.initial.num_zones)};
+    auto topology = unigrid_topology_1d{};
     parallel::execute(advection_pipeline{}, state.patches, topology, exec.scheduler);
 
     state.time += dt;
