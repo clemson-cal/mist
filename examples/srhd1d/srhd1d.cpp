@@ -757,40 +757,28 @@ auto get_product(
 
     auto dx = ctx.initial.domain_length / ctx.initial.num_zones;
 
-    if (name == "density") {
-        return to_vector(state.patches | transform([](const auto& p) {
-            return cache(lazy(p.interior, [&p](ivec_t<1> idx) {
-                return cons_to_prim(p.cons[idx[0]])[0];
+    auto make_product = [&](auto f) {
+        return to_vector(state.patches | transform([f](const auto& p) {
+            return cache(lazy(p.interior, [&p, f](ivec_t<1> i) {
+                return f(p, i[0]);
             }), memory::host, exec::cpu);
         }));
+    };
+
+    if (name == "density") {
+        return make_product([](const auto& p, int i) { return cons_to_prim(p.cons[i])[0]; });
     }
     if (name == "velocity") {
-        return to_vector(state.patches | transform([](const auto& p) {
-            return cache(lazy(p.interior, [&p](ivec_t<1> idx) {
-                return beta(cons_to_prim(p.cons[idx[0]]));
-            }), memory::host, exec::cpu);
-        }));
+        return make_product([](const auto& p, int i) { return beta(cons_to_prim(p.cons[i])); });
     }
     if (name == "pressure") {
-        return to_vector(state.patches | transform([](const auto& p) {
-            return cache(lazy(p.interior, [&p](ivec_t<1> idx) {
-                return cons_to_prim(p.cons[idx[0]])[2];
-            }), memory::host, exec::cpu);
-        }));
+        return make_product([](const auto& p, int i) { return cons_to_prim(p.cons[i])[2]; });
     }
     if (name == "lorentz_factor") {
-        return to_vector(state.patches | transform([](const auto& p) {
-            return cache(lazy(p.interior, [&p](ivec_t<1> idx) {
-                return lorentz_factor(cons_to_prim(p.cons[idx[0]]));
-            }), memory::host, exec::cpu);
-        }));
+        return make_product([](const auto& p, int i) { return lorentz_factor(cons_to_prim(p.cons[i])); });
     }
     if (name == "cell_x") {
-        return to_vector(state.patches | transform([dx](const auto& p) {
-            return cache(lazy(p.interior, [dx](ivec_t<1> idx) {
-                return cell_center_x(idx[0], dx);
-            }), memory::host, exec::cpu);
-        }));
+        return make_product([dx](const auto&, int i) { return cell_center_x(i, dx); });
     }
     throw std::runtime_error("unknown product: " + name);
 }
