@@ -313,6 +313,7 @@ struct patch_t {
     double plm_theta = 1.5;
 
     cached_t<cons_t, 1> cons;
+    cached_t<prim_t, 1> prim;  // primitive variables at cell centers
     cached_t<prim_t, 1> grad;  // PLM gradients at cell centers
     cached_t<cons_t, 1> fhat;  // Godunov fluxes at faces
 
@@ -323,6 +324,7 @@ struct patch_t {
         , patch_index(idx)
         , num_patches(np)
         , cons(cache(fill(expand(s, 2), cons_t{0.0, 0.0, 0.0}), memory::host, exec::cpu))
+        , prim(cache(fill(expand(s, 2), prim_t{0.0, 0.0, 0.0}), memory::host, exec::cpu))
         , grad(cache(fill(expand(s, 1), prim_t{0.0, 0.0, 0.0}), memory::host, exec::cpu))
         , fhat(cache(fill(index_space(start(s), shape(s) + uvec(1)), cons_t{0.0, 0.0, 0.0}), memory::host, exec::cpu))
     {
@@ -361,6 +363,16 @@ struct compute_local_dt_t {
             return max_wavespeed(cons_to_prim(p.cons(i)));
         });
         p.dt = cfl * dx / max(wavespeeds);
+        return p;
+    }
+};
+
+struct cons_to_prim_t {
+    auto value(patch_t p) const -> patch_t {
+        for_each(space(p.prim), [&](ivec_t<1> idx) {
+            auto i = idx[0];
+            p.prim[i] = cons_to_prim(p.cons[i]);
+        });
         return p;
     }
 };
@@ -457,15 +469,11 @@ struct apply_boundary_conditions_t {
 struct compute_gradients_t {
     auto value(patch_t p) const -> patch_t {
         auto plm_theta = p.plm_theta;
-        auto grad_space = expand(p.interior, 1);
 
-        for_each(grad_space, [&](ivec_t<1> idx) {
+        for_each(space(p.grad), [&](ivec_t<1> idx) {
             auto i = idx[0];
-            auto pim1 = cons_to_prim(p.cons[i - 1]);
-            auto pi   = cons_to_prim(p.cons[i]);
-            auto pip1 = cons_to_prim(p.cons[i + 1]);
             for (int q = 0; q < 3; ++q) {
-                p.grad[i][q] = plm_minmod(pim1[q], pi[q], pip1[q], plm_theta);
+                p.grad[i][q] = plm_minmod(p.prim[i - 1][q], p.prim[i][q], p.prim[i + 1][q], plm_theta);
             }
         });
         return p;
@@ -476,14 +484,10 @@ struct compute_fluxes_t {
     auto value(patch_t p) const -> patch_t {
         for_each(space(p.fhat), [&](ivec_t<1> idx) {
             auto i = idx[0];
-            auto prim_l = cons_to_prim(p.cons[i - 1]);
-            auto prim_r = cons_to_prim(p.cons[i]);
-            auto grad_l = p.grad[i - 1];
-            auto grad_r = p.grad[i];
 
             // Reconstruct left and right states at face i
-            auto pl = prim_l + grad_l * 0.5;
-            auto pr = prim_r - grad_r * 0.5;
+            auto pl = p.prim[i - 1] + p.grad[i - 1] * 0.5;
+            auto pr = p.prim[i] - p.grad[i] * 0.5;
 
             p.fhat[i] = riemann_hlle(pl, pr, prim_to_cons(pl), prim_to_cons(pr));
         });
@@ -671,6 +675,7 @@ void advance(srhd::state_t& state, const srhd::exec_context_t& ctx) {
         global_dt_t{},
         ghost_exchange_t{},
         apply_boundary_conditions_t{cfg.bc_lo, cfg.bc_hi},
+        cons_to_prim_t{},
         compute_gradients_t{},
         compute_fluxes_t{},
         update_conserved_t{}
