@@ -891,7 +891,7 @@ std::string driver_t<P>::iteration_message() {
     const auto wall_now = get_wall_time();
     const auto wall_elapsed = wall_now - command_start_wall_time;
     const auto iter_elapsed = prog.driver_state.iteration - command_start_iteration;
-    const auto mzps = (wall_elapsed > 0) ? (iter_elapsed * zone_count(*prog.physics_state, exec_context)) / (wall_elapsed * 1e6) : 0.0;
+    const auto zps = (wall_elapsed > 0) ? (iter_elapsed * zone_count(*prog.physics_state, exec_context)) / wall_elapsed : 0.0;
     const auto time_names = names_of_time(std::type_identity<P>{});
     const auto& c = colors;
 
@@ -907,8 +907,8 @@ std::string driver_t<P>::iteration_message() {
     }
     oss << " " << c.label << "dt=" << c.reset
         << c.value << std::scientific << std::setprecision(6) << last_dt << c.reset;
-    oss << " " << c.label << "Mzps=" << c.reset
-        << c.value << std::scientific << std::setprecision(6) << mzps << c.reset << "\n";
+    oss << " " << c.label << "zps=" << c.reset
+        << c.value << std::scientific << std::setprecision(2) << zps << c.reset << "\n";
     return oss.str();
 }
 
