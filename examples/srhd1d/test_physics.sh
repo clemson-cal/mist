@@ -39,6 +39,7 @@ echo "Generating plot..."
 python -m mist.plot_products \
     "hi (N=8192):prods_hi.dat" \
     "lo (N=256):prods_lo.dat" \
+    -f density velocity pressure \
     -o sod.pdf \
     -t "Sod Problem (t=0.2)"
 
