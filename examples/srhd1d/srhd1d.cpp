@@ -92,6 +92,15 @@ static inline auto plm_minmod(double yl, double yc, double yr, double plm_theta)
     return 0.25 * std::fabs(sign(a) + sign(b)) * (sign(a) + sign(c)) * minabs(a, b, c);
 }
 
+template<typename T, std::size_t N>
+static inline auto plm_gradient(vec_t<T, N> yl, vec_t<T, N> yc, vec_t<T, N> yr, double plm_theta) -> vec_t<T, N> {
+    auto result = vec_t<T, N>{};
+    for (std::size_t q = 0; q < N; ++q) {
+        result[q] = plm_minmod(yl[q], yc[q], yr[q], plm_theta);
+    }
+    return result;
+}
+
 // =============================================================================
 // SR Hydrodynamics functions
 // =============================================================================
@@ -223,8 +232,8 @@ static auto max_wavespeed(prim_t p) -> double {
 // Helper functions
 // =============================================================================
 
-static auto cell_center_x(int i, double dx) -> double {
-    return (i + 0.5) * dx;
+static auto cell_center_x(ivec_t<1> i, double dx) -> double {
+    return (i[0] + 0.5) * dx;
 }
 
 // =============================================================================
@@ -341,8 +350,7 @@ struct initial_state_t {
     initial_condition ic;
 
     auto value(patch_t p) const -> patch_t {
-        for_each(p.interior, [&](ivec_t<1> idx) {
-            auto i = idx[0];
+        for_each(p.interior, [&](ivec_t<1> i) {
             auto x = cell_center_x(i, dx);
             p.cons[i] = prim_to_cons(initial_primitive(ic, x, L));
         });
@@ -481,9 +489,7 @@ struct compute_gradients_t {
 
         for_each(space(p.grad), [&](ivec_t<1> idx) {
             auto i = idx[0];
-            for (int q = 0; q < 3; ++q) {
-                p.grad[i][q] = plm_minmod(p.prim[i - 1][q], p.prim[i][q], p.prim[i + 1][q], plm_theta);
-            }
+            p.grad[i] = plm_gradient(p.prim[i - 1], p.prim[i], p.prim[i + 1], plm_theta);
         });
         return p;
     }
