@@ -306,6 +306,8 @@ auto from_string(std::type_identity<boundary_condition>, const std::string& s) -
 struct patch_t {
     index_space_t<1> interior;
 
+    int patch_index = 0;
+    int num_patches = 1;
     double dx = 0.0;
     double dt = 0.0;
     double plm_theta = 1.5;
@@ -314,8 +316,10 @@ struct patch_t {
 
     patch_t() = default;
 
-    patch_t(index_space_t<1> s)
+    patch_t(index_space_t<1> s, int idx = 0, int np = 1)
         : interior(s)
+        , patch_index(idx)
+        , num_patches(np)
         , cons(cache(fill(expand(s, 2), cons_t{0.0, 0.0, 0.0}), memory::host, exec::cpu))
     {
     }
@@ -377,10 +381,6 @@ struct ghost_exchange_t {
     using space_t = index_space_t<1>;
     using buffer_t = array_view_t<cons_t, 1>;
 
-    boundary_condition bc_lo;
-    boundary_condition bc_hi;
-    int num_patches;
-
     auto provides(const patch_t& p) const -> space_t {
         return p.interior;
     }
@@ -402,15 +402,13 @@ struct ghost_exchange_t {
 struct apply_boundary_conditions_t {
     boundary_condition bc_lo;
     boundary_condition bc_hi;
-    int patch_index;
-    int num_patches;
 
     auto value(patch_t p) const -> patch_t {
         auto i0 = start(p.interior)[0];
         auto i1 = upper(p.interior)[0] - 1;
 
         // Left boundary (only for first patch)
-        if (patch_index == 0) {
+        if (p.patch_index == 0) {
             switch (bc_lo) {
                 case boundary_condition::outflow:
                     for (int g = 0; g < 2; ++g) {
@@ -430,7 +428,7 @@ struct apply_boundary_conditions_t {
         }
 
         // Right boundary (only for last patch)
-        if (patch_index == num_patches - 1) {
+        if (p.patch_index == p.num_patches - 1) {
             switch (bc_hi) {
                 case boundary_condition::outflow:
                     for (int g = 0; g < 2; ++g) {
@@ -654,7 +652,7 @@ auto initial_state(const srhd::exec_context_t& ctx) -> srhd::state_t {
     auto L = ini.domain_length;
 
     auto patches = to_vector(iota(0, np) | transform([&](int p) {
-        return patch_t(subspace(S, np, p, 0));
+        return patch_t(subspace(S, np, p, 0), p, np);
     }));
 
     parallel::execute(initial_state_t{dx, L, cfg.ic}, patches, ctx.scheduler);
@@ -670,24 +668,15 @@ void advance(srhd::state_t& state, const srhd::exec_context_t& ctx) {
     auto& ini = ctx.initial;
     auto& cfg = ctx.config;
     auto dx = ini.domain_length / ini.num_zones;
-    auto np = static_cast<int>(ini.num_partitions);
 
-    // Compute local dt and reduce to global dt
-    parallel::execute(compute_local_dt_t{cfg.cfl, dx, cfg.plm_theta}, state.patches, ctx.scheduler);
-    parallel::execute(global_dt_t{}, state.patches, ctx.scheduler);
-
-    // Ghost exchange (for multi-patch)
-    if (np > 1) {
-        parallel::execute(ghost_exchange_t{cfg.bc_lo, cfg.bc_hi, np}, state.patches, ctx.scheduler);
-    }
-
-    // Apply physical boundary conditions (patch-specific)
-    for (int p = 0; p < np; ++p) {
-        state.patches[p] = apply_boundary_conditions_t{cfg.bc_lo, cfg.bc_hi, p, np}.value(std::move(state.patches[p]));
-    }
-
-    // Euler step
-    parallel::execute(euler_step_t{}, state.patches, ctx.scheduler);
+    auto pipeline = parallel::pipeline(
+        compute_local_dt_t{cfg.cfl, dx, cfg.plm_theta},
+        global_dt_t{},
+        ghost_exchange_t{},
+        apply_boundary_conditions_t{cfg.bc_lo, cfg.bc_hi},
+        euler_step_t{}
+    );
+    ctx.execute(pipeline, state.patches);
 
     state.time += state.patches[0].dt;
 }
