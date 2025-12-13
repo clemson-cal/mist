@@ -121,12 +121,14 @@ def plot_products(filenames, fields=None, x_field=None, output=None, title=None,
         print("No fields to plot")
         return
 
-    # Create plot
+    # Create plot with shared x-axis and 4:3 aspect ratio per subplot
+    subplot_height = figwidth * 3 / 4
     fig, axes = plt.subplots(
-        len(fields), 1, figsize=(figwidth, 2.5 * len(fields)), squeeze=False
+        len(fields), 1, figsize=(figwidth, subplot_height * len(fields)),
+        squeeze=False, sharex=True
     )
 
-    for ax, field_name in zip(axes.flat, fields):
+    for i, (ax, field_name) in enumerate(zip(axes.flat, fields)):
         for label, products in datasets:
             # Get x data for this dataset
             if x_field and x_field in products:
@@ -137,7 +139,9 @@ def plot_products(filenames, fields=None, x_field=None, output=None, title=None,
             y_data = products[field_name]
             ax.plot(x_data, y_data, "-", linewidth=0.8, label=label)
 
-        ax.set_xlabel(x_label)
+        # Only show x-label on bottom subplot
+        if i == len(fields) - 1:
+            ax.set_xlabel(x_label)
         ax.set_ylabel(field_name)
         ax.grid(True, alpha=0.3)
         if len(datasets) > 1:
