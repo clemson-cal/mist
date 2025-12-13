@@ -102,6 +102,13 @@ public:
         os_ << "]\n";
     }
 
+    // Overload for vec_t elements: flatten to scalar array
+    template<typename T, std::size_t N>
+        requires std::is_arithmetic_v<T>
+    void write_data(const vec_t<T, N>* ptr, std::size_t count) {
+        write_data(reinterpret_cast<const T*>(ptr), count * N);
+    }
+
     // --- CachedNdArray ---
 
     template<CachedNdArray T>

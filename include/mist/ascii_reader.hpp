@@ -130,8 +130,16 @@ public:
             skip_ws();
             if (i < count - 1) expect(',');
         }
+        skip_ws();
         expect(']');
         return true;
+    }
+
+    // Overload for vec_t elements: read as flattened scalar array
+    template<typename T, std::size_t N>
+        requires std::is_arithmetic_v<T>
+    auto read_data(vec_t<T, N>* ptr, std::size_t count) -> bool {
+        return read_data(reinterpret_cast<T*>(ptr), count * N);
     }
 
     // --- CachedNdArray ---

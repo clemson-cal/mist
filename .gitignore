@@ -8,6 +8,7 @@
 # Example executables
 examples/advect1d/advect1d
 examples/config-reader/config-reader
+examples/srhd1d/srhd1d
 
 # Output data files
 *.dat
