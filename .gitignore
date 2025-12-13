@@ -27,6 +27,7 @@ cmake_install.cmake
 install_manifest.txt
 Makefile
 CTestTestfile.cmake
+Testing/
 
 # IDE files
 .vscode/
