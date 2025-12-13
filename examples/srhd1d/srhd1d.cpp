@@ -232,8 +232,8 @@ static auto max_wavespeed(prim_t p) -> double {
 // Helper functions
 // =============================================================================
 
-static auto cell_center_x(ivec_t<1> i, double dx) -> double {
-    return (i[0] + 0.5) * dx;
+static auto cell_center_x(int i, double dx) -> double {
+    return (i + 0.5) * dx;
 }
 
 // =============================================================================
@@ -350,7 +350,8 @@ struct initial_state_t {
     initial_condition ic;
 
     auto value(patch_t p) const -> patch_t {
-        for_each(p.interior, [&](ivec_t<1> i) {
+        for_each(p.interior, [&](ivec_t<1> idx) {
+            auto i = idx[0];
             auto x = cell_center_x(i, dx);
             p.cons[i] = prim_to_cons(initial_primitive(ic, x, L));
         });
