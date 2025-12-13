@@ -34,6 +34,7 @@ SOFTWARE.
 #include "mist/core.hpp"
 #include "mist/driver.hpp"
 #include "mist/ndarray.hpp"
+#include "mist/parallel/pipeline.hpp"
 #include "mist/serialize.hpp"
 
 using namespace mist;
@@ -44,6 +45,15 @@ using namespace mist;
 
 using cons_t = dvec_t<3>;  // conserved variables: (D, S, tau)
 using prim_t = dvec_t<3>;  // primitive variables: (rho, u, p)
+
+template<std::ranges::range R>
+auto to_vector(R&& r) {
+    auto v = std::vector<std::ranges::range_value_t<R>>{};
+    for (auto&& e : r) {
+        v.push_back(std::forward<decltype(e)>(e));
+    }
+    return v;
+}
 
 // =============================================================================
 // Math utility functions
@@ -213,8 +223,8 @@ static auto max_wavespeed(prim_t p) -> double {
 // Helper functions
 // =============================================================================
 
-static auto cell_center_x(int i, double x0, double dx) -> double {
-    return x0 + (i + 0.5) * dx;
+static auto cell_center_x(int i, double dx) -> double {
+    return (i + 0.5) * dx;
 }
 
 // =============================================================================
@@ -243,25 +253,22 @@ auto from_string(std::type_identity<initial_condition>, const std::string& s) ->
     throw std::runtime_error("unknown initial condition: " + s);
 }
 
-static auto initial_primitive(initial_condition ic, double x) -> prim_t {
+static auto initial_primitive(initial_condition ic, double x, double L) -> prim_t {
     switch (ic) {
         case initial_condition::sod:
-            // Relativistic Sod shock tube
-            if (x < 0.5) {
-                return prim_t{1.0, 0.0, 1.0};  // left state: rho=1, u=0, p=1
+            if (x < 0.5 * L) {
+                return prim_t{1.0, 0.0, 1.0};
             } else {
-                return prim_t{0.125, 0.0, 0.1};  // right state: rho=0.125, u=0, p=0.1
+                return prim_t{0.125, 0.0, 0.1};
             }
         case initial_condition::blast_wave:
-            // Strong blast wave (ultra-relativistic)
-            if (x < 0.5) {
+            if (x < 0.5 * L) {
                 return prim_t{1.0, 0.0, 1000.0};
             } else {
                 return prim_t{1.0, 0.0, 0.01};
             }
         case initial_condition::wind:
-            // Simple wind (for testing)
-            return prim_t{1.0, 1.0, 0.01};  // rho=1, u=1 (gamma*beta), p=0.01
+            return prim_t{1.0, 1.0, 0.01};
     }
     return prim_t{1.0, 0.0, 1.0};
 }
@@ -290,6 +297,238 @@ auto from_string(std::type_identity<boundary_condition>, const std::string& s) -
     if (s == "reflecting") return boundary_condition::reflecting;
     if (s == "periodic") return boundary_condition::periodic;
     throw std::runtime_error("unknown boundary condition: " + s);
+}
+
+// =============================================================================
+// Patch - unified context that flows through pipeline
+// =============================================================================
+
+struct patch_t {
+    index_space_t<1> interior;
+
+    double dx = 0.0;
+    double dt = 0.0;
+    double plm_theta = 1.5;
+
+    cached_t<cons_t, 1> cons;
+
+    patch_t() = default;
+
+    patch_t(index_space_t<1> s)
+        : interior(s)
+        , cons(cache(fill(expand(s, 2), cons_t{0.0, 0.0, 0.0}), memory::host, exec::cpu))
+    {
+    }
+};
+
+// =============================================================================
+// Pipeline stages
+// =============================================================================
+
+struct initial_state_t {
+    double dx;
+    double L;
+    initial_condition ic;
+
+    auto value(patch_t p) const -> patch_t {
+        for_each(p.interior, [&](ivec_t<1> idx) {
+            auto i = idx[0];
+            auto x = cell_center_x(i, dx);
+            p.cons[i] = prim_to_cons(initial_primitive(ic, x, L));
+        });
+        return p;
+    }
+};
+
+struct compute_local_dt_t {
+    double cfl;
+    double dx;
+    double plm_theta;
+
+    auto value(patch_t p) const -> patch_t {
+        p.dx = dx;
+        p.plm_theta = plm_theta;
+
+        auto max_a = map_reduce(p.interior, 0.0,
+            [&p](ivec_t<1> idx) { return max_wavespeed(cons_to_prim(p.cons[idx[0]])); },
+            [](double a, double b) { return max2(a, b); });
+        p.dt = cfl * dx / max_a;
+        return p;
+    }
+};
+
+struct global_dt_t {
+    using value_type = double;
+
+    static auto init() -> double {
+        return std::numeric_limits<double>::max();
+    }
+
+    auto reduce(double acc, const patch_t& p) const -> double {
+        return std::min(acc, p.dt);
+    }
+
+    void finalize(double dt, patch_t& p) const {
+        p.dt = dt;
+    }
+};
+
+struct ghost_exchange_t {
+    using space_t = index_space_t<1>;
+    using buffer_t = array_view_t<cons_t, 1>;
+
+    boundary_condition bc_lo;
+    boundary_condition bc_hi;
+    int num_patches;
+
+    auto provides(const patch_t& p) const -> space_t {
+        return p.interior;
+    }
+
+    void need(patch_t& p, auto request) const {
+        auto lo = start(p.interior);
+        auto hi = upper(p.interior);
+        auto l_guard = index_space(lo - ivec(2), uvec(2));
+        auto r_guard = index_space(hi, uvec(2));
+        request(p.cons[l_guard]);
+        request(p.cons[r_guard]);
+    }
+
+    auto data(const patch_t& p) const -> array_view_t<const cons_t, 1> {
+        return p.cons[p.interior];
+    }
+};
+
+struct apply_boundary_conditions_t {
+    boundary_condition bc_lo;
+    boundary_condition bc_hi;
+    int patch_index;
+    int num_patches;
+
+    auto value(patch_t p) const -> patch_t {
+        auto i0 = start(p.interior)[0];
+        auto i1 = upper(p.interior)[0] - 1;
+
+        // Left boundary (only for first patch)
+        if (patch_index == 0) {
+            switch (bc_lo) {
+                case boundary_condition::outflow:
+                    for (int g = 0; g < 2; ++g) {
+                        p.cons[i0 - 1 - g] = p.cons[i0];
+                    }
+                    break;
+                case boundary_condition::reflecting:
+                    for (int g = 0; g < 2; ++g) {
+                        auto u = p.cons[i0 + g];
+                        p.cons[i0 - 1 - g] = cons_t{u[0], -u[1], u[2]};
+                    }
+                    break;
+                case boundary_condition::periodic:
+                    // Handled by ghost exchange
+                    break;
+            }
+        }
+
+        // Right boundary (only for last patch)
+        if (patch_index == num_patches - 1) {
+            switch (bc_hi) {
+                case boundary_condition::outflow:
+                    for (int g = 0; g < 2; ++g) {
+                        p.cons[i1 + 1 + g] = p.cons[i1];
+                    }
+                    break;
+                case boundary_condition::reflecting:
+                    for (int g = 0; g < 2; ++g) {
+                        auto u = p.cons[i1 - g];
+                        p.cons[i1 + 1 + g] = cons_t{u[0], -u[1], u[2]};
+                    }
+                    break;
+                case boundary_condition::periodic:
+                    // Handled by ghost exchange
+                    break;
+            }
+        }
+        return p;
+    }
+};
+
+struct euler_step_t {
+    auto value(patch_t p) const -> patch_t {
+        auto dx = p.dx;
+        auto dt = p.dt;
+        auto dtdx = dt / dx;
+        auto plm_theta = p.plm_theta;
+        auto i0 = start(p.interior)[0];
+        auto i1 = upper(p.interior)[0];
+
+        // Allocate update buffer
+        auto du = std::vector<cons_t>(i1 - i0);
+
+        // Compute flux differences with PLM reconstruction
+        for (int i = i0; i < i1; ++i) {
+            auto pim2 = cons_to_prim(p.cons[i - 2]);
+            auto pim1 = cons_to_prim(p.cons[i - 1]);
+            auto pi   = cons_to_prim(p.cons[i]);
+            auto pip1 = cons_to_prim(p.cons[i + 1]);
+            auto pip2 = cons_to_prim(p.cons[i + 2]);
+
+            // PLM reconstruction at left face (i - 1/2)
+            auto pl_l = prim_t{};
+            auto pl_r = prim_t{};
+            for (int q = 0; q < 3; ++q) {
+                auto slope_l = plm_minmod(pim2[q], pim1[q], pi[q], plm_theta);
+                auto slope_r = plm_minmod(pim1[q], pi[q], pip1[q], plm_theta);
+                pl_l[q] = pim1[q] + 0.5 * slope_l;
+                pl_r[q] = pi[q] - 0.5 * slope_r;
+            }
+
+            // PLM reconstruction at right face (i + 1/2)
+            auto pr_l = prim_t{};
+            auto pr_r = prim_t{};
+            for (int q = 0; q < 3; ++q) {
+                auto slope_l = plm_minmod(pim1[q], pi[q], pip1[q], plm_theta);
+                auto slope_r = plm_minmod(pi[q], pip1[q], pip2[q], plm_theta);
+                pr_l[q] = pi[q] + 0.5 * slope_l;
+                pr_r[q] = pip1[q] - 0.5 * slope_r;
+            }
+
+            // Compute fluxes
+            auto fl = riemann_hlle(pl_l, pl_r, prim_to_cons(pl_l), prim_to_cons(pl_r));
+            auto fr = riemann_hlle(pr_l, pr_r, prim_to_cons(pr_l), prim_to_cons(pr_r));
+
+            du[i - i0] = (fl - fr) * dtdx;
+        }
+
+        // Update conserved variables
+        for (int i = i0; i < i1; ++i) {
+            p.cons[i] = p.cons[i] + du[i - i0];
+        }
+
+        return p;
+    }
+};
+
+// =============================================================================
+// Custom serialization for patch_t
+// =============================================================================
+
+template<ArchiveWriter A>
+void serialize(A& ar, const patch_t& p) {
+    ar.begin_group();
+    auto interior = cache(map(p.cons[p.interior], std::identity{}), memory::host, exec::cpu);
+    serialize(ar, "cons", interior);
+    ar.end_group();
+}
+
+template<ArchiveReader A>
+auto deserialize(A& ar, patch_t& p) -> bool {
+    if (!ar.begin_group()) return false;
+    auto interior = cached_t<cons_t, 1>{};
+    deserialize(ar, "cons", interior);
+    ar.end_group();
+    p = patch_t(space(interior));
+    copy(p.cons[p.interior], interior);
+    return true;
 }
 
 // =============================================================================
@@ -331,55 +570,41 @@ struct srhd {
 
     struct initial_t {
         unsigned int num_zones = 400;
-        double x0 = 0.0;
-        double x1 = 1.0;
+        unsigned int num_partitions = 1;
+        double domain_length = 1.0;
 
         auto fields() const {
             return std::make_tuple(
                 field("num_zones", num_zones),
-                field("x0", x0),
-                field("x1", x1)
+                field("num_partitions", num_partitions),
+                field("domain_length", domain_length)
             );
         }
 
         auto fields() {
             return std::make_tuple(
                 field("num_zones", num_zones),
-                field("x0", x0),
-                field("x1", x1)
+                field("num_partitions", num_partitions),
+                field("domain_length", domain_length)
             );
         }
     };
 
     struct state_t {
-        index_space_t<1> interior;
-        cached_t<cons_t, 1> cons;  // conserved variables: (D, S, tau)
+        std::vector<patch_t> patches;
         double time;
-        double dt;
-
-        state_t() = default;
-
-        state_t(index_space_t<1> s)
-            : interior(s)
-            , cons(cache(fill(expand(s, 2), cons_t{0.0, 0.0, 0.0}), memory::host, exec::cpu))
-            , time(0.0)
-            , dt(0.0)
-        {
-        }
 
         auto fields() const {
             return std::make_tuple(
-                field("cons", cons),
-                field("time", time),
-                field("dt", dt)
+                field("patches", patches),
+                field("time", time)
             );
         }
 
         auto fields() {
             return std::make_tuple(
-                field("cons", cons),
-                field("time", time),
-                field("dt", dt)
+                field("patches", patches),
+                field("time", time)
             );
         }
     };
@@ -389,45 +614,21 @@ struct srhd {
     struct exec_context_t {
         const config_t& config;
         const initial_t& initial;
+        mutable parallel::scheduler_t scheduler;
 
         exec_context_t(const config_t& cfg, const initial_t& ini)
             : config(cfg), initial(ini) {}
+
+        void set_num_threads(std::size_t n) {
+            scheduler.set_num_threads(n);
+        }
+
+        template<parallel::Pipeline P>
+        void execute(P pipeline, std::vector<patch_t>& patches) const {
+            parallel::execute(pipeline, patches, scheduler);
+        }
     };
 };
-
-// =============================================================================
-// Custom serialization for srhd::state_t
-// =============================================================================
-
-template<ArchiveWriter A>
-void serialize(A& ar, const srhd::state_t& s) {
-    ar.begin_group();
-    // Serialize only interior data (guard zones are reconstructed from boundary conditions)
-    auto interior = cache(map(s.cons[s.interior], std::identity{}), memory::host, exec::cpu);
-    serialize(ar, "cons", interior);
-    serialize(ar, "time", s.time);
-    serialize(ar, "dt", s.dt);
-    ar.end_group();
-}
-
-template<ArchiveReader A>
-auto deserialize(A& ar, srhd::state_t& s) -> bool {
-    if (!ar.begin_group()) return false;
-    auto interior_data = cached_t<cons_t, 1>{};
-    double time = 0.0;
-    double dt = 0.0;
-    deserialize(ar, "cons", interior_data);
-    deserialize(ar, "time", time);
-    deserialize(ar, "dt", dt);
-    ar.end_group();
-
-    // Reconstruct state from serialized interior data
-    s = srhd::state_t(space(interior_data));
-    copy(s.cons[s.interior], interior_data);
-    s.time = time;
-    s.dt = dt;
-    return true;
-}
 
 // =============================================================================
 // Physics interface implementation
@@ -438,165 +639,57 @@ auto default_physics_config(std::type_identity<srhd>) -> srhd::config_t {
 }
 
 auto default_initial_config(std::type_identity<srhd>) -> srhd::initial_t {
-    return {.num_zones = 400, .x0 = 0.0, .x1 = 1.0};
+    return {.num_zones = 400, .num_partitions = 1, .domain_length = 1.0};
 }
 
 auto initial_state(const srhd::exec_context_t& ctx) -> srhd::state_t {
+    using std::views::iota;
+    using std::views::transform;
+
     auto& ini = ctx.initial;
     auto& cfg = ctx.config;
+    auto np = static_cast<int>(ini.num_partitions);
     auto S = index_space(ivec(0), uvec(ini.num_zones));
-    auto state = srhd::state_t(S);
-    auto dx = (ini.x1 - ini.x0) / ini.num_zones;
+    auto dx = ini.domain_length / ini.num_zones;
+    auto L = ini.domain_length;
 
-    // Initialize conserved variables from primitives
-    for_each(state.interior, [&](ivec_t<1> idx) {
-        auto i = idx[0];
-        auto x = cell_center_x(i, ini.x0, dx);
-        auto prim = initial_primitive(cfg.ic, x);
-        state.cons[i] = prim_to_cons(prim);
-    });
+    auto patches = to_vector(iota(0, np) | transform([&](int p) {
+        return patch_t(subspace(S, np, p, 0));
+    }));
 
-    return state;
-}
+    parallel::execute(initial_state_t{dx, L, cfg.ic}, patches, ctx.scheduler);
 
-static void apply_boundary_conditions(srhd::state_t& state, const srhd::config_t& cfg) {
-    auto i0 = start(state.interior)[0];
-    auto i1 = upper(state.interior)[0] - 1;
-
-    // Left boundary
-    switch (cfg.bc_lo) {
-        case boundary_condition::outflow:
-            for (int g = 0; g < 2; ++g) {
-                state.cons[i0 - 1 - g] = state.cons[i0];
-            }
-            break;
-        case boundary_condition::reflecting:
-            for (int g = 0; g < 2; ++g) {
-                auto u = state.cons[i0 + g];
-                state.cons[i0 - 1 - g] = cons_t{u[0], -u[1], u[2]};  // Flip momentum
-            }
-            break;
-        case boundary_condition::periodic:
-            for (int g = 0; g < 2; ++g) {
-                state.cons[i0 - 1 - g] = state.cons[i1 - g];
-            }
-            break;
-    }
-
-    // Right boundary
-    switch (cfg.bc_hi) {
-        case boundary_condition::outflow:
-            for (int g = 0; g < 2; ++g) {
-                state.cons[i1 + 1 + g] = state.cons[i1];
-            }
-            break;
-        case boundary_condition::reflecting:
-            for (int g = 0; g < 2; ++g) {
-                auto u = state.cons[i1 - g];
-                state.cons[i1 + 1 + g] = cons_t{u[0], -u[1], u[2]};  // Flip momentum
-            }
-            break;
-        case boundary_condition::periodic:
-            for (int g = 0; g < 2; ++g) {
-                state.cons[i1 + 1 + g] = state.cons[i0 + g];
-            }
-            break;
-    }
-}
-
-static auto compute_dt(const srhd::state_t& state, const srhd::exec_context_t& ctx) -> double {
-    auto& ini = ctx.initial;
-    auto& cfg = ctx.config;
-    auto dx = (ini.x1 - ini.x0) / ini.num_zones;
-    auto max_a = 0.0;
-
-    for_each(state.interior, [&](ivec_t<1> idx) {
-        auto i = idx[0];
-        auto prim = cons_to_prim(state.cons[i]);
-        max_a = max2(max_a, max_wavespeed(prim));
-    });
-
-    return cfg.cfl * dx / max_a;
-}
-
-static auto get_prim(const srhd::state_t& state, int i) -> prim_t {
-    return cons_to_prim(state.cons[i]);
-}
-
-static auto get_cons(const srhd::state_t& state, int i) -> cons_t {
-    return state.cons[i];
-}
-
-static void set_cons(srhd::state_t& state, int i, cons_t u) {
-    state.cons[i] = u;
+    return {std::move(patches), 0.0};
 }
 
 void advance(srhd::state_t& state, const srhd::exec_context_t& ctx) {
-    auto& ini = ctx.initial;
-    auto& cfg = ctx.config;
-    auto dx = (ini.x1 - ini.x0) / ini.num_zones;
-
-    // Apply boundary conditions
-    apply_boundary_conditions(state, cfg);
-
-    // Compute timestep
-    state.dt = compute_dt(state, ctx);
-    auto dtdx = state.dt / dx;
-
-    auto i0 = start(state.interior)[0];
-    auto i1 = upper(state.interior)[0];
-
-    if (cfg.rk_order == 1) {
-        // Forward Euler with PLM reconstruction
-        auto du = std::vector<cons_t>(ini.num_zones);
-
-        // Compute flux differences
-        for (int i = i0; i < i1; ++i) {
-            // Get primitive states for reconstruction
-            auto pim2 = get_prim(state, i - 2);
-            auto pim1 = get_prim(state, i - 1);
-            auto pi = get_prim(state, i);
-            auto pip1 = get_prim(state, i + 1);
-            auto pip2 = get_prim(state, i + 2);
-
-            // PLM reconstruction at left face (i - 1/2)
-            auto pl_l = prim_t{};
-            auto pl_r = prim_t{};
-            for (int q = 0; q < 3; ++q) {
-                auto slope_l = plm_minmod(pim2[q], pim1[q], pi[q], cfg.plm_theta);
-                auto slope_r = plm_minmod(pim1[q], pi[q], pip1[q], cfg.plm_theta);
-                pl_l[q] = pim1[q] + 0.5 * slope_l;
-                pl_r[q] = pi[q] - 0.5 * slope_r;
-            }
-
-            // PLM reconstruction at right face (i + 1/2)
-            auto pr_l = prim_t{};
-            auto pr_r = prim_t{};
-            for (int q = 0; q < 3; ++q) {
-                auto slope_l = plm_minmod(pim1[q], pi[q], pip1[q], cfg.plm_theta);
-                auto slope_r = plm_minmod(pi[q], pip1[q], pip2[q], cfg.plm_theta);
-                pr_l[q] = pi[q] + 0.5 * slope_l;
-                pr_r[q] = pip1[q] - 0.5 * slope_r;
-            }
-
-            // Compute fluxes
-            auto fl = riemann_hlle(pl_l, pl_r, prim_to_cons(pl_l), prim_to_cons(pl_r));
-            auto fr = riemann_hlle(pr_l, pr_r, prim_to_cons(pr_l), prim_to_cons(pr_r));
-
-            du[i - i0] = (fl - fr) * dtdx;
-        }
-
-        // Update conserved variables
-        for (int i = i0; i < i1; ++i) {
-            auto cons = get_cons(state, i);
-            set_cons(state, i, cons + du[i - i0]);
-        }
-
-    } else {
+    if (ctx.config.rk_order != 1) {
         throw std::runtime_error("only rk_order=1 (forward Euler) is supported");
     }
 
-    state.time += state.dt;
+    auto& ini = ctx.initial;
+    auto& cfg = ctx.config;
+    auto dx = ini.domain_length / ini.num_zones;
+    auto np = static_cast<int>(ini.num_partitions);
+
+    // Compute local dt and reduce to global dt
+    parallel::execute(compute_local_dt_t{cfg.cfl, dx, cfg.plm_theta}, state.patches, ctx.scheduler);
+    parallel::execute(global_dt_t{}, state.patches, ctx.scheduler);
+
+    // Ghost exchange (for multi-patch)
+    if (np > 1) {
+        parallel::execute(ghost_exchange_t{cfg.bc_lo, cfg.bc_hi, np}, state.patches, ctx.scheduler);
+    }
+
+    // Apply physical boundary conditions (patch-specific)
+    for (int p = 0; p < np; ++p) {
+        state.patches[p] = apply_boundary_conditions_t{cfg.bc_lo, cfg.bc_hi, p, np}.value(std::move(state.patches[p]));
+    }
+
+    // Euler step
+    parallel::execute(euler_step_t{}, state.patches, ctx.scheduler);
+
+    state.time += state.patches[0].dt;
 }
 
 auto zone_count(const srhd::state_t& state, const srhd::exec_context_t& ctx) -> std::size_t {
@@ -632,19 +725,22 @@ auto get_timeseries(
         return state.time;
     }
 
-    auto dx = (ini.x1 - ini.x0) / ini.num_zones;
+    auto dx = ini.domain_length / ini.num_zones;
     auto total_mass = 0.0;
     auto total_energy = 0.0;
     auto max_lorentz = 1.0;
 
-    for_each(state.interior, [&](ivec_t<1> idx) {
-        auto i = idx[0];
-        auto cons = get_cons(state, i);
-        auto prim = cons_to_prim(cons);
-        total_mass += cons[0] * dx;  // D * dx
-        total_energy += cons[2] * dx;  // tau * dx
-        max_lorentz = max2(max_lorentz, lorentz_factor(prim));
-    });
+    for (const auto& p : state.patches) {
+        total_mass += map_reduce(p.interior, 0.0,
+            [&p, dx](ivec_t<1> idx) { return p.cons[idx[0]][0] * dx; },
+            std::plus<>{});
+        total_energy += map_reduce(p.interior, 0.0,
+            [&p, dx](ivec_t<1> idx) { return p.cons[idx[0]][2] * dx; },
+            std::plus<>{});
+        max_lorentz = max2(max_lorentz, map_reduce(p.interior, 1.0,
+            [&p](ivec_t<1> idx) { return lorentz_factor(cons_to_prim(p.cons[idx[0]])); },
+            [](double a, double b) { return max2(a, b); }));
+    }
 
     if (name == "total_mass") return total_mass;
     if (name == "total_energy") return total_energy;
@@ -658,54 +754,46 @@ auto get_product(
     const std::string& name,
     const srhd::exec_context_t& ctx
 ) -> srhd::product_t {
-    auto& ini = ctx.initial;
-    auto dx = (ini.x1 - ini.x0) / ini.num_zones;
-    auto result = std::vector<cached_t<double, 1>>{};
+    using std::views::transform;
+
+    auto dx = ctx.initial.domain_length / ctx.initial.num_zones;
 
     if (name == "density") {
-        auto arr = cache(zeros<double>(state.interior), memory::host, exec::cpu);
-        for_each(state.interior, [&](ivec_t<1> idx) {
-            auto i = idx[0];
-            auto prim = get_prim(state, i);
-            arr[i] = prim[0];  // rho
-        });
-        result.push_back(std::move(arr));
-    } else if (name == "velocity") {
-        auto arr = cache(zeros<double>(state.interior), memory::host, exec::cpu);
-        for_each(state.interior, [&](ivec_t<1> idx) {
-            auto i = idx[0];
-            auto prim = get_prim(state, i);
-            arr[i] = beta(prim);  // v = u/gamma
-        });
-        result.push_back(std::move(arr));
-    } else if (name == "pressure") {
-        auto arr = cache(zeros<double>(state.interior), memory::host, exec::cpu);
-        for_each(state.interior, [&](ivec_t<1> idx) {
-            auto i = idx[0];
-            auto prim = get_prim(state, i);
-            arr[i] = prim[2];  // p
-        });
-        result.push_back(std::move(arr));
-    } else if (name == "lorentz_factor") {
-        auto arr = cache(zeros<double>(state.interior), memory::host, exec::cpu);
-        for_each(state.interior, [&](ivec_t<1> idx) {
-            auto i = idx[0];
-            auto prim = get_prim(state, i);
-            arr[i] = lorentz_factor(prim);
-        });
-        result.push_back(std::move(arr));
-    } else if (name == "cell_x") {
-        auto arr = cache(zeros<double>(state.interior), memory::host, exec::cpu);
-        for_each(state.interior, [&](ivec_t<1> idx) {
-            auto i = idx[0];
-            arr[i] = cell_center_x(i, ini.x0, dx);
-        });
-        result.push_back(std::move(arr));
-    } else {
-        throw std::runtime_error("unknown product: " + name);
+        return to_vector(state.patches | transform([](const auto& p) {
+            return cache(lazy(p.interior, [&p](ivec_t<1> idx) {
+                return cons_to_prim(p.cons[idx[0]])[0];
+            }), memory::host, exec::cpu);
+        }));
     }
-
-    return result;
+    if (name == "velocity") {
+        return to_vector(state.patches | transform([](const auto& p) {
+            return cache(lazy(p.interior, [&p](ivec_t<1> idx) {
+                return beta(cons_to_prim(p.cons[idx[0]]));
+            }), memory::host, exec::cpu);
+        }));
+    }
+    if (name == "pressure") {
+        return to_vector(state.patches | transform([](const auto& p) {
+            return cache(lazy(p.interior, [&p](ivec_t<1> idx) {
+                return cons_to_prim(p.cons[idx[0]])[2];
+            }), memory::host, exec::cpu);
+        }));
+    }
+    if (name == "lorentz_factor") {
+        return to_vector(state.patches | transform([](const auto& p) {
+            return cache(lazy(p.interior, [&p](ivec_t<1> idx) {
+                return lorentz_factor(cons_to_prim(p.cons[idx[0]]));
+            }), memory::host, exec::cpu);
+        }));
+    }
+    if (name == "cell_x") {
+        return to_vector(state.patches | transform([dx](const auto& p) {
+            return cache(lazy(p.interior, [dx](ivec_t<1> idx) {
+                return cell_center_x(idx[0], dx);
+            }), memory::host, exec::cpu);
+        }));
+    }
+    throw std::runtime_error("unknown product: " + name);
 }
 
 // =============================================================================
