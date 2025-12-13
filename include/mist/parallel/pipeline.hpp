@@ -22,7 +22,12 @@ concept ComputeStage = requires { &S::value; };
 
 // Exchange stage: peers request/provide data (barrier required)
 template<typename S>
-concept ExchangeStage = requires { &S::provides; &S::data; };
+concept ExchangeStage = requires {
+    typename S::space_t;
+    typename S::buffer_t;
+    &S::provides;
+    &S::data;
+};
 
 // Reduce stage: fold across peers then broadcast result (barrier required)
 template<typename S>
@@ -77,14 +82,16 @@ struct pipeline_t {
     const auto& get() const { return std::get<I>(stages); }
 };
 
-template<typename T>
-struct is_pipeline : std::false_type {};
+namespace detail {
+    template<typename T>
+    struct is_pipeline_impl : std::false_type {};
 
-template<typename... Stages>
-struct is_pipeline<pipeline_t<Stages...>> : std::true_type {};
+    template<typename... Stages>
+    struct is_pipeline_impl<pipeline_t<Stages...>> : std::true_type {};
+}
 
 template<typename T>
-inline constexpr bool is_pipeline_v = is_pipeline<T>::value;
+concept Pipeline = detail::is_pipeline_impl<T>::value;
 
 template<typename... Stages>
 auto pipeline(Stages... stages) -> pipeline_t<Stages...> {
@@ -118,51 +125,27 @@ auto compose(Stages... stages) -> composed_t<Stages...> {
 }
 
 // =============================================================================
-// Topology concept
-// =============================================================================
-
-template<typename T, typename Context>
-concept Topology = requires {
-    typename T::buffer_t;
-    typename T::const_buffer_t;
-    typename T::space_t;
-} && requires(
-    const T& topo,
-    typename T::space_t space_a,
-    typename T::space_t space_b,
-    typename T::buffer_t dst,
-    typename T::const_buffer_t src
-) {
-    { topo.copy(dst, src, space_a) } -> std::same_as<void>;
-    { topo.connected(space_a, space_b) } -> std::convertible_to<bool>;
-};
-
-// =============================================================================
 // Execute: barrier-based pipeline execution
 // =============================================================================
 
 namespace detail {
 
 // Execute a single Exchange stage across all contexts
-template<typename Stage, typename Context, typename Topo>
+template<ExchangeStage Stage, typename Context>
 void execute_exchange(
     const Stage& stage,
-    std::vector<Context>& contexts,
-    const Topo& topo
+    std::vector<Context>& contexts
 ) {
-    using buffer_t = typename Topo::buffer_t;
-    using space_t = typename Topo::space_t;
-
     struct request_t {
         std::size_t requester;
-        buffer_t buffer;
-        space_t requested_space;
+        typename Stage::buffer_t buffer;
+        typename Stage::space_t requested_space;
     };
 
     // Collect all requests
     auto requests = std::vector<request_t>{};
     for (std::size_t i = 0; i < contexts.size(); ++i) {
-        stage.need(contexts[i], [&](buffer_t buf) {
+        stage.need(contexts[i], [&](auto buf) {
             requests.push_back({i, buf, space(buf)});
         });
     }
@@ -170,17 +153,15 @@ void execute_exchange(
     // Route requests to providers
     for (auto& req : requests) {
         for (std::size_t j = 0; j < contexts.size(); ++j) {
-            auto provided = stage.provides(contexts[j]);
-            if (overlaps(req.requested_space, provided)) {
-                auto src = stage.data(contexts[j]);
-                topo.copy(req.buffer, src, req.requested_space);
+            if (overlaps(req.requested_space, stage.provides(contexts[j]))) {
+                copy_overlapping(req.buffer, stage.data(contexts[j]));
             }
         }
     }
 }
 
 // Execute a single Compute stage across all contexts (parallel)
-template<typename Stage, typename Context, Scheduler Sched>
+template<ComputeStage Stage, typename Context, Scheduler Sched>
 void execute_compute(
     const Stage& stage,
     std::vector<Context>& contexts,
@@ -202,7 +183,7 @@ void execute_compute(
 }
 
 // Execute a single Reduce stage: fold then broadcast
-template<typename Stage, typename Context>
+template<ReduceStage Stage, typename Context>
 void execute_reduce(
     const Stage& stage,
     std::vector<Context>& contexts
@@ -225,15 +206,14 @@ void execute_reduce(
 namespace detail {
 
 // Dispatch a stage by type
-template<typename Stage, typename Context, typename Topo, Scheduler Sched>
+template<typename Stage, typename Context, Scheduler Sched>
 void execute_stage(
     const Stage& stage,
     std::vector<Context>& contexts,
-    const Topo& topo,
     Sched& sched
 ) {
     if constexpr (ExchangeStage<Stage>) {
-        execute_exchange(stage, contexts, topo);
+        execute_exchange(stage, contexts);
     } else if constexpr (ReduceStage<Stage>) {
         execute_reduce(stage, contexts);
     } else {
@@ -244,32 +224,27 @@ void execute_stage(
 } // namespace detail
 
 // Execute pipeline: process each stage in sequence with barriers between
-template<typename... Stages, typename Topo, Scheduler Sched>
-    requires Topology<Topo, stage_context_t<std::tuple_element_t<0, std::tuple<Stages...>>>>
+template<typename... Stages, Scheduler Sched>
 void execute(
     const pipeline_t<Stages...>& pipe,
     std::vector<stage_context_t<std::tuple_element_t<0, std::tuple<Stages...>>>>& contexts,
-    const Topo& topo,
     Sched& sched
 ) {
-    using Context = stage_context_t<std::tuple_element_t<0, std::tuple<Stages...>>>;
-
     // Execute each stage in order
     std::apply([&](const Stages&... stages) {
-        (detail::execute_stage(stages, contexts, topo, sched), ...);
+        (detail::execute_stage(stages, contexts, sched), ...);
     }, pipe.stages);
 }
 
 // Convenience overload: execute a single stage without wrapping in pipeline
-template<typename Stage, typename Context, typename Topo, Scheduler Sched>
-    requires (!is_pipeline_v<Stage>) && Topology<Topo, Context>
+template<typename Stage, typename Context, Scheduler Sched>
+    requires (!Pipeline<Stage>)
 void execute(
     const Stage& stage,
     std::vector<Context>& contexts,
-    const Topo& topo,
     Sched& sched
 ) {
-    detail::execute_stage(stage, contexts, topo, sched);
+    detail::execute_stage(stage, contexts, sched);
 }
 
 } // namespace parallel

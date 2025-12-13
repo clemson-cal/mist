@@ -32,7 +32,6 @@ auto cell_center_x(int i, double dx) -> double {
     return (i + 0.5) * dx;
 }
 
-
 // =============================================================================
 // Patch - unified context that flows through pipeline
 // =============================================================================
@@ -104,7 +103,10 @@ struct global_dt_t {
 };
 
 struct ghost_exchange_t {
-    auto provides(const patch_t& p) const -> index_space_t<1> {
+    using space_t = index_space_t<1>;
+    using buffer_t = array_view_t<double, 1>;
+
+    auto provides(const patch_t& p) const -> space_t {
         return p.interior;
     }
 
@@ -207,24 +209,6 @@ auto deserialize(A& ar, patch_t& p) -> bool {
 }
 
 // =============================================================================
-// Unigrid Cartesian topology for 1D domain with outflow boundaries
-// =============================================================================
-
-struct unigrid_topology_1d {
-    using buffer_t = array_view_t<double, 1>;
-    using const_buffer_t = array_view_t<const double, 1>;
-    using space_t = index_space_t<1>;
-
-    void copy(buffer_t dst, const_buffer_t src, space_t) const {
-        copy_overlapping(dst, src);
-    }
-
-    bool connected(space_t a, space_t b) const {
-        return (upper(a)[0] == start(b)[0]) || (upper(b)[0] == start(a)[0]);
-    }
-};
-
-// =============================================================================
 // 1D Linear Advection Physics Module with Domain Decomposition
 // =============================================================================
 
@@ -302,13 +286,17 @@ struct advection {
         const config_t& config;
         const initial_t& initial;
         mutable parallel::scheduler_t scheduler;
-        unigrid_topology_1d topology;
 
         exec_context_t(const config_t& cfg, const initial_t& ini)
             : config(cfg), initial(ini) {}
 
         void set_num_threads(std::size_t n) {
             scheduler.set_num_threads(n);
+        }
+
+        template<parallel::Pipeline P>
+        void execute(P pipeline, std::vector<patch_t>& patches) const {
+            parallel::execute(pipeline, patches, scheduler);
         }
     };
 };
@@ -339,7 +327,7 @@ auto initial_state(const advection::exec_context_t& ctx) -> advection::state_t {
         return patch_t(subspace(S, np, p, 0));
     }));
 
-    parallel::execute(initial_state_t{dx, L}, patches, ctx.topology, ctx.scheduler);
+    parallel::execute(initial_state_t{dx, L}, patches, ctx.scheduler);
 
     return {std::move(patches), 0.0};
 }
@@ -353,33 +341,22 @@ void advance(advection::state_t& state, const advection::exec_context_t& ctx) {
     auto v = ctx.config.wavespeed;
     auto cfl = ctx.config.cfl;
 
-    if (ctx.config.use_flux_buffer) {
-        // Use of separate flux buffer (poor scaling)
-        parallel::execute(
-            parallel::pipeline(
-                ghost_exchange_t{},
-                compute_local_dt_t{cfl, v, dx},
-                compute_flux_t{},
-                update_conserved_t{}
-            ),
-            state.patches,
-            ctx.topology,
-            ctx.scheduler
+    if (ctx.config.use_flux_buffer) { // Use of separate flux buffer (poor scaling)
+        auto pipeline = parallel::pipeline(
+            ghost_exchange_t{},
+            compute_local_dt_t{cfl, v, dx},
+            compute_flux_t{},
+            update_conserved_t{}
         );
-    } else {
-        // No use of separate flux buffer (good scaling)
-        parallel::execute(
-            parallel::pipeline(
-                ghost_exchange_t{},
-                compute_local_dt_t{cfl, v, dx},
-                flux_and_update_t{}
-            ),
-            state.patches,
-            ctx.topology,
-            ctx.scheduler
+        ctx.execute(pipeline, state.patches);
+    } else { // No use of separate flux buffer (good scaling)
+        auto pipeline = parallel::pipeline(
+            ghost_exchange_t{},
+            compute_local_dt_t{cfl, v, dx},
+            flux_and_update_t{}
         );
+        ctx.execute(pipeline, state.patches);
     }
-
     state.time += state.patches[0].dt;
 }
 

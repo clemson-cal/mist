@@ -765,6 +765,11 @@ void copy(array_vec_t<T, N, S, L>& dst, const array_vec_t<T, N, S, L>& src) {
 
 // Copy overlapping region between views
 template<typename T, std::size_t S>
+void copy_overlapping(array_view_t<T, S> dst, array_view_t<T, S> src) {
+    copy_overlapping(dst, array_view_t<const T, S>(src));
+}
+
+template<typename T, std::size_t S>
 void copy_overlapping(array_view_t<T, S> dst, array_view_t<const T, S> src) {
     auto dst_space = space(dst);
     auto src_space = space(src);
