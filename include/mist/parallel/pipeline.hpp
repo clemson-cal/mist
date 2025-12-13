@@ -6,6 +6,7 @@
 #include <functional>
 #include <tuple>
 #include <vector>
+#include "profiler.hpp"
 #include "queue.hpp"
 #include "scheduler.hpp"
 
@@ -15,6 +16,19 @@ namespace parallel {
 // =============================================================================
 // Stage concepts
 // =============================================================================
+
+// Check if a stage has a static name member
+template<typename S>
+concept HasName = requires { { S::name } -> std::convertible_to<const char*>; };
+
+template<typename S>
+auto stage_name(std::size_t index) -> std::string {
+    if constexpr (HasName<S>) {
+        return S::name;
+    } else {
+        return "stage_" + std::to_string(index);
+    }
+}
 
 // Compute stage: per-peer transform (fully parallel)
 template<typename S>
@@ -223,28 +237,34 @@ void execute_stage(
 
 } // namespace detail
 
-// Execute pipeline: process each stage in sequence with barriers between
-template<typename... Stages, Scheduler Sched>
+// Execute pipeline with profiler
+template<typename... Stages, Scheduler Sched, perf::Profiler Prof>
 void execute(
     const pipeline_t<Stages...>& pipe,
     std::vector<stage_context_t<std::tuple_element_t<0, std::tuple<Stages...>>>>& contexts,
-    Sched& sched
+    Sched& sched,
+    Prof& profiler
 ) {
-    // Execute each stage in order
+    std::size_t stage_index = 0;
     std::apply([&](const Stages&... stages) {
-        (detail::execute_stage(stages, contexts, sched), ...);
+        ((profiler.start(),
+          detail::execute_stage(stages, contexts, sched),
+          profiler.record(stage_name<Stages>(stage_index++))), ...);
     }, pipe.stages);
 }
 
 // Convenience overload: execute a single stage without wrapping in pipeline
-template<typename Stage, typename Context, Scheduler Sched>
+template<typename Stage, typename Context, Scheduler Sched, perf::Profiler Prof>
     requires (!Pipeline<Stage>)
 void execute(
     const Stage& stage,
     std::vector<Context>& contexts,
-    Sched& sched
+    Sched& sched,
+    Prof& profiler
 ) {
+    profiler.start();
     detail::execute_stage(stage, contexts, sched);
+    profiler.record(stage_name<Stage>(0));
 }
 
 } // namespace parallel

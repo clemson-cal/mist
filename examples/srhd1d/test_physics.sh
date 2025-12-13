@@ -16,7 +16,7 @@ echo "Running Sod problem at 8192 zones..."
 set initial num_zones=8192
 set physics ic=sod rk_order=3
 init
-repeat 0.01 t write message
+repeat 0.01 t show message
 t += 0.4
 select products
 write products prods_hi.dat
@@ -29,7 +29,7 @@ echo "Running Sod problem at 256 zones..."
 set initial num_zones=256
 set physics ic=sod rk_order=3
 init
-repeat 0.01 t write message
+repeat 0.01 t show message
 t += 0.4
 select products
 write products prods_lo.dat

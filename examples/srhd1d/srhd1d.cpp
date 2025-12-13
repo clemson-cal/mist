@@ -345,6 +345,7 @@ struct patch_t {
 // =============================================================================
 
 struct initial_state_t {
+    static constexpr const char* name = "initial_state";
     double dx;
     double L;
     initial_condition ic;
@@ -360,6 +361,7 @@ struct initial_state_t {
 };
 
 struct compute_local_dt_t {
+    static constexpr const char* name = "compute_local_dt";
     double cfl;
     double dx;
     double plm_theta;
@@ -369,7 +371,7 @@ struct compute_local_dt_t {
         p.plm_theta = plm_theta;
 
         auto wavespeeds = lazy(p.interior, [&p](ivec_t<1> i) {
-            return max_wavespeed(cons_to_prim(p.cons(i)));
+            return max_wavespeed(p.prim(i));
         });
         p.dt = cfl * dx / max(wavespeeds);
         return p;
@@ -377,6 +379,7 @@ struct compute_local_dt_t {
 };
 
 struct cache_rk_t {
+    static constexpr const char* name = "cache_rk";
     auto value(patch_t p) const -> patch_t {
         p.time_rk = p.time;
         copy(p.cons_rk, p.cons);
@@ -385,6 +388,7 @@ struct cache_rk_t {
 };
 
 struct cons_to_prim_t {
+    static constexpr const char* name = "cons_to_prim";
     auto value(patch_t p) const -> patch_t {
         for_each(space(p.prim), [&](ivec_t<1> idx) {
             auto i = idx[0];
@@ -395,6 +399,7 @@ struct cons_to_prim_t {
 };
 
 struct global_dt_t {
+    static constexpr const char* name = "global_dt";
     using value_type = double;
 
     static auto init() -> double {
@@ -411,6 +416,7 @@ struct global_dt_t {
 };
 
 struct ghost_exchange_t {
+    static constexpr const char* name = "ghost_exchange";
     using space_t = index_space_t<1>;
     using buffer_t = array_view_t<cons_t, 1>;
 
@@ -433,6 +439,7 @@ struct ghost_exchange_t {
 };
 
 struct apply_boundary_conditions_t {
+    static constexpr const char* name = "apply_bc";
     boundary_condition bc_lo;
     boundary_condition bc_hi;
     unsigned num_zones;  // global domain size
@@ -485,6 +492,7 @@ struct apply_boundary_conditions_t {
 };
 
 struct compute_gradients_t {
+    static constexpr const char* name = "compute_gradients";
     auto value(patch_t p) const -> patch_t {
         auto plm_theta = p.plm_theta;
 
@@ -497,6 +505,7 @@ struct compute_gradients_t {
 };
 
 struct compute_fluxes_t {
+    static constexpr const char* name = "compute_fluxes";
     auto value(patch_t p) const -> patch_t {
         for_each(space(p.fhat), [&](ivec_t<1> idx) {
             auto i = idx[0];
@@ -512,6 +521,7 @@ struct compute_fluxes_t {
 };
 
 struct update_conserved_t {
+    static constexpr const char* name = "update_conserved";
     auto value(patch_t p) const -> patch_t {
         auto dtdx = p.dt / p.dx;
 
@@ -525,6 +535,7 @@ struct update_conserved_t {
 };
 
 struct rk_average_t {
+    static constexpr const char* name = "rk_average";
     double alpha;  // state = (1-alpha) * cached + alpha * current
 
     auto value(patch_t p) const -> patch_t {
@@ -644,6 +655,7 @@ struct srhd {
         const config_t& config;
         const initial_t& initial;
         mutable parallel::scheduler_t scheduler;
+        mutable perf::profiler_t profiler;
 
         exec_context_t(const config_t& cfg, const initial_t& ini)
             : config(cfg), initial(ini) {}
@@ -654,7 +666,7 @@ struct srhd {
 
         template<typename S>
         void execute(std::vector<patch_t>& patches, S s) const {
-            parallel::execute(s, patches, scheduler);
+            parallel::execute(s, patches, scheduler, profiler);
         }
     };
 };
@@ -697,9 +709,10 @@ void advance(srhd::state_t& state, const srhd::exec_context_t& ctx) {
     auto dx = ini.domain_length / ini.num_zones;
 
     auto new_step = parallel::pipeline(
-        cache_rk_t{},
+        cons_to_prim_t{},
         compute_local_dt_t{cfg.cfl, dx, cfg.plm_theta},
-        global_dt_t{}
+        global_dt_t{},
+        cache_rk_t{}
     );
 
     auto euler_step = parallel::pipeline(
@@ -825,6 +838,12 @@ auto get_product(
         return make_product([dx](const auto&, int i) { return cell_center_x(i, dx); });
     }
     throw std::runtime_error("unknown product: " + name);
+}
+
+auto get_profiler_data(const srhd::exec_context_t& ctx)
+    -> std::map<std::string, perf::profile_entry_t>
+{
+    return ctx.profiler.data();
 }
 
 // =============================================================================

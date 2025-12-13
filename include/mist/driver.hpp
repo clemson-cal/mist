@@ -24,6 +24,7 @@
 #include "ascii_writer.hpp"
 #include "binary_reader.hpp"
 #include "binary_writer.hpp"
+#include "parallel/profiler.hpp"
 #include "serialize.hpp"
 
 // =============================================================================
@@ -171,6 +172,7 @@ concept Physics = requires(
     { get_time(s, std::string{}) } -> std::same_as<double>;
     { get_timeseries(cfg, ini, s, std::string{}) } -> std::same_as<double>;
     { get_product(s, std::string{}, ctx) } -> std::same_as<typename P::product_t>;
+    { get_profiler_data(ctx) } -> std::same_as<std::map<std::string, perf::profile_entry_t>>;
 
     // Time-stepping: advance by one CFL timestep
     { advance(s, ctx) } -> std::same_as<void>;
@@ -339,6 +341,7 @@ struct command_t {
         write_timeseries, // write timeseries <filename>
         write_checkpoint, // write checkpoint [filename]
         write_products,   // write products [filename]
+        write_profiler,   // write profiler [filename]
         repeat_add,       // repeat <interval> <unit> <sub-command>
         repeat_list,      // repeat list
         repeat_clear,     // repeat clear
@@ -351,6 +354,7 @@ struct command_t {
         show_initial,     // show initial
         show_timeseries,  // show timeseries
         show_products,    // show products
+        show_profiler,    // show profiler
         show_driver,      // show driver
         help,             // help
         stop,             // stop|quit|q
@@ -554,23 +558,20 @@ struct command_t {
             if (iss >> filename) {
                 result.string_value = filename;
             }
+        } else if (what == "profiler") {
+            result.cmd = command_t::type::write_profiler;
+            auto filename = std::string{};
+            if (iss >> filename) {
+                result.string_value = filename;
+            }
         } else if (what == "timeseries") {
             result.cmd = command_t::type::write_timeseries;
             auto filename = std::string{};
             if (iss >> filename) {
                 result.string_value = filename;
             }
-        } else if (what == "message") {
-            result.cmd = command_t::type::show_message;
-            auto message = std::string{};
-            std::getline(iss, message);
-            // Trim leading whitespace
-            if (const auto start = message.find_first_not_of(" \t"); start != std::string::npos) {
-                message = message.substr(start);
-            }
-            result.string_value = message;
         } else {
-            return {command_t::type::invalid, {}, {}, {}, {}, {}, "write requires checkpoint, products, timeseries, or message"};
+            return {command_t::type::invalid, {}, {}, {}, {}, {}, "write requires checkpoint, products, profiler, or timeseries"};
         }
     }
     // load <filename>
@@ -613,14 +614,14 @@ struct command_t {
             }
             sub_command = sub_command.substr(start);
 
-            // Validate sub-command: must start with "do" or "write"
+            // Validate sub-command: must start with "do", "write", or "show"
             // This prevents infinite recursion from nested repeat commands
             auto sub_iss = std::istringstream{sub_command};
             auto sub_first = std::string{};
             sub_iss >> sub_first;
-            if (sub_first != "do" && sub_first != "write") {
+            if (sub_first != "do" && sub_first != "write" && sub_first != "show") {
                 return {command_t::type::invalid, {}, {}, {}, {}, {},
-                        "repeat sub-command must start with 'do' or 'write'"};
+                        "repeat sub-command must start with 'do', 'write', or 'show'"};
             }
 
             result.cmd = command_t::type::repeat_add;
@@ -637,11 +638,11 @@ struct command_t {
     else if (first == "reset") {
         result.cmd = command_t::type::reset;
     }
-    // show [physics|initial|timeseries|products|driver]
+    // show [physics|initial|timeseries|products|driver|profiler|message]
     else if (first == "show") {
         auto what = std::string{};
         iss >> what;
-        if (what == "all") {
+        if (what.empty() || what == "all") {
             result.cmd = command_t::type::show_all;
         } else if (what == "physics") {
             result.cmd = command_t::type::show_physics;
@@ -653,8 +654,12 @@ struct command_t {
             result.cmd = command_t::type::show_products;
         } else if (what == "driver") {
             result.cmd = command_t::type::show_driver;
+        } else if (what == "profiler") {
+            result.cmd = command_t::type::show_profiler;
+        } else if (what == "message") {
+            result.cmd = command_t::type::show_message;
         } else {
-            return {command_t::type::invalid, {}, {}, {}, {}, {}, "show requires physics, initial, timeseries, products, driver, or no argument for all"};
+            return {command_t::type::invalid, {}, {}, {}, {}, {}, "show requires physics, initial, timeseries, products, profiler, driver, message, or no argument for all"};
         }
     }
     // help
@@ -816,6 +821,7 @@ private:
     void handle_write_timeseries(const std::optional<std::string>& filename);
     void handle_write_checkpoint(const std::optional<std::string>& filename);
     void handle_write_products(const std::optional<std::string>& filename);
+    void handle_write_profiler(const std::optional<std::string>& filename);
     void handle_repeat_add(double interval, const std::string& unit, const std::string& sub_cmd);
     void handle_repeat_list();
     void handle_repeat_clear(const std::vector<std::string>& indices);
@@ -828,6 +834,7 @@ private:
     void handle_show_initial();
     void handle_show_timeseries();
     void handle_show_products();
+    void handle_show_profiler();
     void handle_show_driver();
     void handle_help();
     void handle_stop();
@@ -934,7 +941,7 @@ void driver_t<P>::execute_recurring_commands() {
                     continue;
                 }
 
-                // Execute the sub-command (only do/write commands are allowed)
+                // Execute the sub-command (only do/show/write commands are allowed)
                 switch (subcmd.cmd) {
                     case command_t::type::do_timeseries:
                         handle_do_timeseries();
@@ -947,6 +954,9 @@ void driver_t<P>::execute_recurring_commands() {
                         break;
                     case command_t::type::write_products:
                         handle_write_products(subcmd.string_value);
+                        break;
+                    case command_t::type::write_profiler:
+                        handle_write_profiler(subcmd.string_value);
                         break;
                     case command_t::type::show_message:
                         handle_show_message();
@@ -1291,6 +1301,31 @@ void driver_t<P>::handle_write_products(const std::optional<std::string>& filena
 }
 
 template<Physics P>
+void driver_t<P>::handle_write_profiler(const std::optional<std::string>& filename_opt) {
+    auto filename = filename_opt.value_or("profiler.dat");
+    auto profiler_data = get_profiler_data(exec_context);
+
+    // Sort by time descending
+    auto sorted = std::vector<std::pair<std::string, perf::profile_entry_t>>(
+        profiler_data.begin(), profiler_data.end());
+    std::sort(sorted.begin(), sorted.end(),
+        [](const auto& a, const auto& b) { return a.second.time > b.second.time; });
+
+    auto file = std::ofstream{filename};
+    file << std::left << std::setw(24) << "# stage"
+         << std::right << std::setw(12) << "count"
+         << std::setw(16) << "time[s]" << "\n";
+
+    for (const auto& [name, entry] : sorted) {
+        file << std::left << std::setw(24) << name
+             << std::right << std::setw(12) << entry.count
+             << std::setw(16) << std::scientific << std::setprecision(3) << entry.time << "\n";
+    }
+
+    *out << colors.info << "write " << colors.value << filename << colors.reset << "\n";
+}
+
+template<Physics P>
 void driver_t<P>::handle_show_message() {
     *out << iteration_message();
 }
@@ -1495,6 +1530,7 @@ void driver_t<P>::handle_show_all() {
     *out << "\n";
     handle_show_timeseries();
     *out << "\n";
+    handle_show_profiler();
 }
 
 template<Physics P>
@@ -1544,6 +1580,28 @@ void driver_t<P>::handle_show_products() {
         } else {
             *out << "  - " << colors.unselected << "[ ] " << prod << colors.reset << "\n";
         }
+    }
+}
+
+template<Physics P>
+void driver_t<P>::handle_show_profiler() {
+    auto profiler_data = get_profiler_data(exec_context);
+
+    // Sort by time descending
+    auto sorted = std::vector<std::pair<std::string, perf::profile_entry_t>>(
+        profiler_data.begin(), profiler_data.end());
+    std::sort(sorted.begin(), sorted.end(),
+        [](const auto& a, const auto& b) { return a.second.time > b.second.time; });
+
+    *out << colors.header << "Profiler:" << colors.reset << "\n";
+    *out << std::left << std::setw(24) << "  stage"
+         << std::right << std::setw(12) << "count"
+         << std::setw(16) << "time[s]" << "\n";
+
+    for (const auto& [name, entry] : sorted) {
+        *out << std::left << std::setw(24) << ("  " + name)
+             << std::right << std::setw(12) << entry.count
+             << std::setw(16) << std::scientific << std::setprecision(6) << entry.time << "\n";
     }
 }
 
@@ -1645,6 +1703,10 @@ bool driver_t<P>::execute(const command_t& cmd) {
                 handle_write_products(cmd.string_value);
                 break;
 
+            case command_t::type::write_profiler:
+                handle_write_profiler(cmd.string_value);
+                break;
+
             case command_t::type::show_message:
                 handle_show_message();
                 break;
@@ -1692,6 +1754,10 @@ bool driver_t<P>::execute(const command_t& cmd) {
 
             case command_t::type::show_products:
                 handle_show_products();
+                break;
+
+            case command_t::type::show_profiler:
+                handle_show_profiler();
                 break;
 
             case command_t::type::show_driver:

@@ -61,6 +61,7 @@ struct patch_t {
 // =============================================================================
 
 struct initial_state_t {
+    static constexpr const char* name = "initial_state";
     double dx;
     double L;
 
@@ -74,6 +75,7 @@ struct initial_state_t {
 };
 
 struct compute_local_dt_t {
+    static constexpr const char* name = "compute_local_dt";
     double cfl;
     double v;
     double dx;
@@ -87,6 +89,7 @@ struct compute_local_dt_t {
 };
 
 struct global_dt_t {
+    static constexpr const char* name = "global_dt";
     using value_type = double;
 
     static double init() {
@@ -103,6 +106,7 @@ struct global_dt_t {
 };
 
 struct ghost_exchange_t {
+    static constexpr const char* name = "ghost_exchange";
     using space_t = index_space_t<1>;
     using buffer_t = array_view_t<double, 1>;
 
@@ -126,6 +130,7 @@ struct ghost_exchange_t {
 
 // Unfused stages (for comparison)
 struct compute_flux_t {
+    static constexpr const char* name = "compute_flux";
     auto value(patch_t p) const -> patch_t {
         auto v = p.v;
         auto& u = p.cons;
@@ -145,6 +150,7 @@ struct compute_flux_t {
 };
 
 struct update_conserved_t {
+    static constexpr const char* name = "update_conserved";
     auto value(patch_t p) const -> patch_t {
         auto dtdx = p.dt / p.dx;
         auto& u = p.cons;
@@ -159,6 +165,7 @@ struct update_conserved_t {
 
 // Fused flux + update stage (better cache utilization)
 struct flux_and_update_t {
+    static constexpr const char* name = "flux_and_update";
     auto value(patch_t p) const -> patch_t {
         auto v = p.v;
         auto dtdx = p.dt / p.dx;
@@ -287,6 +294,7 @@ struct advection {
         const config_t& config;
         const initial_t& initial;
         mutable parallel::scheduler_t scheduler;
+        mutable perf::profiler_t profiler;
 
         exec_context_t(const config_t& cfg, const initial_t& ini)
             : config(cfg), initial(ini) {}
@@ -297,7 +305,7 @@ struct advection {
 
         template<parallel::Pipeline P>
         void execute(P pipeline, std::vector<patch_t>& patches) const {
-            parallel::execute(pipeline, patches, scheduler);
+            parallel::execute(pipeline, patches, scheduler, profiler);
         }
     };
 };
@@ -328,7 +336,7 @@ auto initial_state(const advection::exec_context_t& ctx) -> advection::state_t {
         return patch_t(subspace(S, np, p, 0));
     }));
 
-    parallel::execute(initial_state_t{dx, L}, patches, ctx.scheduler);
+    parallel::execute(initial_state_t{dx, L}, patches, ctx.scheduler, ctx.profiler);
 
     return {std::move(patches), 0.0};
 }
@@ -443,6 +451,12 @@ auto get_product(
         }));
     }
     throw std::runtime_error("unknown product: " + name);
+}
+
+auto get_profiler_data(const advection::exec_context_t& ctx)
+    -> std::map<std::string, perf::profile_entry_t>
+{
+    return ctx.profiler.data();
 }
 
 // =============================================================================
