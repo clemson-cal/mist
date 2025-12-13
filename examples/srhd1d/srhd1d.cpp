@@ -474,11 +474,8 @@ struct compute_gradients_t {
 
 struct compute_fluxes_t {
     auto value(patch_t p) const -> patch_t {
-        auto i0 = start(p.interior)[0];
-        auto i1 = upper(p.interior)[0];
-
-        // Compute flux at each face from i0 to i1 (inclusive)
-        for (int i = i0; i <= i1; ++i) {
+        for_each(space(p.fhat), [&](ivec_t<1> idx) {
+            auto i = idx[0];
             auto prim_l = cons_to_prim(p.cons[i - 1]);
             auto prim_r = cons_to_prim(p.cons[i]);
             auto grad_l = p.grad[i - 1];
@@ -489,7 +486,7 @@ struct compute_fluxes_t {
             auto pr = prim_r - grad_r * 0.5;
 
             p.fhat[i] = riemann_hlle(pl, pr, prim_to_cons(pl), prim_to_cons(pr));
-        }
+        });
         return p;
     }
 };
