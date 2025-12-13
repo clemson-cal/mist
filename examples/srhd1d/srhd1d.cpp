@@ -308,18 +308,22 @@ struct patch_t {
 
     double dx = 0.0;
     double dt = 0.0;
+    double time = 0.0;
+    double time_rk = 0.0;
     double plm_theta = 1.5;
 
     cached_t<cons_t, 1> cons;
-    cached_t<prim_t, 1> prim;  // primitive variables at cell centers
-    cached_t<prim_t, 1> grad;  // PLM gradients at cell centers
-    cached_t<cons_t, 1> fhat;  // Godunov fluxes at faces
+    cached_t<cons_t, 1> cons_rk;  // RK cached state
+    cached_t<prim_t, 1> prim;     // primitive variables at cell centers
+    cached_t<prim_t, 1> grad;     // PLM gradients at cell centers
+    cached_t<cons_t, 1> fhat;     // Godunov fluxes at faces
 
     patch_t() = default;
 
     patch_t(index_space_t<1> s)
         : interior(s)
         , cons(cache(fill(expand(s, 2), cons_t{0.0, 0.0, 0.0}), memory::host, exec::cpu))
+        , cons_rk(cache(fill(expand(s, 2), cons_t{0.0, 0.0, 0.0}), memory::host, exec::cpu))
         , prim(cache(fill(expand(s, 2), prim_t{0.0, 0.0, 0.0}), memory::host, exec::cpu))
         , grad(cache(fill(expand(s, 1), prim_t{0.0, 0.0, 0.0}), memory::host, exec::cpu))
         , fhat(cache(fill(index_space(start(s), shape(s) + uvec(1)), cons_t{0.0, 0.0, 0.0}), memory::host, exec::cpu))
@@ -359,6 +363,14 @@ struct compute_local_dt_t {
             return max_wavespeed(cons_to_prim(p.cons(i)));
         });
         p.dt = cfl * dx / max(wavespeeds);
+        return p;
+    }
+};
+
+struct cache_rk_t {
+    auto value(patch_t p) const -> patch_t {
+        p.time_rk = p.time;
+        copy(p.cons_rk, p.cons);
         return p;
     }
 };
@@ -414,7 +426,7 @@ struct ghost_exchange_t {
 struct apply_boundary_conditions_t {
     boundary_condition bc_lo;
     boundary_condition bc_hi;
-    int num_zones;  // global domain size
+    unsigned num_zones;  // global domain size
 
     auto value(patch_t p) const -> patch_t {
         auto i0 = start(p.interior)[0];
@@ -441,7 +453,7 @@ struct apply_boundary_conditions_t {
         }
 
         // Right boundary (patch ends at global extent)
-        if (i1 == num_zones - 1) {
+        if (static_cast<unsigned>(i1) == num_zones - 1) {
             switch (bc_hi) {
                 case boundary_condition::outflow:
                     for (int g = 0; g < 2; ++g) {
@@ -500,6 +512,20 @@ struct update_conserved_t {
             auto i = idx[0];
             p.cons[i] = p.cons[i] + (p.fhat[i] - p.fhat[i + 1]) * dtdx;
         });
+        p.time += p.dt;
+        return p;
+    }
+};
+
+struct rk_average_t {
+    double alpha;  // state = (1-alpha) * cached + alpha * current
+
+    auto value(patch_t p) const -> patch_t {
+        for_each(space(p.cons), [&](ivec_t<1> idx) {
+            auto i = idx[0];
+            p.cons[i] = p.cons_rk[i] * (1.0 - alpha) + p.cons[i] * alpha;
+        });
+        p.time = p.time_rk * (1.0 - alpha) + p.time * alpha;
         return p;
     }
 };
@@ -659,27 +685,45 @@ auto initial_state(const srhd::exec_context_t& ctx) -> srhd::state_t {
 }
 
 void advance(srhd::state_t& state, const srhd::exec_context_t& ctx) {
-    if (ctx.config.rk_order != 1) {
-        throw std::runtime_error("only rk_order=1 (forward Euler) is supported");
-    }
-
     auto& ini = ctx.initial;
     auto& cfg = ctx.config;
     auto dx = ini.domain_length / ini.num_zones;
 
-    auto pipeline = parallel::pipeline(
-        compute_local_dt_t{cfg.cfl, dx, cfg.plm_theta},
-        global_dt_t{},
+    auto euler_step = parallel::pipeline(
         ghost_exchange_t{},
-        apply_boundary_conditions_t{cfg.bc_lo, cfg.bc_hi, static_cast<int>(ini.num_zones)},
+        apply_boundary_conditions_t{cfg.bc_lo, cfg.bc_hi, ini.num_zones},
         cons_to_prim_t{},
         compute_gradients_t{},
         compute_fluxes_t{},
         update_conserved_t{}
     );
-    ctx.execute(pipeline, state.patches);
 
-    state.time += state.patches[0].dt;
+    // Compute dt and cache state for RK
+    parallel::execute(compute_local_dt_t{cfg.cfl, dx, cfg.plm_theta}, state.patches, ctx.scheduler);
+    parallel::execute(global_dt_t{}, state.patches, ctx.scheduler);
+    parallel::execute(cache_rk_t{}, state.patches, ctx.scheduler);
+
+    switch (cfg.rk_order) {
+        case 1:
+            ctx.execute(euler_step, state.patches);
+            break;
+        case 2:
+            ctx.execute(euler_step, state.patches);
+            parallel::execute(rk_average_t{0.5}, state.patches, ctx.scheduler);
+            ctx.execute(euler_step, state.patches);
+            break;
+        case 3:
+            ctx.execute(euler_step, state.patches);
+            parallel::execute(rk_average_t{0.25}, state.patches, ctx.scheduler);
+            ctx.execute(euler_step, state.patches);
+            parallel::execute(rk_average_t{2.0 / 3.0}, state.patches, ctx.scheduler);
+            ctx.execute(euler_step, state.patches);
+            break;
+        default:
+            throw std::runtime_error("rk_order must be 1, 2, or 3");
+    }
+
+    state.time = state.patches[0].time;
 }
 
 auto zone_count(const srhd::state_t& state, const srhd::exec_context_t& ctx) -> std::size_t {
