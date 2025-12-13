@@ -1,6 +1,0 @@
-set exec num_threads=4
-set initial num_partitions=4
-set initial num_zones=10000
-init
-t -> 0.2
-stop

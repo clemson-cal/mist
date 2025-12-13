@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Scaling test for advection-1d-decomp
+# Scaling test for advect1d
 
 cd "$(dirname "$0")"
 
@@ -15,7 +15,7 @@ run_test() {
     local ufb=$4  # use_flux_buffer: 0 or 1
 
     # Run simulation and extract Mzps from the last progress message
-    local mzps=$(./advection-1d-decomp 2>&1 << EOF | grep -E '^\[' | tail -1 | sed -E 's/.*Mzps=([0-9.eE+-]+).*/\1/'
+    local mzps=$(./advect1d 2>&1 << EOF | grep -E '^\[' | tail -1 | sed -E 's/.*Mzps=([0-9.eE+-]+).*/\1/'
 reset
 set exec num_threads=$nt
 set initial num_partitions=$np

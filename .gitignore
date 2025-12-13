@@ -6,8 +6,7 @@
 *.exe
 
 # Example executables
-examples/advection-1d/advection-1d
-examples/advection-1d-decomp/advection-1d-decomp
+examples/advect1d/advect1d
 examples/config-reader/config-reader
 
 # Output data files
@@ -16,6 +15,8 @@ examples/config-reader/config-reader
 *.h5
 *.hdf5
 *.log
+*.csv
+*.pdf
 
 # CMake
 build/
@@ -23,6 +24,8 @@ CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
 install_manifest.txt
+Makefile
+CTestTestfile.cmake
 
 # IDE files
 .vscode/
