@@ -349,10 +349,10 @@ struct compute_local_dt_t {
         p.dx = dx;
         p.plm_theta = plm_theta;
 
-        auto max_a = map_reduce(p.interior, 0.0,
-            [&p](ivec_t<1> idx) { return max_wavespeed(cons_to_prim(p.cons[idx[0]])); },
-            [](double a, double b) { return max2(a, b); });
-        p.dt = cfl * dx / max_a;
+        auto wavespeeds = lazy(p.interior, [&p](ivec_t<1> i) {
+            return max_wavespeed(cons_to_prim(p.cons[i[0]]));
+        });
+        p.dt = cfl * dx / max(wavespeeds);
         return p;
     }
 };
@@ -731,15 +731,14 @@ auto get_timeseries(
     auto max_lorentz = 1.0;
 
     for (const auto& p : state.patches) {
-        total_mass += map_reduce(p.interior, 0.0,
-            [&p, dx](ivec_t<1> idx) { return p.cons[idx[0]][0] * dx; },
-            std::plus<>{});
-        total_energy += map_reduce(p.interior, 0.0,
-            [&p, dx](ivec_t<1> idx) { return p.cons[idx[0]][2] * dx; },
-            std::plus<>{});
-        max_lorentz = max2(max_lorentz, map_reduce(p.interior, 1.0,
-            [&p](ivec_t<1> idx) { return lorentz_factor(cons_to_prim(p.cons[idx[0]])); },
-            [](double a, double b) { return max2(a, b); }));
+        auto mass = lazy(p.interior, [&p, dx](ivec_t<1> i) { return p.cons[i[0]][0] * dx; });
+        auto energy = lazy(p.interior, [&p, dx](ivec_t<1> i) { return p.cons[i[0]][2] * dx; });
+        auto lorentz = lazy(p.interior, [&p](ivec_t<1> i) {
+            return lorentz_factor(cons_to_prim(p.cons[i[0]]));
+        });
+        total_mass += sum(mass);
+        total_energy += sum(energy);
+        max_lorentz = max2(max_lorentz, max(lorentz));
     }
 
     if (name == "total_mass") return total_mass;
