@@ -6,6 +6,7 @@ Usage:
     python -m mist.plot_products prods.bin --fields concentration cell_x
     python -m mist.plot_products prods.dat -o plot.png
     python -m mist.plot_products prods.dat --list-fields
+    python -m mist.plot_products lo:prods_256.dat hi:prods_8192.dat -o compare.pdf
 """
 
 import argparse
@@ -62,20 +63,39 @@ def list_fields(filename):
         print(f"  {field_name}: {total_size} elements, {len(partitions)} partitions")
 
 
-def plot_products(filename, fields=None, x_field=None, output=None, title=None):
-    """Plot products from file.
+def parse_file_spec(spec):
+    """Parse a file specification like 'label:filename' or just 'filename'."""
+    if ":" in spec:
+        label, filename = spec.split(":", 1)
+        return label, filename
+    return None, spec
+
+
+def plot_products(filenames, fields=None, x_field=None, output=None, title=None, figwidth=4.0):
+    """Plot products from one or more files.
 
     Args:
-        filename: Path to products file (.dat or .bin)
+        filenames: List of file specs ('label:path' or just 'path')
         fields: List of field names to plot (None = all except x_field)
         x_field: Field to use as x-axis (None = auto-detect or use index)
         output: Output filename for plot (None = show interactively)
         title: Plot title (None = use filename)
+        figwidth: Figure width in inches (default 4.0)
     """
     import matplotlib.pyplot as plt
 
-    products = load_products(filename)
-    available_fields = list(products.keys())
+    # Parse file specifications
+    datasets = []
+    for spec in filenames:
+        label, filename = parse_file_spec(spec)
+        products = load_products(filename)
+        if label is None:
+            label = Path(filename).stem
+        datasets.append((label, products))
+
+    # Use first dataset to determine fields and x_field
+    first_products = datasets[0][1]
+    available_fields = list(first_products.keys())
 
     # Auto-detect x_field if not specified
     if x_field is None:
@@ -85,15 +105,7 @@ def plot_products(filename, fields=None, x_field=None, output=None, title=None):
                 x_field = candidate
                 break
 
-    # Get x data
-    if x_field and x_field in products:
-        x_data = products[x_field]
-        x_label = x_field
-    else:
-        # Use index as x
-        first_field = available_fields[0]
-        x_data = np.arange(len(products[first_field]))
-        x_label = "index"
+    x_label = x_field if x_field else "index"
 
     # Determine fields to plot
     if fields is None:
@@ -102,7 +114,7 @@ def plot_products(filename, fields=None, x_field=None, output=None, title=None):
         # Validate requested fields
         for f in fields:
             if f not in available_fields:
-                print(f"Warning: field '{f}' not found in {filename}")
+                print(f"Warning: field '{f}' not found")
         fields = [f for f in fields if f in available_fields]
 
     if not fields:
@@ -111,20 +123,30 @@ def plot_products(filename, fields=None, x_field=None, output=None, title=None):
 
     # Create plot
     fig, axes = plt.subplots(
-        len(fields), 1, figsize=(10, 6 * len(fields)), squeeze=False
+        len(fields), 1, figsize=(figwidth, 2.5 * len(fields)), squeeze=False
     )
 
     for ax, field_name in zip(axes.flat, fields):
-        y_data = products[field_name]
-        ax.plot(x_data, y_data, "-", linewidth=1)
+        for label, products in datasets:
+            # Get x data for this dataset
+            if x_field and x_field in products:
+                x_data = products[x_field]
+            else:
+                x_data = np.arange(len(products[field_name]))
+
+            y_data = products[field_name]
+            ax.plot(x_data, y_data, "-", linewidth=0.8, label=label)
+
         ax.set_xlabel(x_label)
         ax.set_ylabel(field_name)
         ax.grid(True, alpha=0.3)
+        if len(datasets) > 1:
+            ax.legend(loc="best", fontsize="small")
 
     if title:
         fig.suptitle(title)
-    else:
-        fig.suptitle(Path(filename).name)
+    elif len(filenames) == 1:
+        fig.suptitle(Path(filenames[0]).name)
 
     plt.tight_layout()
 
@@ -146,10 +168,11 @@ Examples:
   %(prog)s prods.dat -o plot.png         # Save to file
   %(prog)s prods.dat --list-fields       # List available fields
   %(prog)s prods.dat -x cell_x           # Use cell_x as x-axis
+  %(prog)s lo:p256.dat hi:p8192.dat      # Compare two runs with labels
 """,
     )
 
-    parser.add_argument("filename", help="Products file (.dat or .bin)")
+    parser.add_argument("filenames", nargs="+", help="Products file(s) (.dat or .bin), optionally with label:path format")
     parser.add_argument(
         "-f",
         "--fields",
@@ -172,6 +195,13 @@ Examples:
         help="Plot title (default: filename)",
     )
     parser.add_argument(
+        "-w",
+        "--width",
+        type=float,
+        default=4.0,
+        help="Figure width in inches (default: 4.0)",
+    )
+    parser.add_argument(
         "--list-fields",
         action="store_true",
         help="List available fields and exit",
@@ -179,20 +209,26 @@ Examples:
 
     args = parser.parse_args()
 
-    if not Path(args.filename).exists():
-        print(f"Error: file not found: {args.filename}")
-        sys.exit(1)
+    # Check files exist
+    for spec in args.filenames:
+        _, filename = parse_file_spec(spec)
+        if not Path(filename).exists():
+            print(f"Error: file not found: {filename}")
+            sys.exit(1)
 
     if args.list_fields:
-        list_fields(args.filename)
+        for spec in args.filenames:
+            _, filename = parse_file_spec(spec)
+            list_fields(filename)
         sys.exit(0)
 
     plot_products(
-        args.filename,
+        args.filenames,
         fields=args.fields,
         x_field=args.x_field,
         output=args.output,
         title=args.title,
+        figwidth=args.width,
     )
 
 

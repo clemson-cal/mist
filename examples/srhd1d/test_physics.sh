@@ -11,14 +11,14 @@ if [ -f ../../.venv/bin/activate ]; then
 fi
 
 # High resolution run
-echo "Running Sod problem at 100000 zones..."
+echo "Running Sod problem at 8192 zones..."
 ./srhd1d <<'EOF'
-set initial num_zones=100000
+set initial num_zones=8192
 set physics ic=sod
 init
 t += 0.2
 select products
-write products prods_100000.dat
+write products prods_hi.dat
 stop
 EOF
 
@@ -30,14 +30,16 @@ set physics ic=sod
 init
 t += 0.2
 select products
-write products prods_256.dat
+write products prods_lo.dat
 stop
 EOF
 
-# Generate plots
-echo "Generating plots..."
-python -m mist.plot_products prods_100000.dat -o sod_100000.pdf -t "Sod Problem (100000 zones, t=0.2)"
-python -m mist.plot_products prods_256.dat -o sod_256.pdf -t "Sod Problem (256 zones, t=0.2)"
+# Generate comparison plot
+echo "Generating plot..."
+python -m mist.plot_products \
+    "hi (N=8192):prods_hi.dat" \
+    "lo (N=256):prods_lo.dat" \
+    -o sod.pdf \
+    -t "Sod Problem (t=0.2)"
 
-echo "Done. Output files:"
-ls -la sod_*.pdf
+echo "Done: sod.pdf"
