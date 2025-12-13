@@ -652,9 +652,9 @@ struct srhd {
             scheduler.set_num_threads(n);
         }
 
-        template<parallel::Pipeline P>
-        void execute(P pipeline, std::vector<patch_t>& patches) const {
-            parallel::execute(pipeline, patches, scheduler);
+        template<typename S>
+        void execute(std::vector<patch_t>& patches, S s) const {
+            parallel::execute(s, patches, scheduler);
         }
     };
 };
@@ -686,7 +686,7 @@ auto initial_state(const srhd::exec_context_t& ctx) -> srhd::state_t {
         return patch_t(subspace(S, np, p, 0));
     }));
 
-    parallel::execute(initial_state_t{dx, L, cfg.ic}, patches, ctx.scheduler);
+    ctx.execute(patches, initial_state_t{dx, L, cfg.ic});
 
     return {std::move(patches), 0.0};
 }
@@ -695,6 +695,12 @@ void advance(srhd::state_t& state, const srhd::exec_context_t& ctx) {
     auto& ini = ctx.initial;
     auto& cfg = ctx.config;
     auto dx = ini.domain_length / ini.num_zones;
+
+    auto new_step = parallel::pipeline(
+        cache_rk_t{},
+        compute_local_dt_t{cfg.cfl, dx, cfg.plm_theta},
+        global_dt_t{}
+    );
 
     auto euler_step = parallel::pipeline(
         ghost_exchange_t{},
@@ -705,26 +711,23 @@ void advance(srhd::state_t& state, const srhd::exec_context_t& ctx) {
         update_conserved_t{}
     );
 
-    // Compute dt and cache state for RK
-    parallel::execute(compute_local_dt_t{cfg.cfl, dx, cfg.plm_theta}, state.patches, ctx.scheduler);
-    parallel::execute(global_dt_t{}, state.patches, ctx.scheduler);
-    parallel::execute(cache_rk_t{}, state.patches, ctx.scheduler);
+    ctx.execute(state.patches, new_step);
 
     switch (cfg.rk_order) {
         case 1:
-            ctx.execute(euler_step, state.patches);
+            ctx.execute(state.patches, euler_step);
             break;
         case 2:
-            ctx.execute(euler_step, state.patches);
-            parallel::execute(rk_average_t{0.5}, state.patches, ctx.scheduler);
-            ctx.execute(euler_step, state.patches);
+            ctx.execute(state.patches, euler_step);
+            ctx.execute(state.patches, euler_step);
+            ctx.execute(state.patches, rk_average_t{0.5});
             break;
         case 3:
-            ctx.execute(euler_step, state.patches);
-            parallel::execute(rk_average_t{0.25}, state.patches, ctx.scheduler);
-            ctx.execute(euler_step, state.patches);
-            parallel::execute(rk_average_t{2.0 / 3.0}, state.patches, ctx.scheduler);
-            ctx.execute(euler_step, state.patches);
+            ctx.execute(state.patches, euler_step);
+            ctx.execute(state.patches, euler_step);
+            ctx.execute(state.patches, rk_average_t{0.25});
+            ctx.execute(state.patches, euler_step);
+            ctx.execute(state.patches, rk_average_t{2.0 / 3.0});
             break;
         default:
             throw std::runtime_error("rk_order must be 1, 2, or 3");
