@@ -685,6 +685,12 @@ void copy(array_view_t<T, S> dst, array_view_t<T, S> src) {
     copy(dst, array_view_t<const T, S>(src._space, src._data, src._strides));
 }
 
+// Copy from cached_t to view
+template<typename T, std::size_t S>
+void copy(array_view_t<T, S> dst, const cached_t<T, S>& src) {
+    copy(dst, view(src));
+}
+
 // Copy from array_t to array_t (reallocates dst if needed)
 template<typename T, std::size_t S>
 void copy(array_t<T, S>& dst, const array_t<T, S>& src) {

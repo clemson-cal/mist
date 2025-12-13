@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <concepts>
 #include <functional>
 #include <tuple>
@@ -87,6 +88,32 @@ inline constexpr bool is_pipeline_v = is_pipeline<T>::value;
 
 template<typename... Stages>
 auto pipeline(Stages... stages) -> pipeline_t<Stages...> {
+    return {std::make_tuple(std::move(stages)...)};
+}
+
+// =============================================================================
+// compose: fuse multiple compute stages into one
+// =============================================================================
+
+template<typename... Stages>
+struct composed_t {
+    std::tuple<Stages...> stages;
+
+    template<typename Context>
+    auto value(Context ctx) const -> Context {
+        return apply_stages(std::move(ctx), std::index_sequence_for<Stages...>{});
+    }
+
+private:
+    template<typename Context, std::size_t... Is>
+    auto apply_stages(Context ctx, std::index_sequence<Is...>) const -> Context {
+        ((ctx = std::get<Is>(stages).value(std::move(ctx))), ...);
+        return ctx;
+    }
+};
+
+template<typename... Stages>
+auto compose(Stages... stages) -> composed_t<Stages...> {
     return {std::make_tuple(std::move(stages)...)};
 }
 
@@ -188,6 +215,14 @@ void execute_reduce(
         stage.finalize(acc, ctx);
     }
 }
+
+} // namespace detail
+
+// =============================================================================
+// Barrier-based pipeline execution
+// =============================================================================
+
+namespace detail {
 
 // Dispatch a stage by type
 template<typename Stage, typename Context, typename Topo, Scheduler Sched>

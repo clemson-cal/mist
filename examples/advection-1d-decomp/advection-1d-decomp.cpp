@@ -44,15 +44,15 @@ struct patch_t {
     double dx = 0.0;
     double dt = 0.0;
 
-    cached_t<double, 1> conserved;    // includes 1 guard zone on each side
-    cached_t<double, 1> godunov_flux;
+    cached_t<double, 1> cons;
+    cached_t<double, 1> fhat;
 
     patch_t() = default;
 
     patch_t(index_space_t<1> s)
         : interior(s)
-        , conserved(cache(zeros<double>(expand(s, 1)), memory::host, exec::cpu))
-        , godunov_flux(cache(zeros<double>(index_space(start(s), uvec(upper(s)[0] - start(s)[0] + 1))), memory::host, exec::cpu))
+        , cons(cache(zeros<double>(expand(s, 1)), memory::host, exec::cpu))
+        , fhat(cache(zeros<double>(nudge(s, ivec(0), ivec(1))), memory::host, exec::cpu))
     {
     }
 };
@@ -66,7 +66,7 @@ struct initial_state_t {
     double L;
 
     auto value(patch_t p) const -> patch_t {
-        auto& u = p.conserved;
+        auto& u = p.cons;
         for_each(p.interior, [&](ivec_t<1> i) {
             u(i) = std::sin(2.0 * M_PI * cell_center_x(i[0], dx) / L);
         });
@@ -113,42 +113,72 @@ struct ghost_exchange_t {
         auto hi = upper(p.interior);
         auto l_guard = index_space(lo - ivec(1), uvec(1));
         auto r_guard = index_space(hi - ivec(0), uvec(1));
-        request(p.conserved[l_guard]);
-        request(p.conserved[r_guard]);
+        request(p.cons[l_guard]);
+        request(p.cons[r_guard]);
     }
 
     auto data(const patch_t& p) const -> array_view_t<const double, 1> {
-        return p.conserved[p.interior];
+        return p.cons[p.interior];
     }
 };
 
+// Unfused stages (for comparison)
 struct compute_flux_t {
     auto value(patch_t p) const -> patch_t {
         auto v = p.v;
-        auto& fhat = p.godunov_flux;
-        auto& u = p.conserved;
+        auto& u = p.cons;
+        auto& f = p.fhat;
 
-        if (v > 0.0)
-            for_each(space(fhat), [&](ivec_t<1> i) {
-                fhat(i) = v * u(i - ivec(1));
+        if (v > 0.0) {
+            for_each(space(f), [&](ivec_t<1> i) {
+                f(i) = v * u(i - ivec(1));
             });
-        if (v < 0.0)
-            for_each(space(fhat), [&](ivec_t<1> i) {
-                fhat(i) = v * u(i);
+        } else {
+            for_each(space(f), [&](ivec_t<1> i) {
+                f(i) = v * u(i);
             });
+        }
         return p;
     }
 };
 
 struct update_conserved_t {
     auto value(patch_t p) const -> patch_t {
-        auto& u = p.conserved;
-        auto& fhat = p.godunov_flux;
         auto dtdx = p.dt / p.dx;
+        auto& u = p.cons;
+        auto& f = p.fhat;
 
         for_each(p.interior, [&](ivec_t<1> i) {
-            u(i) -= dtdx * (fhat(i + ivec(1)) - fhat(i));
+            u(i) -= dtdx * (f(i + ivec(1)) - f(i));
         });
+        return p;
+    }
+};
+
+// Fused flux + update stage (better cache utilization)
+struct flux_and_update_t {
+    auto value(patch_t p) const -> patch_t {
+        auto v = p.v;
+        auto dtdx = p.dt / p.dx;
+        auto& u = p.cons;
+        auto i0 = start(p.interior)[0];
+        auto i1 = upper(p.interior)[0];
+
+        if (v > 0.0) {
+            // Backward iteration for upwind stability
+            for (int i = i1 - 1; i >= i0; --i) {
+                auto flux_l = v * u[i - 1];
+                auto flux_r = v * u[i];
+                u[i] = u[i] - dtdx * (flux_r - flux_l);
+            }
+        } else {
+            // Forward iteration for upwind stability
+            for (int i = i0; i < i1; ++i) {
+                auto flux_l = v * u[i];
+                auto flux_r = v * u[i + 1];
+                u[i] = u[i] - dtdx * (flux_r - flux_l);
+            }
+        }
         return p;
     }
 };
@@ -160,18 +190,19 @@ struct update_conserved_t {
 template<ArchiveWriter A>
 void serialize(A& ar, const patch_t& p) {
     ar.begin_group();
-    serialize(ar, "conserved", p.conserved);
+    auto interior = cache(map(p.cons[p.interior], std::identity{}), memory::host, exec::cpu);
+    serialize(ar, "cons", interior);
     ar.end_group();
 }
 
 template<ArchiveReader A>
 auto deserialize(A& ar, patch_t& p) -> bool {
     if (!ar.begin_group()) return false;
-    auto u = cached_t<double, 1>{};
-    deserialize(ar, "conserved", u);
+    auto interior = cached_t<double, 1>{};
+    deserialize(ar, "cons", interior);
     ar.end_group();
-    p = patch_t(space(u));
-    copy(p.conserved, u);
+    p = patch_t(space(interior));
+    copy(p.cons[p.interior], interior);
     return true;
 }
 
@@ -203,12 +234,14 @@ struct advection {
         int rk_order = 1;
         double cfl = 0.4;
         double wavespeed = 1.0;
+        bool use_flux_buffer = false;
 
         auto fields() const {
             return std::make_tuple(
                 field("rk_order", rk_order),
                 field("cfl", cfl),
-                field("wavespeed", wavespeed)
+                field("wavespeed", wavespeed),
+                field("use_flux_buffer", use_flux_buffer)
             );
         }
 
@@ -216,7 +249,8 @@ struct advection {
             return std::make_tuple(
                 field("rk_order", rk_order),
                 field("cfl", cfl),
-                field("wavespeed", wavespeed)
+                field("wavespeed", wavespeed),
+                field("use_flux_buffer", use_flux_buffer)
             );
         }
     };
@@ -319,14 +353,32 @@ void advance(advection::state_t& state, const advection::exec_context_t& ctx) {
     auto v = ctx.config.wavespeed;
     auto cfl = ctx.config.cfl;
 
-    auto pipe = parallel::pipeline(
-        compute_local_dt_t{cfl, v, dx},
-        global_dt_t{},
-        ghost_exchange_t{},
-        compute_flux_t{},
-        update_conserved_t{}
-    );
-    parallel::execute(pipe, state.patches, ctx.topology, ctx.scheduler);
+    if (ctx.config.use_flux_buffer) {
+        // Use of separate flux buffer (poor scaling)
+        parallel::execute(
+            parallel::pipeline(
+                ghost_exchange_t{},
+                compute_local_dt_t{cfl, v, dx},
+                compute_flux_t{},
+                update_conserved_t{}
+            ),
+            state.patches,
+            ctx.topology,
+            ctx.scheduler
+        );
+    } else {
+        // No use of separate flux buffer (good scaling)
+        parallel::execute(
+            parallel::pipeline(
+                ghost_exchange_t{},
+                compute_local_dt_t{cfl, v, dx},
+                flux_and_update_t{}
+            ),
+            state.patches,
+            ctx.topology,
+            ctx.scheduler
+        );
+    }
 
     state.time += state.patches[0].dt;
 }
@@ -371,9 +423,9 @@ auto get_timeseries(
 
     const auto dx = ini.domain_length / ini.num_zones;
     const auto& patches = state.patches;
-    auto sums = patches | transform([](const auto& p) { return sum(p.conserved); });
-    auto mins = patches | transform([](const auto& p) { return min(p.conserved); });
-    auto maxs = patches | transform([](const auto& p) { return max(p.conserved); });
+    auto sums = patches | transform([](const auto& p) { return sum(p.cons); });
+    auto mins = patches | transform([](const auto& p) { return min(p.cons); });
+    auto maxs = patches | transform([](const auto& p) { return max(p.cons); });
 
     if (name == "total_mass")
         return std::accumulate(sums.begin(), sums.end(), 0.0) * dx;
@@ -397,19 +449,17 @@ auto get_product(
 
     if (name == "concentration") {
         return to_vector(state.patches | transform([](const auto& p) {
-            return cache(map(p.conserved, std::identity{}), memory::host, exec::cpu);
+            return cache(map(p.cons[p.interior], std::identity{}), memory::host, exec::cpu);
         }));
     }
     if (name == "cell_x") {
         return to_vector(state.patches | transform([dx](const auto& p) {
-            auto s = space(p.conserved);
-            return cache(lazy(s, [dx](auto idx) { return cell_center_x(idx[0], dx); }), memory::host, exec::cpu);
+            return cache(lazy(p.interior, [dx](auto idx) { return cell_center_x(idx[0], dx); }), memory::host, exec::cpu);
         }));
     }
     if (name == "wavespeed") {
         return to_vector(state.patches | transform([v](const auto& p) {
-            auto s = space(p.conserved);
-            return cache(fill(s, v), memory::host, exec::cpu);
+            return cache(fill(p.interior, v), memory::host, exec::cpu);
         }));
     }
     throw std::runtime_error("unknown product: " + name);
