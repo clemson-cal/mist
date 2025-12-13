@@ -192,7 +192,8 @@ struct flux_and_update_t {
 template<ArchiveWriter A>
 void serialize(A& ar, const patch_t& p) {
     ar.begin_group();
-    auto interior = cache(map(p.cons[p.interior], std::identity{}), memory::host, exec::cpu);
+    auto interior = cached_t<double, 1>(p.interior, memory::host);
+    copy(interior[p.interior], p.cons[p.interior]);
     serialize(ar, "cons", interior);
     ar.end_group();
 }
@@ -426,7 +427,9 @@ auto get_product(
 
     if (name == "concentration") {
         return to_vector(state.patches | transform([](const auto& p) {
-            return cache(map(p.cons[p.interior], std::identity{}), memory::host, exec::cpu);
+            auto result = cached_t<double, 1>(p.interior, memory::host);
+            copy(result[p.interior], p.cons[p.interior]);
+            return result;
         }));
     }
     if (name == "cell_x") {
