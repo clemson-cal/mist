@@ -14,9 +14,10 @@ fi
 echo "Running Sod problem at 8192 zones..."
 ./srhd1d <<'EOF'
 set initial num_zones=8192
-set physics ic=sod
+set physics ic=sod rk_order=3
 init
-t += 0.2
+repeat 0.01 t write message
+t += 0.4
 select products
 write products prods_hi.dat
 stop
@@ -26,9 +27,10 @@ EOF
 echo "Running Sod problem at 256 zones..."
 ./srhd1d <<'EOF'
 set initial num_zones=256
-set physics ic=sod
+set physics ic=sod rk_order=3
 init
-t += 0.2
+repeat 0.01 t write message
+t += 0.4
 select products
 write products prods_lo.dat
 stop

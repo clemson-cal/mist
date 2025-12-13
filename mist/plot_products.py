@@ -71,7 +71,9 @@ def parse_file_spec(spec):
     return None, spec
 
 
-def plot_products(filenames, fields=None, x_field=None, output=None, title=None, figwidth=4.0):
+def plot_products(
+    filenames, fields=None, x_field=None, output=None, title=None, figwidth=4.0
+):
     """Plot products from one or more files.
 
     Args:
@@ -122,10 +124,13 @@ def plot_products(filenames, fields=None, x_field=None, output=None, title=None,
         return
 
     # Create plot with shared x-axis and 4:3 aspect ratio per subplot
-    subplot_height = figwidth * 3 / 4
+    subplot_height = figwidth * 0.5
     fig, axes = plt.subplots(
-        len(fields), 1, figsize=(figwidth, subplot_height * len(fields)),
-        squeeze=False, sharex=True
+        len(fields),
+        1,
+        figsize=(figwidth, subplot_height * len(fields)),
+        squeeze=False,
+        sharex=True,
     )
 
     for i, (ax, field_name) in enumerate(zip(axes.flat, fields)):
@@ -176,7 +181,11 @@ Examples:
 """,
     )
 
-    parser.add_argument("filenames", nargs="+", help="Products file(s) (.dat or .bin), optionally with label:path format")
+    parser.add_argument(
+        "filenames",
+        nargs="+",
+        help="Products file(s) (.dat or .bin), optionally with label:path format",
+    )
     parser.add_argument(
         "-f",
         "--fields",
