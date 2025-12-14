@@ -213,6 +213,42 @@ MIST_HD constexpr auto operator/(const vec_t<T, S>& v, U scalar) {
     return result;
 }
 
+// Compound assignment: vec += vec
+template<Arithmetic T, Arithmetic U, std::size_t S>
+MIST_HD constexpr auto& operator+=(vec_t<T, S>& a, const vec_t<U, S>& b) {
+    for (std::size_t i = 0; i < S; ++i) {
+        a._data[i] += b._data[i];
+    }
+    return a;
+}
+
+// Compound assignment: vec -= vec
+template<Arithmetic T, Arithmetic U, std::size_t S>
+MIST_HD constexpr auto& operator-=(vec_t<T, S>& a, const vec_t<U, S>& b) {
+    for (std::size_t i = 0; i < S; ++i) {
+        a._data[i] -= b._data[i];
+    }
+    return a;
+}
+
+// Compound assignment: vec *= scalar
+template<Arithmetic T, Arithmetic U, std::size_t S>
+MIST_HD constexpr auto& operator*=(vec_t<T, S>& v, U scalar) {
+    for (std::size_t i = 0; i < S; ++i) {
+        v._data[i] *= scalar;
+    }
+    return v;
+}
+
+// Compound assignment: vec /= scalar
+template<Arithmetic T, Arithmetic U, std::size_t S>
+MIST_HD constexpr auto& operator/=(vec_t<T, S>& v, U scalar) {
+    for (std::size_t i = 0; i < S; ++i) {
+        v._data[i] /= scalar;
+    }
+    return v;
+}
+
 // Dot product
 template<Arithmetic T, Arithmetic U, std::size_t S>
 constexpr auto dot(const vec_t<T, S>& a, const vec_t<U, S>& b) {
