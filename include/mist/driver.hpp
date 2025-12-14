@@ -1587,22 +1587,68 @@ template<Physics P>
 void driver_t<P>::handle_show_profiler() {
     auto profiler_data = get_profiler_data(exec_context);
 
+    if (profiler_data.empty()) {
+        *out << colors.unselected << "no profiler data." << colors.reset << "\n";
+        return;
+    }
+
     // Sort by time descending
     auto sorted = std::vector<std::pair<std::string, perf::profile_entry_t>>(
         profiler_data.begin(), profiler_data.end());
     std::sort(sorted.begin(), sorted.end(),
         [](const auto& a, const auto& b) { return a.second.time > b.second.time; });
 
-    *out << colors.header << "Profiler:" << colors.reset << "\n";
-    *out << std::left << std::setw(24) << "  stage"
-         << std::right << std::setw(12) << "count"
-         << std::setw(16) << "time[s]" << "\n";
-
+    // Calculate total time
+    auto total_time = 0.0;
+    auto total_count = 0ul;
     for (const auto& [name, entry] : sorted) {
-        *out << std::left << std::setw(24) << ("  " + name)
-             << std::right << std::setw(12) << entry.count
-             << std::setw(16) << std::scientific << std::setprecision(6) << entry.time << "\n";
+        total_time += entry.time;
+        total_count += entry.count;
     }
+
+    // Table formatting
+    const int col_stage = 24;
+    const int col_count = 10;
+    const int col_time = 12;
+    const int col_pct = 8;
+    const int table_width = col_stage + col_count + col_time + col_pct + 7;
+
+    auto sep = std::string(table_width, '-');
+
+    *out << "\n" << colors.header << "Profiler" << colors.reset << "\n";
+    *out << colors.unselected << sep << colors.reset << "\n";
+
+    // Header row
+    *out << colors.label
+         << std::left << std::setw(col_stage) << " stage"
+         << std::right << std::setw(col_count) << "count"
+         << std::setw(col_time) << "time[s]"
+         << std::setw(col_pct) << "%"
+         << colors.reset << "\n";
+
+    *out << colors.unselected << sep << colors.reset << "\n";
+
+    // Data rows
+    for (const auto& [name, entry] : sorted) {
+        auto pct = (total_time > 0) ? 100.0 * entry.time / total_time : 0.0;
+        *out << " " << colors.value << std::left << std::setw(col_stage - 1) << name << colors.reset
+             << colors.iteration << std::right << std::setw(col_count) << entry.count << colors.reset
+             << colors.info << std::setw(col_time) << std::fixed << std::setprecision(4) << entry.time << colors.reset
+             << colors.warning << std::setw(col_pct - 1) << std::fixed << std::setprecision(1) << pct << "%" << colors.reset
+             << "\n";
+    }
+
+    *out << colors.unselected << sep << colors.reset << "\n";
+
+    // Total row
+    *out << colors.header
+         << std::left << std::setw(col_stage) << " TOTAL"
+         << std::right << std::setw(col_count) << total_count
+         << std::setw(col_time) << std::fixed << std::setprecision(4) << total_time
+         << std::setw(col_pct - 1) << "100.0%"
+         << colors.reset << "\n";
+
+    *out << colors.unselected << sep << colors.reset << "\n\n";
 }
 
 template<Physics P>

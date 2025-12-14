@@ -101,7 +101,7 @@ def plot_products(
 
     # Auto-detect x_field if not specified
     if x_field is None:
-        x_candidates = ["cell_x", "x", "position", "radius", "r"]
+        x_candidates = ["cell_x", "cell_r", "x", "r", "position", "radius"]
         for candidate in x_candidates:
             if candidate in available_fields:
                 x_field = candidate
