@@ -850,13 +850,9 @@ auto get_profiler_data(const srhd::exec_context_t& ctx)
 // Main
 // =============================================================================
 
-int main(int argc, char** argv)
+int main()
 {
     mist::program_t<srhd> prog;
-    prog.physics = default_physics_config(std::type_identity<srhd>{});
-    prog.initial = default_initial_config(std::type_identity<srhd>{});
-
-    auto final_state = mist::run(prog);
-
+    mist::run(prog);
     return 0;
 }

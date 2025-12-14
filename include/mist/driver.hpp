@@ -1957,6 +1957,10 @@ void repl_t<P>::run() {
 template<Physics P>
 std::optional<typename P::state_t> run(program_t<P>& prog)
 {
+    // Initialize with defaults
+    prog.physics = default_physics_config(std::type_identity<P>{});
+    prog.initial = default_initial_config(std::type_identity<P>{});
+
     auto driver = driver_t<P>{prog, std::cout, std::cerr};
     auto repl = repl_t<P>{driver};
     repl.run();

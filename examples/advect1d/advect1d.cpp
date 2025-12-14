@@ -463,15 +463,9 @@ auto get_profiler_data(const advection::exec_context_t& ctx)
 // Main
 // =============================================================================
 
-int main(int argc, char** argv)
+int main()
 {
-    // Create program with default physics and initial configs
     mist::program_t<advection> prog;
-    prog.physics = default_physics_config(std::type_identity<advection>{});
-    prog.initial = default_initial_config(std::type_identity<advection>{});
-
-    // Run interactive simulation
-    auto final_state = mist::run(prog);
-
+    mist::run(prog);
     return 0;
 }
