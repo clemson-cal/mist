@@ -95,16 +95,6 @@ struct wrote_file {
     std::size_t bytes;
 };
 
-struct socket_listening {
-    int port;
-};
-
-struct socket_sent {
-    std::size_t bytes;
-};
-
-struct socket_cancelled {};
-
 } // namespace resp
 
 // =============================================================================
@@ -131,10 +121,7 @@ using response_t = std::variant<
     resp::products_info,
     resp::profiler_info,
     // Write
-    resp::wrote_file,
-    resp::socket_listening,
-    resp::socket_sent,
-    resp::socket_cancelled
+    resp::wrote_file
 >;
 
 // =============================================================================

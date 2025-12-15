@@ -238,4 +238,41 @@ private:
     int fd_ = -1;
 };
 
+// =============================================================================
+// Socket stream adapter - allows socket to be used as std::ostream
+// =============================================================================
+
+class socket_streambuf : public std::streambuf {
+public:
+    explicit socket_streambuf(socket_t& socket) : socket_(socket) {}
+
+protected:
+    auto overflow(int_type ch) -> int_type override {
+        if (ch != traits_type::eof()) {
+            char c = static_cast<char>(ch);
+            socket_.send(&c, 1);
+        }
+        return ch;
+    }
+
+    auto xsputn(const char_type* s, std::streamsize n) -> std::streamsize override {
+        socket_.send(s, static_cast<std::size_t>(n));
+        return n;
+    }
+
+private:
+    socket_t& socket_;
+};
+
+class socket_ostream : public std::ostream {
+public:
+    explicit socket_ostream(socket_t& socket)
+        : std::ostream(&buf_)
+        , buf_(socket)
+    {}
+
+private:
+    socket_streambuf buf_;
+};
+
 } // namespace mist

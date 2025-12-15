@@ -126,9 +126,6 @@ private:
     void format(const resp::products_info& r);
     void format(const resp::profiler_info& r);
     void format(const resp::wrote_file& r);
-    void format(const resp::socket_listening& r);
-    void format(const resp::socket_sent& r);
-    void format(const resp::socket_cancelled& r);
 };
 
 } // namespace mist::driver

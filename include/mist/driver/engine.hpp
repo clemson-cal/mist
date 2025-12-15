@@ -14,7 +14,6 @@
 #include "../ascii_writer.hpp"
 #include "../binary_reader.hpp"
 #include "../binary_writer.hpp"
-#include "../socket.hpp"
 
 namespace mist::driver {
 
@@ -43,12 +42,6 @@ struct interrupt_guard_t {
 } // namespace signal
 
 // =============================================================================
-// Help text
-// =============================================================================
-
-extern const char* help_text;
-
-// =============================================================================
 // Utility
 // =============================================================================
 
@@ -73,6 +66,20 @@ public:
     auto state() const -> const state_t& { return state_; }
     auto state() -> state_t& { return state_; }
 
+    // Direct write methods - session handles I/O, engine handles data
+    void write_physics(std::ostream& os, output_format fmt);
+    void write_initial(std::ostream& os, output_format fmt);
+    void write_driver(std::ostream& os, output_format fmt);
+    void write_profiler(std::ostream& os, output_format fmt);
+    void write_timeseries(std::ostream& os, output_format fmt);
+    void write_checkpoint(std::ostream& os, output_format fmt);
+    void write_products(std::ostream& os, output_format fmt);
+
+    // Human-readable info methods (for show commands / REPL display)
+    void write_iteration_info(std::ostream& os);
+    void write_profiler_info(std::ostream& os);
+    void write_timeseries_info(std::ostream& os);
+
 private:
     state_t& state_;
     physics_interface_t& physics_;
@@ -85,7 +92,6 @@ private:
     void do_timestep();
     void execute_recurring_commands(emit_fn emit);
     void advance_to_target(const std::string& var, double target, emit_fn emit);
-    void send_to_socket(const void* data, std::size_t size, emit_fn emit);
 
     void handle(const cmd::advance_by& c, emit_fn emit);
     void handle(const cmd::advance_to& c, emit_fn emit);

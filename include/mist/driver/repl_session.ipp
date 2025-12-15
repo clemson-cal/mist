@@ -49,13 +49,13 @@ MIST_INLINE const char* help_text = R"(
   ---------------------------------------------------------------------------
   File I/O
   ---------------------------------------------------------------------------
-    write physics <file|socket>    - Write physics config
-    write initial <file|socket>    - Write initial config
-    write driver <file|socket>     - Write driver state
-    write profiler <file|socket>   - Write profiler data
-    write timeseries [file|socket] - Write timeseries
-    write checkpoint [file|socket] - Write checkpoint
-    write products [file|socket]   - Write products
+    write physics <file>           - Write physics config
+    write initial <file>           - Write initial config
+    write driver <file>            - Write driver state
+    write profiler <file>          - Write profiler data
+    write timeseries [file]        - Write timeseries
+    write checkpoint [file]        - Write checkpoint
+    write products [file]          - Write products
 
   ---------------------------------------------------------------------------
   Recurring commands
@@ -668,20 +668,6 @@ MIST_INLINE void repl_session_t::format(const resp::profiler_info& r) {
 MIST_INLINE void repl_session_t::format(const resp::wrote_file& r) {
     out_ << colors_.info << "wrote " << colors_.value << r.filename
          << colors_.reset << " (" << r.bytes << " bytes)\n";
-}
-
-MIST_INLINE void repl_session_t::format(const resp::socket_listening& r) {
-    out_ << colors_.info << "listening on port " << colors_.value << r.port
-         << colors_.reset << " (ctrl-c to cancel)\n" << std::flush;
-}
-
-MIST_INLINE void repl_session_t::format(const resp::socket_sent& r) {
-    out_ << colors_.info << "sent " << colors_.value << r.bytes
-         << colors_.reset << " bytes\n";
-}
-
-MIST_INLINE void repl_session_t::format(const resp::socket_cancelled&) {
-    out_ << "\n" << colors_.info << "cancelled" << colors_.reset << "\n";
 }
 
 } // namespace mist::driver

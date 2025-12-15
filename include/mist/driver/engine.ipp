@@ -126,21 +126,128 @@ MIST_INLINE void engine_t::advance_to_target(const std::string& var, double targ
     emit(make_iteration_status());
 }
 
-MIST_INLINE void engine_t::send_to_socket(const void* data, std::size_t size, emit_fn emit) {
-    auto guard = signal::interrupt_guard_t{};
+// -----------------------------------------------------------------------------
+// Direct write methods
+// -----------------------------------------------------------------------------
 
-    auto server = socket_t{};
-    server.listen(0);
-    auto port = server.port();
-    emit(resp::socket_listening{port});
+MIST_INLINE void engine_t::write_physics(std::ostream& os, output_format fmt) {
+    physics_.write_physics(os, fmt);
+}
 
-    auto client = server.accept_interruptible([&guard] { return guard.is_interrupted(); });
-    if (!client) {
-        emit(resp::socket_cancelled{});
-        return;
+MIST_INLINE void engine_t::write_initial(std::ostream& os, output_format fmt) {
+    physics_.write_initial(os, fmt);
+}
+
+MIST_INLINE void engine_t::write_driver(std::ostream& os, output_format fmt) {
+    if (fmt == output_format::binary) {
+        auto writer = binary_writer{os};
+        serialize(writer, "driver_state", state_);
+    } else {
+        auto writer = ascii_writer{os};
+        serialize(writer, "driver_state", state_);
     }
-    client->send_with_size(data, size);
-    emit(resp::socket_sent{size});
+}
+
+MIST_INLINE void engine_t::write_profiler(std::ostream& os, output_format fmt) {
+    auto data = physics_.profiler_data();
+    if (fmt == output_format::binary) {
+        auto writer = binary_writer{os};
+        serialize(writer, "profiler", data);
+    } else {
+        auto writer = ascii_writer{os};
+        serialize(writer, "profiler", data);
+    }
+}
+
+MIST_INLINE void engine_t::write_profiler_info(std::ostream& os) {
+    auto data = physics_.profiler_data();
+    auto sorted = std::vector<std::pair<std::string, perf::profile_entry_t>>(
+        data.begin(), data.end());
+    std::sort(sorted.begin(), sorted.end(),
+        [](const auto& a, const auto& b) { return a.second.time > b.second.time; });
+
+    os << std::left << std::setw(24) << "# stage"
+       << std::right << std::setw(12) << "count"
+       << std::setw(16) << "time[s]" << "\n";
+
+    for (const auto& [name, entry] : sorted) {
+        os << std::left << std::setw(24) << name
+           << std::right << std::setw(12) << entry.count
+           << std::setw(16) << std::scientific << std::setprecision(3) << entry.time << "\n";
+    }
+}
+
+MIST_INLINE void engine_t::write_timeseries(std::ostream& os, output_format fmt) {
+    if (fmt == output_format::binary) {
+        auto writer = binary_writer{os};
+        serialize(writer, "timeseries", state_.timeseries);
+    } else {
+        auto writer = ascii_writer{os};
+        serialize(writer, "timeseries", state_.timeseries);
+    }
+}
+
+MIST_INLINE void engine_t::write_timeseries_info(std::ostream& os) {
+    if (state_.timeseries.empty()) return;
+
+    // Write header
+    os << "#";
+    for (const auto& [col, values] : state_.timeseries) {
+        os << std::setw(20) << col;
+    }
+    os << "\n";
+
+    // Find max rows
+    auto max_rows = std::size_t{0};
+    for (const auto& [col, values] : state_.timeseries) {
+        max_rows = std::max(max_rows, values.size());
+    }
+
+    // Write data rows
+    for (std::size_t i = 0; i < max_rows; ++i) {
+        os << " ";
+        for (const auto& [col, values] : state_.timeseries) {
+            if (i < values.size()) {
+                os << std::setw(20) << std::scientific << std::setprecision(10) << values[i];
+            } else {
+                os << std::setw(20) << "";
+            }
+        }
+        os << "\n";
+    }
+}
+
+MIST_INLINE void engine_t::write_checkpoint(std::ostream& os, output_format fmt) {
+    if (fmt == output_format::binary) {
+        auto writer = binary_writer{os};
+        serialize(writer, "driver_state", state_);
+    } else {
+        auto writer = ascii_writer{os};
+        serialize(writer, "driver_state", state_);
+    }
+    physics_.write_state(os, fmt);
+}
+
+MIST_INLINE void engine_t::write_products(std::ostream& os, output_format fmt) {
+    physics_.write_products(os, fmt, state_.selected_products);
+}
+
+MIST_INLINE void engine_t::write_iteration_info(std::ostream& os) {
+    os << "[" << std::setw(6) << std::setfill('0') << state_.iteration << "] ";
+
+    for (const auto& name : physics_.time_names()) {
+        os << name << "=" << std::scientific << std::showpos << std::setprecision(6)
+           << physics_.get_time(name) << std::noshowpos << " ";
+    }
+
+    os << "dt=" << std::scientific << std::setprecision(6) << last_dt_ << " ";
+
+    auto wall_elapsed = get_wall_time() - command_start_wall_time_;
+    auto iter_elapsed = state_.iteration - command_start_iteration_;
+    auto zps = (wall_elapsed > 0)
+        ? (iter_elapsed * physics_.zone_count()) / wall_elapsed
+        : 0.0;
+    os << "zps=" << std::scientific << std::setprecision(2) << zps << "\n";
 }
 
 // -----------------------------------------------------------------------------
@@ -264,117 +371,52 @@ MIST_INLINE void engine_t::handle(const cmd::do_timeseries&, emit_fn emit) {
 }
 
 MIST_INLINE void engine_t::handle(const cmd::write_physics& c, emit_fn emit) {
-    if (c.dest == "socket") {
-        auto buffer = std::ostringstream{std::ios::binary};
-        physics_.write_physics(buffer, output_format::binary);
-        auto data = buffer.str();
-        send_to_socket(data.data(), data.size(), emit);
-        return;
-    }
-
     auto fmt = infer_format_from_filename(c.dest);
     auto file = std::ofstream{c.dest, std::ios::binary};
     if (!file) {
         emit(resp::error{"failed to open " + c.dest});
         return;
     }
-    physics_.write_physics(file, fmt);
+    write_physics(file, fmt);
     emit(resp::wrote_file{c.dest, static_cast<std::size_t>(file.tellp())});
 }
 
 MIST_INLINE void engine_t::handle(const cmd::write_initial& c, emit_fn emit) {
-    if (c.dest == "socket") {
-        auto buffer = std::ostringstream{std::ios::binary};
-        physics_.write_initial(buffer, output_format::binary);
-        auto data = buffer.str();
-        send_to_socket(data.data(), data.size(), emit);
-        return;
-    }
-
     auto fmt = infer_format_from_filename(c.dest);
     auto file = std::ofstream{c.dest, std::ios::binary};
     if (!file) {
         emit(resp::error{"failed to open " + c.dest});
         return;
     }
-    physics_.write_initial(file, fmt);
+    write_initial(file, fmt);
     emit(resp::wrote_file{c.dest, static_cast<std::size_t>(file.tellp())});
 }
 
 MIST_INLINE void engine_t::handle(const cmd::write_driver& c, emit_fn emit) {
-    if (c.dest == "socket") {
-        auto buffer = std::ostringstream{std::ios::binary};
-        auto writer = binary_writer{buffer};
-        serialize(writer, "driver_state", state_);
-        auto data = buffer.str();
-        send_to_socket(data.data(), data.size(), emit);
-        return;
-    }
-
     auto fmt = infer_format_from_filename(c.dest);
     auto file = std::ofstream{c.dest, std::ios::binary};
     if (!file) {
         emit(resp::error{"failed to open " + c.dest});
         return;
     }
-    if (fmt == output_format::ascii) {
-        auto writer = ascii_writer{file};
-        serialize(writer, "driver_state", state_);
-    } else {
-        auto writer = binary_writer{file};
-        serialize(writer, "driver_state", state_);
-    }
+    write_driver(file, fmt);
     emit(resp::wrote_file{c.dest, static_cast<std::size_t>(file.tellp())});
 }
 
 MIST_INLINE void engine_t::handle(const cmd::write_profiler& c, emit_fn emit) {
-    auto data = physics_.profiler_data();
-
-    if (c.dest == "socket") {
-        auto buffer = std::ostringstream{std::ios::binary};
-        auto writer = binary_writer{buffer};
-        serialize(writer, "profiler", data);
-        auto str = buffer.str();
-        send_to_socket(str.data(), str.size(), emit);
-        return;
-    }
-
-    auto file = std::ofstream{c.dest};
+    auto fmt = infer_format_from_filename(c.dest);
+    auto file = std::ofstream{c.dest, std::ios::binary};
     if (!file) {
         emit(resp::error{"failed to open " + c.dest});
         return;
     }
-
-    auto sorted = std::vector<std::pair<std::string, perf::profile_entry_t>>(
-        data.begin(), data.end());
-    std::sort(sorted.begin(), sorted.end(),
-        [](const auto& a, const auto& b) { return a.second.time > b.second.time; });
-
-    file << std::left << std::setw(24) << "# stage"
-         << std::right << std::setw(12) << "count"
-         << std::setw(16) << "time[s]" << "\n";
-
-    for (const auto& [name, entry] : sorted) {
-        file << std::left << std::setw(24) << name
-             << std::right << std::setw(12) << entry.count
-             << std::setw(16) << std::scientific << std::setprecision(3) << entry.time << "\n";
-    }
-
+    write_profiler(file, fmt);
     emit(resp::wrote_file{c.dest, static_cast<std::size_t>(file.tellp())});
 }
 
 MIST_INLINE void engine_t::handle(const cmd::write_timeseries& c, emit_fn emit) {
     if (state_.timeseries.empty()) {
         emit(resp::error{"no timeseries selected; use 'select timeseries'"});
-        return;
-    }
-
-    if (c.dest && *c.dest == "socket") {
-        auto buffer = std::ostringstream{std::ios::binary};
-        auto writer = binary_writer{buffer};
-        serialize(writer, "timeseries", state_.timeseries);
-        auto data = buffer.str();
-        send_to_socket(data.data(), data.size(), emit);
         return;
     }
 
@@ -398,28 +440,11 @@ MIST_INLINE void engine_t::handle(const cmd::write_timeseries& c, emit_fn emit) 
         emit(resp::error{"failed to open " + filename});
         return;
     }
-
-    if (fmt == output_format::ascii) {
-        auto writer = ascii_writer{file};
-        serialize(writer, "timeseries", state_.timeseries);
-    } else {
-        auto writer = binary_writer{file};
-        serialize(writer, "timeseries", state_.timeseries);
-    }
+    write_timeseries(file, fmt);
     emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
 }
 
 MIST_INLINE void engine_t::handle(const cmd::write_checkpoint& c, emit_fn emit) {
-    if (c.dest && *c.dest == "socket") {
-        auto buffer = std::ostringstream{std::ios::binary};
-        auto writer = binary_writer{buffer};
-        serialize(writer, "driver_state", state_);
-        physics_.write_state(buffer, output_format::binary);
-        auto data = buffer.str();
-        send_to_socket(data.data(), data.size(), emit);
-        return;
-    }
-
     auto filename = std::string{};
     auto fmt = output_format{};
 
@@ -440,15 +465,7 @@ MIST_INLINE void engine_t::handle(const cmd::write_checkpoint& c, emit_fn emit) 
         emit(resp::error{"failed to open " + filename});
         return;
     }
-
-    if (fmt == output_format::ascii) {
-        auto writer = ascii_writer{file};
-        serialize(writer, "driver_state", state_);
-    } else {
-        auto writer = binary_writer{file};
-        serialize(writer, "driver_state", state_);
-    }
-    physics_.write_state(file, fmt);
+    write_checkpoint(file, fmt);
     emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
 }
 
@@ -459,14 +476,6 @@ MIST_INLINE void engine_t::handle(const cmd::write_products& c, emit_fn emit) {
     }
     if (state_.selected_products.empty()) {
         emit(resp::error{"no products selected; use 'select products'"});
-        return;
-    }
-
-    if (c.dest && *c.dest == "socket") {
-        auto buffer = std::ostringstream{std::ios::binary};
-        physics_.write_products(buffer, output_format::binary, state_.selected_products);
-        auto data = buffer.str();
-        send_to_socket(data.data(), data.size(), emit);
         return;
     }
 
@@ -490,8 +499,7 @@ MIST_INLINE void engine_t::handle(const cmd::write_products& c, emit_fn emit) {
         emit(resp::error{"failed to open " + filename});
         return;
     }
-
-    physics_.write_products(file, fmt, state_.selected_products);
+    write_products(file, fmt);
     emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
 }
 
