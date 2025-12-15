@@ -1,10 +1,13 @@
 #pragma once
 
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
@@ -80,6 +83,42 @@ public:
             throw std::runtime_error("socket: failed to accept connection");
         }
         return socket_t(client_fd);
+    }
+
+    /// Accept with periodic interrupt check. Returns nullopt if interrupted.
+    template<typename InterruptCheck>
+    auto accept_interruptible(InterruptCheck is_interrupted) -> std::optional<socket_t> {
+        while (true) {
+            // Use select with 100ms timeout to allow interrupt checking
+            fd_set readfds;
+            FD_ZERO(&readfds);
+            FD_SET(fd_, &readfds);
+
+            timeval timeout{};
+            timeout.tv_sec = 0;
+            timeout.tv_usec = 100000;  // 100ms
+
+            int result = ::select(fd_ + 1, &readfds, nullptr, nullptr, &timeout);
+            if (result < 0) {
+                if (errno == EINTR) continue;  // Interrupted by signal, retry
+                throw std::runtime_error("socket: select failed");
+            }
+            if (result == 0) {
+                // Timeout - check for interrupt
+                if (is_interrupted()) {
+                    return std::nullopt;
+                }
+                continue;
+            }
+            // Connection ready
+            sockaddr_in client_addr{};
+            socklen_t addrlen = sizeof(client_addr);
+            int client_fd = ::accept(fd_, reinterpret_cast<sockaddr*>(&client_addr), &addrlen);
+            if (client_fd < 0) {
+                throw std::runtime_error("socket: failed to accept connection");
+            }
+            return socket_t(client_fd);
+        }
     }
 
     auto port() const -> uint16_t {

@@ -1,0 +1,131 @@
+#pragma once
+
+#include <chrono>
+#include <csignal>
+#include <fstream>
+#include <functional>
+#include <iomanip>
+#include <sstream>
+#include "command.hpp"
+#include "physics_interface.hpp"
+#include "response.hpp"
+#include "state.hpp"
+#include "../ascii_reader.hpp"
+#include "../ascii_writer.hpp"
+#include "../binary_reader.hpp"
+#include "../binary_writer.hpp"
+#include "../socket.hpp"
+
+namespace mist::driver {
+
+// =============================================================================
+// Signal handling for Ctrl-C
+// =============================================================================
+
+namespace signal {
+
+inline volatile std::sig_atomic_t interrupted = 0;
+
+inline void handler(int) {
+    interrupted = 1;
+}
+
+struct interrupt_guard_t {
+    std::sig_atomic_t previous_state;
+    void (*previous_handler)(int);
+
+    interrupt_guard_t();
+    ~interrupt_guard_t();
+    auto is_interrupted() const -> bool;
+    void clear();
+};
+
+} // namespace signal
+
+// =============================================================================
+// Help text
+// =============================================================================
+
+extern const char* help_text;
+
+// =============================================================================
+// Utility
+// =============================================================================
+
+inline auto get_wall_time() -> double {
+    using namespace std::chrono;
+    return duration<double>(steady_clock::now().time_since_epoch()).count();
+}
+
+// =============================================================================
+// engine_t - the core state machine
+// =============================================================================
+
+class engine_t {
+public:
+    using emit_fn = std::function<void(const response_t&)>;
+
+    engine_t(state_t& state, physics_interface_t& physics);
+
+    void execute(const command_t& cmd, emit_fn emit);
+    void execute(const cmd::repeat_add& cmd, emit_fn emit);
+
+    auto state() const -> const state_t& { return state_; }
+    auto state() -> state_t& { return state_; }
+
+private:
+    state_t& state_;
+    physics_interface_t& physics_;
+    double command_start_wall_time_;
+    int command_start_iteration_;
+    double last_dt_ = 0.0;
+
+    auto make_iteration_status() const -> resp::iteration_status;
+
+    void do_timestep();
+    void execute_recurring_commands(emit_fn emit);
+    void advance_to_target(const std::string& var, double target, emit_fn emit);
+    void send_to_socket(const void* data, std::size_t size, emit_fn emit);
+
+    void handle(const cmd::advance_by& c, emit_fn emit);
+    void handle(const cmd::advance_to& c, emit_fn emit);
+    void handle(const cmd::set_output& c, emit_fn emit);
+    void handle(const cmd::set_physics& c, emit_fn emit);
+    void handle(const cmd::set_initial& c, emit_fn emit);
+    void handle(const cmd::set_exec& c, emit_fn emit);
+    void handle(const cmd::select_timeseries& c, emit_fn emit);
+    void handle(const cmd::select_products& c, emit_fn emit);
+    void handle(const cmd::do_timeseries& c, emit_fn emit);
+    void handle(const cmd::write_physics& c, emit_fn emit);
+    void handle(const cmd::write_initial& c, emit_fn emit);
+    void handle(const cmd::write_driver& c, emit_fn emit);
+    void handle(const cmd::write_profiler& c, emit_fn emit);
+    void handle(const cmd::write_timeseries& c, emit_fn emit);
+    void handle(const cmd::write_checkpoint& c, emit_fn emit);
+    void handle(const cmd::write_products& c, emit_fn emit);
+    void handle(const cmd::repeat_add& c, emit_fn emit);
+    void handle(const cmd::clear_repeat& c, emit_fn emit);
+    void handle(const cmd::init& c, emit_fn emit);
+    void handle(const cmd::reset& c, emit_fn emit);
+    void handle(const cmd::load& c, emit_fn emit);
+    void handle(const cmd::show_message& c, emit_fn emit);
+    void handle(const cmd::show_all& c, emit_fn emit);
+    void handle(const cmd::show_physics& c, emit_fn emit);
+    void handle(const cmd::show_initial& c, emit_fn emit);
+    void handle(const cmd::show_timeseries& c, emit_fn emit);
+    void handle(const cmd::show_products& c, emit_fn emit);
+    void handle(const cmd::show_profiler& c, emit_fn emit);
+    void handle(const cmd::show_driver& c, emit_fn emit);
+    void handle(const cmd::help& c, emit_fn emit);
+    void handle(const cmd::stop& c, emit_fn emit);
+};
+
+} // namespace mist::driver
+
+// =============================================================================
+// Include implementations for header-only mode
+// =============================================================================
+
+#ifndef MIST_DRIVER_SEPARATE_COMPILATION
+#include "engine.ipp"
+#endif

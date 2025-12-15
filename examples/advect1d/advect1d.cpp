@@ -6,7 +6,8 @@
 #include <numeric>
 #include <ranges>
 #include "mist/core.hpp"
-#include "mist/driver.hpp"
+#include "mist/driver/physics_impl.hpp"
+#include "mist/driver/repl_session.hpp"
 #include "mist/ndarray.hpp"
 #include "mist/pipeline.hpp"
 #include "mist/serialize.hpp"
@@ -463,7 +464,10 @@ auto get_profiler_data(const advection::exec_context_t& ctx)
 
 int main()
 {
-    mist::program_t<advection> prog;
-    mist::run(prog);
+    auto physics = mist::driver::make_physics<advection>();
+    auto state = mist::driver::state_t{};
+    auto engine = mist::driver::engine_t{state, *physics};
+    auto repl = mist::driver::repl_session_t{engine};
+    repl.run();
     return 0;
 }

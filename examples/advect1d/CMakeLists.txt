@@ -1,5 +1,6 @@
 add_executable(advect1d advect1d.cpp)
 target_link_libraries(advect1d PRIVATE mist)
+mist_add_header_dependencies(advect1d)
 
 if(READLINE_LIBRARY AND READLINE_INCLUDE_DIR)
     target_include_directories(advect1d PRIVATE ${READLINE_INCLUDE_DIR})

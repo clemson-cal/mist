@@ -1533,13 +1533,20 @@ void driver_t<P>::handle_repeat_clear(const std::vector<std::string>& indices) {
 
 template<Physics P>
 void driver_t<P>::send_to_socket(const void* data, std::size_t size) {
+    auto guard = signal::interrupt_guard_t{};
+
     auto server = socket_t{};
     server.listen(0);
     auto port = server.port();
     *out << colors.info << "socket listening on port " << colors.value << port
-         << colors.reset << "\n" << std::flush;
-    auto client = server.accept();
-    client.send_with_size(data, size);
+         << colors.reset << " (ctrl-c to cancel)\n" << std::flush;
+
+    auto client = server.accept_interruptible([&guard]{ return guard.is_interrupted(); });
+    if (!client) {
+        *out << "\n" << colors.info << "cancelled" << colors.reset << "\n";
+        return;
+    }
+    client->send_with_size(data, size);
     *out << colors.info << "sent " << colors.value << size
          << colors.reset << " bytes\n";
 }

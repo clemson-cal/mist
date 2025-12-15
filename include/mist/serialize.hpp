@@ -5,6 +5,7 @@
 #include <string>
 #include <tuple>
 #include <type_traits>
+#include <variant>
 #include <vector>
 #include "core.hpp"
 #include "ndarray.hpp"
@@ -167,6 +168,9 @@ void serialize(A& ar, const std::optional<T>& value);
 template<ArchiveWriter A, CachedNdArray T>
 void serialize(A& ar, const T& value);
 
+template<ArchiveWriter A, typename... Ts>
+void serialize(A& ar, const std::variant<Ts...>& value);
+
 // =============================================================================
 // Deserialize declarations (two-arg: anonymous, three-arg: named)
 // =============================================================================
@@ -213,6 +217,9 @@ auto deserialize(A& ar, std::optional<T>& value) -> bool;
 
 template<ArchiveReader A, CachedNdArray T>
 auto deserialize(A& ar, T& value) -> bool;
+
+template<ArchiveReader A, typename... Ts>
+auto deserialize(A& ar, std::variant<Ts...>& value) -> bool;
 
 // =============================================================================
 // Named wrappers (three-arg versions)
@@ -327,6 +334,15 @@ void serialize(A& ar, const std::optional<T>& value) {
 template<ArchiveWriter A, CachedNdArray T>
 void serialize(A& ar, const T& value) {
     ar.write(value);
+}
+
+// std::variant<Ts...>
+template<ArchiveWriter A, typename... Ts>
+void serialize(A& ar, const std::variant<Ts...>& value) {
+    ar.begin_group();
+    serialize(ar, "index", value.index());
+    std::visit([&ar](const auto& v) { serialize(ar, "value", v); }, value);
+    ar.end_group();
 }
 
 // =============================================================================
@@ -444,6 +460,37 @@ auto deserialize(A& ar, std::optional<T>& value) -> bool {
 template<ArchiveReader A, CachedNdArray T>
 auto deserialize(A& ar, T& value) -> bool {
     return ar.read(value);
+}
+
+// std::variant<Ts...> - helper to deserialize by index
+namespace detail {
+
+template<ArchiveReader A, typename Variant, std::size_t I = 0>
+auto deserialize_variant_by_index(A& ar, Variant& value, std::size_t index) -> bool {
+    if constexpr (I >= std::variant_size_v<Variant>) {
+        return false;
+    } else {
+        if (I == index) {
+            std::variant_alternative_t<I, Variant> temp;
+            if (!deserialize(ar, temp)) return false;
+            value = std::move(temp);
+            return true;
+        }
+        return deserialize_variant_by_index<A, Variant, I + 1>(ar, value, index);
+    }
+}
+
+} // namespace detail
+
+template<ArchiveReader A, typename... Ts>
+auto deserialize(A& ar, std::variant<Ts...>& value) -> bool {
+    if (!ar.begin_group()) return false;
+    std::size_t index = 0;
+    deserialize(ar, "index", index);
+    ar.begin_named("value");
+    auto result = detail::deserialize_variant_by_index(ar, value, index);
+    ar.end_group();
+    return result;
 }
 
 // =============================================================================
