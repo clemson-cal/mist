@@ -8,7 +8,7 @@
 #include "mist/core.hpp"
 #include "mist/driver.hpp"
 #include "mist/ndarray.hpp"
-#include "mist/parallel/pipeline.hpp"
+#include "mist/pipeline.hpp"
 #include "mist/serialize.hpp"
 
 using namespace mist;

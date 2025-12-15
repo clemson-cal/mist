@@ -4,7 +4,7 @@
 #include <concepts>
 #include <map>
 #include <string>
-#include "../serialize.hpp"
+#include "serialize.hpp"
 
 namespace mist {
 namespace perf {

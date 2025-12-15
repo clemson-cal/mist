@@ -24,7 +24,7 @@
 #include "ascii_writer.hpp"
 #include "binary_reader.hpp"
 #include "binary_writer.hpp"
-#include "parallel/profiler.hpp"
+#include "profiler.hpp"
 #include "serialize.hpp"
 #include "socket.hpp"
 
