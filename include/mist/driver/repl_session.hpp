@@ -115,6 +115,7 @@ private:
     void format(const resp::error& r);
     void format(const resp::interrupted& r);
     void format(const resp::stopped& r);
+    void format(const resp::state_info& r);
     void format(const resp::iteration_status& r);
     void format(const resp::timeseries_sample& r);
     void format(const resp::physics_config& r);

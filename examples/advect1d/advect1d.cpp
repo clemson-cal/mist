@@ -372,7 +372,6 @@ auto zone_count(const advection::state_t& state, const advection::exec_context_t
     return ctx.initial.num_zones;
 }
 
-
 auto names_of_time(std::type_identity<advection>) -> std::vector<std::string> {
     return {"t"};
 }

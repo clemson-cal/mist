@@ -1,82 +1,13 @@
 // engine.ipp - implementation file for engine_t
 // Include via engine.hpp (header-only) or compile engine.cpp (separate compilation)
 
-#ifdef MIST_DRIVER_COMPILED
+#ifdef MIST_DRIVER_SEPARATE_COMPILATION
 #define MIST_INLINE
 #else
 #define MIST_INLINE inline
 #endif
 
 namespace mist::driver {
-
-// =============================================================================
-// Help text
-// =============================================================================
-
-MIST_INLINE const char* help_text = R"(
-  ---------------------------------------------------------------------------
-  Stepping
-  ---------------------------------------------------------------------------
-    n++                            - Advance by 1 iteration
-    n += 10                        - Advance by 10 iterations
-    n -> 1000                      - Advance to iteration 1000
-    t += 10.0                      - Advance time by exactly 10.0
-    t -> 20.0                      - Advance time to exactly 20.0
-    orbit += 3.0                   - Advance until orbit increases by 3.0
-    orbit -> 60.0                  - Advance until orbit reaches 60.0
-
-  ---------------------------------------------------------------------------
-  Configuration
-  ---------------------------------------------------------------------------
-    set output=ascii               - Set output format (ascii|binary|hdf5)
-    set physics key=val            - Set physics config parameter
-    set initial key=val            - Set initial data parameter
-    set exec key=val               - Set execution parameter (e.g. num_threads)
-    select products [prod1 ...]    - Select products (no args = all)
-    select timeseries [col1 ...]   - Select timeseries columns (no args = all)
-
-  ---------------------------------------------------------------------------
-  State management
-  ---------------------------------------------------------------------------
-    init                           - Generate initial state from config
-    reset                          - Reset driver and clear physics state
-    load <file>                    - Load checkpoint or config file
-
-  ---------------------------------------------------------------------------
-  Sampling
-  ---------------------------------------------------------------------------
-    do timeseries                  - Record timeseries sample
-
-  ---------------------------------------------------------------------------
-  File I/O
-  ---------------------------------------------------------------------------
-    write physics <file|socket>    - Write physics config
-    write initial <file|socket>    - Write initial config
-    write driver <file|socket>     - Write driver state
-    write profiler <file|socket>   - Write profiler data
-    write timeseries [file|socket] - Write timeseries
-    write checkpoint [file|socket] - Write checkpoint
-    write products [file|socket]   - Write products
-
-  ---------------------------------------------------------------------------
-  Recurring commands
-  ---------------------------------------------------------------------------
-    repeat <interval> <unit> <cmd> - Execute command every interval
-    clear repeat                   - Clear all recurring commands
-
-  ---------------------------------------------------------------------------
-  Information
-  ---------------------------------------------------------------------------
-    show all                       - Show all
-    show physics                   - Show physics configuration
-    show initial                   - Show initial configuration
-    show products                  - Show available and selected products
-    show timeseries                - Show timeseries data
-    show driver                    - Show driver state
-    show profiler                  - Show profiler
-    help                           - Show this help
-    stop | quit | q                - Exit simulation
-)";
 
 // =============================================================================
 // Signal handling
@@ -654,11 +585,15 @@ MIST_INLINE void engine_t::handle(const cmd::load& c, emit_fn emit) {
 }
 
 MIST_INLINE void engine_t::handle(const cmd::show_message&, emit_fn emit) {
-    if (!physics_.has_state()) {
-        emit(resp::error{"physics state not initialized"});
-        return;
+    auto info = resp::state_info{};
+    info.initialized = physics_.has_state();
+    if (info.initialized) {
+        info.zone_count = physics_.zone_count();
+        for (const auto& name : physics_.time_names()) {
+            info.times[name] = physics_.get_time(name);
+        }
     }
-    emit(make_iteration_status());
+    emit(info);
 }
 
 MIST_INLINE void engine_t::handle(const cmd::show_all&, emit_fn emit) {
@@ -723,7 +658,7 @@ MIST_INLINE void engine_t::handle(const cmd::show_driver&, emit_fn emit) {
 }
 
 MIST_INLINE void engine_t::handle(const cmd::help&, emit_fn emit) {
-    emit(resp::help_text{help_text});
+    emit(resp::help_text{});
 }
 
 MIST_INLINE void engine_t::handle(const cmd::stop&, emit_fn emit) {

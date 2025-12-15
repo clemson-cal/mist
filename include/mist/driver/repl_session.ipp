@@ -1,13 +1,82 @@
-// session.ipp - implementation file for repl_session_t
-// Include via session.hpp (header-only) or compile session.cpp (separate compilation)
+// repl_session.ipp - implementation file for repl_session_t
 
-#ifdef MIST_DRIVER_COMPILED
+#ifdef MIST_DRIVER_SEPARATE_COMPILATION
 #define MIST_INLINE
 #else
 #define MIST_INLINE inline
 #endif
 
 namespace mist::driver {
+
+// =============================================================================
+// Help text
+// =============================================================================
+
+MIST_INLINE const char* help_text = R"(
+  ---------------------------------------------------------------------------
+  Stepping
+  ---------------------------------------------------------------------------
+    n++                            - Advance by 1 iteration
+    n += 10                        - Advance by 10 iterations
+    n -> 1000                      - Advance to iteration 1000
+    t += 10.0                      - Advance time by exactly 10.0
+    t -> 20.0                      - Advance time to exactly 20.0
+    orbit += 3.0                   - Advance until orbit increases by 3.0
+    orbit -> 60.0                  - Advance until orbit reaches 60.0
+
+  ---------------------------------------------------------------------------
+  Configuration
+  ---------------------------------------------------------------------------
+    set output=ascii               - Set output format (ascii|binary|hdf5)
+    set physics key=val            - Set physics config parameter
+    set initial key=val            - Set initial data parameter
+    set exec key=val               - Set execution parameter (e.g. num_threads)
+    select products [prod1 ...]    - Select products (no args = all)
+    select timeseries [col1 ...]   - Select timeseries columns (no args = all)
+
+  ---------------------------------------------------------------------------
+  State management
+  ---------------------------------------------------------------------------
+    init                           - Generate initial state from config
+    reset                          - Reset driver and clear physics state
+    load <file>                    - Load checkpoint or config file
+
+  ---------------------------------------------------------------------------
+  Sampling
+  ---------------------------------------------------------------------------
+    do timeseries                  - Record timeseries sample
+
+  ---------------------------------------------------------------------------
+  File I/O
+  ---------------------------------------------------------------------------
+    write physics <file|socket>    - Write physics config
+    write initial <file|socket>    - Write initial config
+    write driver <file|socket>     - Write driver state
+    write profiler <file|socket>   - Write profiler data
+    write timeseries [file|socket] - Write timeseries
+    write checkpoint [file|socket] - Write checkpoint
+    write products [file|socket]   - Write products
+
+  ---------------------------------------------------------------------------
+  Recurring commands
+  ---------------------------------------------------------------------------
+    repeat <interval> <unit> <cmd> - Execute command every interval
+    repeat list                    - Show recurring commands
+    clear repeat                   - Clear all recurring commands
+
+  ---------------------------------------------------------------------------
+  Information
+  ---------------------------------------------------------------------------
+    show                           - Show state summary
+    show physics                   - Show physics configuration
+    show initial                   - Show initial configuration
+    show products                  - Show available and selected products
+    show timeseries                - Show timeseries data
+    show driver                    - Show driver state
+    show profiler                  - Show profiler
+    help                           - Show this help
+    stop | quit | q                - Exit simulation
+)";
 
 // =============================================================================
 // Command parsing
@@ -461,6 +530,21 @@ MIST_INLINE void repl_session_t::format(const resp::stopped&) {
     should_stop_ = true;
 }
 
+MIST_INLINE void repl_session_t::format(const resp::state_info& r) {
+    out_ << colors_.label << "physics state: " << colors_.reset;
+    if (r.initialized) {
+        out_ << colors_.selected << "initialized" << colors_.reset;
+        out_ << " (" << colors_.value << r.zone_count << colors_.reset << " zones)";
+        for (const auto& [name, value] : r.times) {
+            out_ << " " << colors_.label << name << "=" << colors_.reset
+                 << colors_.value << std::scientific << std::setprecision(6) << value << colors_.reset;
+        }
+    } else {
+        out_ << colors_.unselected << "none" << colors_.reset;
+    }
+    out_ << "\n";
+}
+
 MIST_INLINE void repl_session_t::format(const resp::iteration_status& r) {
     out_ << colors_.iteration << "[" << std::setw(6) << std::setfill('0')
          << r.n << "]" << colors_.reset << " ";
@@ -501,8 +585,8 @@ MIST_INLINE void repl_session_t::format(const resp::driver_state& r) {
     out_ << r.text;
 }
 
-MIST_INLINE void repl_session_t::format(const resp::help_text& r) {
-    out_ << r.text << "\n";
+MIST_INLINE void repl_session_t::format(const resp::help_text&) {
+    out_ << help_text << "\n";
 }
 
 MIST_INLINE void repl_session_t::format(const resp::timeseries_info& r) {

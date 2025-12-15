@@ -37,7 +37,7 @@ option(MIST_DRIVER_HEADER_ONLY "Use header-only driver (slower compile, no libra
 if(NOT MIST_DRIVER_HEADER_ONLY)
     add_library(mist_driver STATIC
         src/driver/engine.cpp
-        src/driver/session.cpp
+        src/driver/repl_session.cpp
     )
     target_include_directories(mist_driver PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

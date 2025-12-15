@@ -27,6 +27,12 @@ struct interrupted {};
 
 struct stopped {};
 
+struct state_info {
+    bool initialized;
+    std::size_t zone_count;
+    std::map<std::string, double> times;
+};
+
 // --- Iteration ---
 
 struct iteration_status {
@@ -111,6 +117,7 @@ using response_t = std::variant<
     resp::error,
     resp::interrupted,
     resp::stopped,
+    resp::state_info,
     // Iteration
     resp::iteration_status,
     resp::timeseries_sample,
