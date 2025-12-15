@@ -1,5 +1,6 @@
 #pragma once
 
+#include <limits>
 #include <map>
 #include <memory>
 #include <ostream>
@@ -34,7 +35,7 @@ struct physics_interface_t {
     // -------------------------------------------------------------------------
     // Stepping
     // -------------------------------------------------------------------------
-    virtual void advance() = 0;
+    virtual void advance(double dt_max = std::numeric_limits<double>::infinity()) = 0;
     virtual auto get_time(const std::string& var) const -> double = 0;
     virtual auto get_timeseries(const std::string& name) const -> double = 0;
 

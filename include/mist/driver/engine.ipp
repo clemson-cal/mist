@@ -142,13 +142,34 @@ MIST_INLINE auto engine_t::make_iteration_status() const -> resp::iteration_stat
     return status;
 }
 
-MIST_INLINE void engine_t::do_timestep() {
+MIST_INLINE void engine_t::do_timestep(double dt_max) {
     auto time_names = physics_.time_names();
     auto t0 = physics_.get_time(time_names[0]);
-    physics_.advance();
+    physics_.advance(dt_max);
     auto t1 = physics_.get_time(time_names[0]);
     last_dt_ = t1 - t0;
     state_.iteration++;
+}
+
+MIST_INLINE auto engine_t::time_to_next_task() const -> double {
+    auto dt_max = std::numeric_limits<double>::infinity();
+    auto time_var = physics_.time_names()[0];
+    auto current_time = physics_.get_time(time_var);
+
+    for (const auto& rc : state_.recurring_commands) {
+        if (rc.unit == "n") continue;  // Iteration-based tasks don't constrain dt
+
+        auto current = physics_.get_time(rc.unit);
+        auto last = rc.last_executed.value_or(current);
+        auto next_due = last + rc.interval;
+        auto time_until = next_due - current;
+
+        if (time_until > 0 && time_until < dt_max) {
+            dt_max = time_until;
+        }
+    }
+
+    return dt_max;
 }
 
 MIST_INLINE void engine_t::execute_recurring_commands(emit_fn emit) {
@@ -179,12 +200,15 @@ MIST_INLINE void engine_t::advance_to_target(const std::string& var, double targ
     if (var == "n") {
         auto target_n = static_cast<int>(target);
         while (state_.iteration < target_n && !guard.is_interrupted()) {
-            do_timestep();
+            auto dt_max = time_to_next_task();
+            do_timestep(dt_max);
             execute_recurring_commands(emit);
         }
     } else {
         while (physics_.get_time(var) < target && !guard.is_interrupted()) {
-            do_timestep();
+            auto time_to_target = target - physics_.get_time(var);
+            auto dt_max = std::min(time_to_target, time_to_next_task());
+            do_timestep(dt_max);
             execute_recurring_commands(emit);
         }
     }

@@ -89,8 +89,9 @@ private:
     double last_dt_ = 0.0;
 
     auto make_iteration_status() const -> resp::iteration_status;
+    auto time_to_next_task() const -> double;
 
-    void do_timestep();
+    void do_timestep(double dt_max);
     void execute_recurring_commands(emit_fn emit);
     void advance_to_target(const std::string& var, double target, emit_fn emit);
 

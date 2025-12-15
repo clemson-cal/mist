@@ -78,11 +78,12 @@ struct compute_local_dt_t {
     double cfl;
     double v;
     double dx;
+    double dt_max;
 
     auto value(patch_t p) const -> patch_t {
         p.v = v;
         p.dx = dx;
-        p.dt = cfl * dx / std::abs(v);
+        p.dt = std::min(cfl * dx / std::abs(v), dt_max);
         return p;
     }
 };
@@ -340,7 +341,7 @@ auto initial_state(const advection::exec_context_t& ctx) -> advection::state_t {
     return {std::move(patches), 0.0};
 }
 
-void advance(advection::state_t& state, const advection::exec_context_t& ctx) {
+void advance(advection::state_t& state, const advection::exec_context_t& ctx, double dt_max) {
     if (ctx.config.rk_order != 1) {
         throw std::runtime_error("only rk_order=1 (forward Euler) is supported");
     }
@@ -352,7 +353,7 @@ void advance(advection::state_t& state, const advection::exec_context_t& ctx) {
     if (ctx.config.use_flux_buffer) { // Use of separate flux buffer (poor scaling)
         auto pipeline = parallel::pipeline(
             ghost_exchange_t{},
-            compute_local_dt_t{cfl, v, dx},
+            compute_local_dt_t{cfl, v, dx, dt_max},
             compute_flux_t{},
             update_conserved_t{}
         );
@@ -360,7 +361,7 @@ void advance(advection::state_t& state, const advection::exec_context_t& ctx) {
     } else { // No use of separate flux buffer (good scaling)
         auto pipeline = parallel::pipeline(
             ghost_exchange_t{},
-            compute_local_dt_t{cfl, v, dx},
+            compute_local_dt_t{cfl, v, dx, dt_max},
             flux_and_update_t{}
         );
         ctx.execute(pipeline, state.patches);

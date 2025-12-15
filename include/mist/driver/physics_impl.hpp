@@ -19,7 +19,8 @@ concept Physics = requires(
     typename P::initial_t ini,
     typename P::state_t s,
     typename P::product_t p,
-    const typename P::exec_context_t& ctx) {
+    const typename P::exec_context_t& ctx,
+    double dt_max) {
     typename P::config_t;
     typename P::initial_t;
     typename P::state_t;
@@ -40,7 +41,7 @@ concept Physics = requires(
     { get_product(s, std::string{}, ctx) } -> std::same_as<typename P::product_t>;
     { get_profiler_data(ctx) } -> std::same_as<std::map<std::string, perf::profile_entry_t>>;
 
-    { advance(s, ctx) } -> std::same_as<void>;
+    { advance(s, ctx, dt_max) } -> std::same_as<void>;
 };
 
 // =============================================================================
@@ -48,7 +49,7 @@ concept Physics = requires(
 // =============================================================================
 
 template<typename State, typename Ctx>
-void adl_advance(State& s, const Ctx& ctx) { advance(s, ctx); }
+void adl_advance(State& s, const Ctx& ctx, double dt_max) { advance(s, ctx, dt_max); }
 
 template<typename State>
 auto adl_get_time(const State& s, const std::string& var) -> double { return get_time(s, var); }
@@ -113,11 +114,11 @@ public:
     // Stepping
     // -------------------------------------------------------------------------
 
-    void advance() override {
+    void advance(double dt_max = std::numeric_limits<double>::infinity()) override {
         if (!state_.has_value()) {
             throw std::runtime_error("state not initialized");
         }
-        adl_advance(*state_, *exec_context_);
+        adl_advance(*state_, *exec_context_, dt_max);
     }
 
     auto get_time(const std::string& var) const -> double override {

@@ -364,6 +364,7 @@ struct compute_local_dt_t {
     double cfl;
     double dx;
     double plm_theta;
+    double dt_max;
 
     auto value(patch_t p) const -> patch_t {
         p.dx = dx;
@@ -372,7 +373,7 @@ struct compute_local_dt_t {
         auto wavespeeds = lazy(p.interior, [&p](ivec_t<1> i) {
             return max_wavespeed(p.prim(i));
         });
-        p.dt = cfl * dx / max(wavespeeds);
+        p.dt = std::min(cfl * dx / max(wavespeeds), dt_max);
         return p;
     }
 };
@@ -702,14 +703,14 @@ auto initial_state(const srhd::exec_context_t& ctx) -> srhd::state_t {
     return {std::move(patches), 0.0};
 }
 
-void advance(srhd::state_t& state, const srhd::exec_context_t& ctx) {
+void advance(srhd::state_t& state, const srhd::exec_context_t& ctx, double dt_max) {
     auto& ini = ctx.initial;
     auto& cfg = ctx.config;
     auto dx = ini.domain_length / ini.num_zones;
 
     auto new_step = parallel::pipeline(
         cons_to_prim_t{},
-        compute_local_dt_t{cfg.cfl, dx, cfg.plm_theta},
+        compute_local_dt_t{cfg.cfl, dx, cfg.plm_theta, dt_max},
         global_dt_t{},
         cache_rk_t{}
     );
