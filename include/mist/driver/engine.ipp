@@ -10,6 +10,76 @@
 namespace mist::driver {
 
 // =============================================================================
+// Help text
+// =============================================================================
+
+MIST_INLINE const char* help_text = R"(
+  ---------------------------------------------------------------------------
+  Stepping
+  ---------------------------------------------------------------------------
+    n++                            - Advance by 1 iteration
+    n += 10                        - Advance by 10 iterations
+    n -> 1000                      - Advance to iteration 1000
+    t += 10.0                      - Advance time by exactly 10.0
+    t -> 20.0                      - Advance time to exactly 20.0
+    orbit += 3.0                   - Advance until orbit increases by 3.0
+    orbit -> 60.0                  - Advance until orbit reaches 60.0
+
+  ---------------------------------------------------------------------------
+  Configuration
+  ---------------------------------------------------------------------------
+    set output=ascii               - Set output format (ascii|binary|hdf5)
+    set physics key=val            - Set physics config parameter
+    set initial key=val            - Set initial data parameter
+    set exec key=val               - Set execution parameter (e.g. num_threads)
+    select products [prod1 ...]    - Select products (no args = all)
+    select timeseries [col1 ...]   - Select timeseries columns (no args = all)
+
+  ---------------------------------------------------------------------------
+  State management
+  ---------------------------------------------------------------------------
+    init                           - Generate initial state from config
+    reset                          - Reset driver and clear physics state
+    load <file>                    - Load checkpoint or config file
+
+  ---------------------------------------------------------------------------
+  Sampling
+  ---------------------------------------------------------------------------
+    do timeseries                  - Record timeseries sample
+
+  ---------------------------------------------------------------------------
+  File I/O
+  ---------------------------------------------------------------------------
+    write physics <file>           - Write physics config
+    write initial <file>           - Write initial config
+    write driver <file>            - Write driver state
+    write profiler <file>          - Write profiler data
+    write timeseries [file]        - Write timeseries
+    write checkpoint [file]        - Write checkpoint
+    write products [file]          - Write products
+
+  ---------------------------------------------------------------------------
+  Recurring commands
+  ---------------------------------------------------------------------------
+    repeat <interval> <unit> <cmd> - Execute command every interval
+    repeat list                    - Show recurring commands
+    clear repeat                   - Clear all recurring commands
+
+  ---------------------------------------------------------------------------
+  Information
+  ---------------------------------------------------------------------------
+    show                           - Show state summary
+    show physics                   - Show physics configuration
+    show initial                   - Show initial configuration
+    show products                  - Show available and selected products
+    show timeseries                - Show timeseries data
+    show driver                    - Show driver state
+    show profiler                  - Show profiler
+    help                           - Show this help
+    stop | quit | q                - Exit simulation
+)";
+
+// =============================================================================
 // Signal handling
 // =============================================================================
 
@@ -159,22 +229,17 @@ MIST_INLINE void engine_t::write_profiler(std::ostream& os, output_format fmt) {
     }
 }
 
-MIST_INLINE void engine_t::write_profiler_info(std::ostream& os) {
+MIST_INLINE void engine_t::write_profiler_info(std::ostream& os, const color::scheme_t& c) {
     auto data = physics_.profiler_data();
-    auto sorted = std::vector<std::pair<std::string, perf::profile_entry_t>>(
-        data.begin(), data.end());
-    std::sort(sorted.begin(), sorted.end(),
-        [](const auto& a, const auto& b) { return a.second.time > b.second.time; });
+    auto total_time = 0.0;
+    auto entries = std::vector<resp::profiler_entry>{};
 
-    os << std::left << std::setw(24) << "# stage"
-       << std::right << std::setw(12) << "count"
-       << std::setw(16) << "time[s]" << "\n";
-
-    for (const auto& [name, entry] : sorted) {
-        os << std::left << std::setw(24) << name
-           << std::right << std::setw(12) << entry.count
-           << std::setw(16) << std::scientific << std::setprecision(3) << entry.time << "\n";
+    for (const auto& [name, entry] : data) {
+        entries.push_back({name, entry.count, entry.time});
+        total_time += entry.time;
     }
+
+    format(os, c, resp::profiler_info{entries, total_time});
 }
 
 MIST_INLINE void engine_t::write_timeseries(std::ostream& os, output_format fmt) {
@@ -187,34 +252,19 @@ MIST_INLINE void engine_t::write_timeseries(std::ostream& os, output_format fmt)
     }
 }
 
-MIST_INLINE void engine_t::write_timeseries_info(std::ostream& os) {
-    if (state_.timeseries.empty()) return;
+MIST_INLINE void engine_t::write_timeseries_info(std::ostream& os, const color::scheme_t& c) {
+    auto info = resp::timeseries_info{};
 
-    // Write header
-    os << "#";
+    // Get available columns from physics
+    info.available = physics_.timeseries_names();
+
+    // Selected columns are the keys in the timeseries map
     for (const auto& [col, values] : state_.timeseries) {
-        os << std::setw(20) << col;
-    }
-    os << "\n";
-
-    // Find max rows
-    auto max_rows = std::size_t{0};
-    for (const auto& [col, values] : state_.timeseries) {
-        max_rows = std::max(max_rows, values.size());
+        info.selected.push_back(col);
+        info.counts[col] = values.size();
     }
 
-    // Write data rows
-    for (std::size_t i = 0; i < max_rows; ++i) {
-        os << " ";
-        for (const auto& [col, values] : state_.timeseries) {
-            if (i < values.size()) {
-                os << std::setw(20) << std::scientific << std::setprecision(10) << values[i];
-            } else {
-                os << std::setw(20) << "";
-            }
-        }
-        os << "\n";
-    }
+    format(os, c, info);
 }
 
 MIST_INLINE void engine_t::write_checkpoint(std::ostream& os, output_format fmt) {
@@ -232,22 +282,8 @@ MIST_INLINE void engine_t::write_products(std::ostream& os, output_format fmt) {
     physics_.write_products(os, fmt, state_.selected_products);
 }
 
-MIST_INLINE void engine_t::write_iteration_info(std::ostream& os) {
-    os << "[" << std::setw(6) << std::setfill('0') << state_.iteration << "] ";
-
-    for (const auto& name : physics_.time_names()) {
-        os << name << "=" << std::scientific << std::showpos << std::setprecision(6)
-           << physics_.get_time(name) << std::noshowpos << " ";
-    }
-
-    os << "dt=" << std::scientific << std::setprecision(6) << last_dt_ << " ";
-
-    auto wall_elapsed = get_wall_time() - command_start_wall_time_;
-    auto iter_elapsed = state_.iteration - command_start_iteration_;
-    auto zps = (wall_elapsed > 0)
-        ? (iter_elapsed * physics_.zone_count()) / wall_elapsed
-        : 0.0;
-    os << "zps=" << std::scientific << std::setprecision(2) << zps << "\n";
+MIST_INLINE void engine_t::write_iteration_info(std::ostream& os, const color::scheme_t& c) {
+    format(os, c, make_iteration_status());
 }
 
 // -----------------------------------------------------------------------------
@@ -666,7 +702,7 @@ MIST_INLINE void engine_t::handle(const cmd::show_driver&, emit_fn emit) {
 }
 
 MIST_INLINE void engine_t::handle(const cmd::help&, emit_fn emit) {
-    emit(resp::help_text{});
+    emit(resp::help_text{help_text});
 }
 
 MIST_INLINE void engine_t::handle(const cmd::stop&, emit_fn emit) {

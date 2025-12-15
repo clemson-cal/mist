@@ -6,6 +6,7 @@
 #include <functional>
 #include <iomanip>
 #include <sstream>
+#include <unistd.h>
 #include "command.hpp"
 #include "physics_interface.hpp"
 #include "response.hpp"
@@ -76,9 +77,9 @@ public:
     void write_products(std::ostream& os, output_format fmt);
 
     // Human-readable info methods (for show commands / REPL display)
-    void write_iteration_info(std::ostream& os);
-    void write_profiler_info(std::ostream& os);
-    void write_timeseries_info(std::ostream& os);
+    void write_iteration_info(std::ostream& os, const color::scheme_t& c);
+    void write_profiler_info(std::ostream& os, const color::scheme_t& c);
+    void write_timeseries_info(std::ostream& os, const color::scheme_t& c);
 
 private:
     state_t& state_;

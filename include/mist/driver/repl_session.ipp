@@ -9,76 +9,6 @@
 namespace mist::driver {
 
 // =============================================================================
-// Help text
-// =============================================================================
-
-MIST_INLINE const char* help_text = R"(
-  ---------------------------------------------------------------------------
-  Stepping
-  ---------------------------------------------------------------------------
-    n++                            - Advance by 1 iteration
-    n += 10                        - Advance by 10 iterations
-    n -> 1000                      - Advance to iteration 1000
-    t += 10.0                      - Advance time by exactly 10.0
-    t -> 20.0                      - Advance time to exactly 20.0
-    orbit += 3.0                   - Advance until orbit increases by 3.0
-    orbit -> 60.0                  - Advance until orbit reaches 60.0
-
-  ---------------------------------------------------------------------------
-  Configuration
-  ---------------------------------------------------------------------------
-    set output=ascii               - Set output format (ascii|binary|hdf5)
-    set physics key=val            - Set physics config parameter
-    set initial key=val            - Set initial data parameter
-    set exec key=val               - Set execution parameter (e.g. num_threads)
-    select products [prod1 ...]    - Select products (no args = all)
-    select timeseries [col1 ...]   - Select timeseries columns (no args = all)
-
-  ---------------------------------------------------------------------------
-  State management
-  ---------------------------------------------------------------------------
-    init                           - Generate initial state from config
-    reset                          - Reset driver and clear physics state
-    load <file>                    - Load checkpoint or config file
-
-  ---------------------------------------------------------------------------
-  Sampling
-  ---------------------------------------------------------------------------
-    do timeseries                  - Record timeseries sample
-
-  ---------------------------------------------------------------------------
-  File I/O
-  ---------------------------------------------------------------------------
-    write physics <file>           - Write physics config
-    write initial <file>           - Write initial config
-    write driver <file>            - Write driver state
-    write profiler <file>          - Write profiler data
-    write timeseries [file]        - Write timeseries
-    write checkpoint [file]        - Write checkpoint
-    write products [file]          - Write products
-
-  ---------------------------------------------------------------------------
-  Recurring commands
-  ---------------------------------------------------------------------------
-    repeat <interval> <unit> <cmd> - Execute command every interval
-    repeat list                    - Show recurring commands
-    clear repeat                   - Clear all recurring commands
-
-  ---------------------------------------------------------------------------
-  Information
-  ---------------------------------------------------------------------------
-    show                           - Show state summary
-    show physics                   - Show physics configuration
-    show initial                   - Show initial configuration
-    show products                  - Show available and selected products
-    show timeseries                - Show timeseries data
-    show driver                    - Show driver state
-    show profiler                  - Show profiler
-    help                           - Show this help
-    stop | quit | q                - Exit simulation
-)";
-
-// =============================================================================
 // Command parsing
 // =============================================================================
 
@@ -304,8 +234,8 @@ MIST_INLINE repl_session_t::repl_session_t(engine_t& engine, std::ostream& out, 
     : engine_(engine)
     , out_(out)
     , err_(err)
-    , colors_(color::auto_scheme(out))
-    , err_colors_(color::auto_scheme(err))
+    , colors_(color::for_stream(out))
+    , err_colors_(color::for_stream(err))
     , is_tty_(isatty(STDIN_FILENO))
 {
     setup_readline();
@@ -509,165 +439,20 @@ MIST_INLINE void repl_session_t::show_recurring_commands() {
 }
 
 MIST_INLINE void repl_session_t::format_response(const response_t& r) {
-    std::visit([this](const auto& resp) { format(resp); }, r);
-}
-
-MIST_INLINE void repl_session_t::format(const resp::ok& r) {
-    out_ << colors_.info << r.message << colors_.reset << "\n";
-}
-
-MIST_INLINE void repl_session_t::format(const resp::error& r) {
-    err_ << err_colors_.error << "error: " << err_colors_.reset << r.what << "\n";
-    had_error_ = true;
-}
-
-MIST_INLINE void repl_session_t::format(const resp::interrupted&) {
-    err_ << "\n" << err_colors_.warning << "interrupted" << err_colors_.reset << "\n";
-}
-
-MIST_INLINE void repl_session_t::format(const resp::stopped&) {
-    out_ << "\n" << colors_.header << "=== Session Complete ===" << colors_.reset << "\n";
-    should_stop_ = true;
-}
-
-MIST_INLINE void repl_session_t::format(const resp::state_info& r) {
-    out_ << colors_.label << "physics state: " << colors_.reset;
-    if (r.initialized) {
-        out_ << colors_.selected << "initialized" << colors_.reset;
-        out_ << " (" << colors_.value << r.zone_count << colors_.reset << " zones)";
-        for (const auto& [name, value] : r.times) {
-            out_ << " " << colors_.label << name << "=" << colors_.reset
-                 << colors_.value << std::scientific << std::setprecision(6) << value << colors_.reset;
-        }
-    } else {
-        out_ << colors_.unselected << "none" << colors_.reset;
-    }
-    out_ << "\n";
-}
-
-MIST_INLINE void repl_session_t::format(const resp::iteration_status& r) {
-    out_ << colors_.iteration << "[" << std::setw(6) << std::setfill('0')
-         << r.n << "]" << colors_.reset << " ";
-
-    for (const auto& [name, value] : r.times) {
-        out_ << colors_.label << name << "=" << colors_.reset
-             << colors_.value << std::scientific << std::showpos << std::setprecision(6)
-             << value << std::noshowpos << colors_.reset << " ";
-    }
-
-    out_ << colors_.label << "dt=" << colors_.reset
-         << colors_.value << std::scientific << std::setprecision(6) << r.dt << colors_.reset << " ";
-    out_ << colors_.label << "zps=" << colors_.reset
-         << colors_.value << std::scientific << std::setprecision(2) << r.zps << colors_.reset << "\n";
-}
-
-MIST_INLINE void repl_session_t::format(const resp::timeseries_sample& r) {
-    out_ << colors_.info << "recorded sample" << colors_.reset << " (";
-    auto first = true;
-    for (const auto& [name, value] : r.values) {
-        if (!first) out_ << ", ";
-        out_ << colors_.label << name << "=" << colors_.reset
-             << colors_.value << std::scientific << std::setprecision(6) << value << colors_.reset;
-        first = false;
-    }
-    out_ << ")\n";
-}
-
-MIST_INLINE void repl_session_t::format(const resp::physics_config& r) {
-    out_ << r.text;
-}
-
-MIST_INLINE void repl_session_t::format(const resp::initial_config& r) {
-    out_ << r.text;
-}
-
-MIST_INLINE void repl_session_t::format(const resp::driver_state& r) {
-    out_ << r.text;
-}
-
-MIST_INLINE void repl_session_t::format(const resp::help_text&) {
-    out_ << help_text << "\n";
-}
-
-MIST_INLINE void repl_session_t::format(const resp::timeseries_info& r) {
-    out_ << colors_.header << "Timeseries:" << colors_.reset << "\n";
-    for (const auto& col : r.available) {
-        auto it = std::find(r.selected.begin(), r.selected.end(), col);
-        auto is_selected = (it != r.selected.end());
-        if (is_selected) {
-            auto count_it = r.counts.find(col);
-            auto count = (count_it != r.counts.end()) ? count_it->second : 0;
-            out_ << "  - " << colors_.selected << "[+]" << colors_.reset << " "
-                 << colors_.key << col << colors_.reset
-                 << " (" << colors_.value << count << colors_.reset << " samples)\n";
+    std::visit([this](const auto& resp) {
+        using T = std::decay_t<decltype(resp)>;
+        if constexpr (std::is_same_v<T, resp::error>) {
+            format(err_, err_colors_, resp);
+            had_error_ = true;
+        } else if constexpr (std::is_same_v<T, resp::interrupted>) {
+            format(err_, err_colors_, resp);
+        } else if constexpr (std::is_same_v<T, resp::stopped>) {
+            format(out_, colors_, resp);
+            should_stop_ = true;
         } else {
-            out_ << "  - " << colors_.unselected << "[ ] " << col << colors_.reset << "\n";
+            format(out_, colors_, resp);
         }
-    }
-}
-
-MIST_INLINE void repl_session_t::format(const resp::products_info& r) {
-    out_ << colors_.header << "Products:" << colors_.reset << "\n";
-    for (const auto& prod : r.available) {
-        auto is_selected = std::find(r.selected.begin(), r.selected.end(), prod) != r.selected.end();
-        if (is_selected) {
-            out_ << "  - " << colors_.selected << "[+]" << colors_.reset << " "
-                 << colors_.key << prod << colors_.reset << "\n";
-        } else {
-            out_ << "  - " << colors_.unselected << "[ ] " << prod << colors_.reset << "\n";
-        }
-    }
-}
-
-MIST_INLINE void repl_session_t::format(const resp::profiler_info& r) {
-    if (r.entries.empty()) return;
-
-    const int col_stage = 24;
-    const int col_count = 10;
-    const int col_time = 12;
-    const int col_pct = 8;
-    const int table_width = col_stage + col_count + col_time + col_pct + 7;
-    auto sep = std::string(table_width, '-');
-
-    out_ << "\n" << colors_.header << "Profiler" << colors_.reset << "\n";
-    out_ << colors_.unselected << sep << colors_.reset << "\n";
-
-    out_ << colors_.label
-         << std::left << std::setw(col_stage) << " stage"
-         << std::right << std::setw(col_count) << "count"
-         << std::setw(col_time) << "time[s]"
-         << std::setw(col_pct) << "%"
-         << colors_.reset << "\n";
-
-    out_ << colors_.unselected << sep << colors_.reset << "\n";
-
-    for (const auto& entry : r.entries) {
-        auto pct = (r.total_time > 0) ? 100.0 * entry.time / r.total_time : 0.0;
-        out_ << " " << colors_.value << std::left << std::setw(col_stage - 1) << entry.name << colors_.reset
-             << colors_.iteration << std::right << std::setw(col_count) << entry.count << colors_.reset
-             << colors_.info << std::setw(col_time) << std::fixed << std::setprecision(4) << entry.time << colors_.reset
-             << colors_.warning << std::setw(col_pct - 1) << std::fixed << std::setprecision(1) << pct << "%" << colors_.reset
-             << "\n";
-    }
-
-    out_ << colors_.unselected << sep << colors_.reset << "\n";
-
-    auto total_count = std::size_t{0};
-    for (const auto& e : r.entries) total_count += e.count;
-
-    out_ << colors_.header
-         << std::left << std::setw(col_stage) << " TOTAL"
-         << std::right << std::setw(col_count) << total_count
-         << std::setw(col_time) << std::fixed << std::setprecision(4) << r.total_time
-         << std::setw(col_pct) << "100.0%"
-         << colors_.reset << "\n";
-
-    out_ << colors_.unselected << sep << colors_.reset << "\n\n";
-}
-
-MIST_INLINE void repl_session_t::format(const resp::wrote_file& r) {
-    out_ << colors_.info << "wrote " << colors_.value << r.filename
-         << colors_.reset << " (" << r.bytes << " bytes)\n";
+    }, r);
 }
 
 } // namespace mist::driver
