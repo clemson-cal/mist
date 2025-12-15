@@ -88,7 +88,7 @@ private:
     int command_start_iteration_;
     double last_dt_ = 0.0;
 
-    auto make_iteration_status() const -> resp::iteration_status;
+    auto make_iteration_info() const -> resp::iteration_info;
     auto time_to_next_task() const -> double;
 
     void do_timestep(double dt_max);
@@ -111,6 +111,7 @@ private:
     void handle(const cmd::write_timeseries& c, emit_fn emit);
     void handle(const cmd::write_checkpoint& c, emit_fn emit);
     void handle(const cmd::write_products& c, emit_fn emit);
+    void handle(const cmd::write_iteration& c, emit_fn emit);
     void handle(const cmd::repeat_add& c, emit_fn emit);
     void handle(const cmd::clear_repeat& c, emit_fn emit);
     void handle(const cmd::init& c, emit_fn emit);
@@ -120,11 +121,13 @@ private:
     void handle(const cmd::show_all& c, emit_fn emit);
     void handle(const cmd::show_physics& c, emit_fn emit);
     void handle(const cmd::show_initial& c, emit_fn emit);
+    void handle(const cmd::show_iteration& c, emit_fn emit);
     void handle(const cmd::show_timeseries& c, emit_fn emit);
     void handle(const cmd::show_products& c, emit_fn emit);
     void handle(const cmd::show_profiler& c, emit_fn emit);
     void handle(const cmd::show_driver& c, emit_fn emit);
     void handle(const cmd::help& c, emit_fn emit);
+    void handle(const cmd::help_schema& c, emit_fn emit);
     void handle(const cmd::stop& c, emit_fn emit);
 };
 

@@ -114,6 +114,12 @@ struct write_products {
     auto fields() { return std::make_tuple(field("dest", dest)); }
 };
 
+struct write_iteration {
+    std::optional<std::string> dest;
+    auto fields() const { return std::make_tuple(field("dest", dest)); }
+    auto fields() { return std::make_tuple(field("dest", dest)); }
+};
+
 struct repeat_add; // forward declaration - defined after command_t
 
 struct clear_repeat {
@@ -157,6 +163,11 @@ struct show_initial {
     auto fields() { return std::make_tuple(); }
 };
 
+struct show_iteration {
+    auto fields() const { return std::make_tuple(); }
+    auto fields() { return std::make_tuple(); }
+};
+
 struct show_timeseries {
     auto fields() const { return std::make_tuple(); }
     auto fields() { return std::make_tuple(); }
@@ -178,6 +189,11 @@ struct show_driver {
 };
 
 struct help {
+    auto fields() const { return std::make_tuple(); }
+    auto fields() { return std::make_tuple(); }
+};
+
+struct help_schema {
     auto fields() const { return std::make_tuple(); }
     auto fields() { return std::make_tuple(); }
 };
@@ -210,6 +226,7 @@ using command_t = std::variant<
     cmd::write_timeseries,
     cmd::write_checkpoint,
     cmd::write_products,
+    cmd::write_iteration,
     cmd::clear_repeat,
     cmd::init,
     cmd::reset,
@@ -218,11 +235,13 @@ using command_t = std::variant<
     cmd::show_all,
     cmd::show_physics,
     cmd::show_initial,
+    cmd::show_iteration,
     cmd::show_timeseries,
     cmd::show_products,
     cmd::show_profiler,
     cmd::show_driver,
     cmd::help,
+    cmd::help_schema,
     cmd::stop
 >;
 
@@ -269,10 +288,12 @@ inline auto is_repeatable(const command_t& cmd) -> bool {
             || std::is_same_v<T, cmd::write_timeseries>
             || std::is_same_v<T, cmd::write_checkpoint>
             || std::is_same_v<T, cmd::write_products>
+            || std::is_same_v<T, cmd::write_iteration>
             || std::is_same_v<T, cmd::show_message>
             || std::is_same_v<T, cmd::show_all>
             || std::is_same_v<T, cmd::show_physics>
             || std::is_same_v<T, cmd::show_initial>
+            || std::is_same_v<T, cmd::show_iteration>
             || std::is_same_v<T, cmd::show_timeseries>
             || std::is_same_v<T, cmd::show_products>
             || std::is_same_v<T, cmd::show_profiler>

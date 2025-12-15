@@ -150,6 +150,9 @@ MIST_INLINE auto parse_command(std::string_view input) -> parsed_command_t {
         if (what == "products") {
             return {cmd::write_products{has_dest ? std::optional{dest} : std::nullopt}, {}, {}};
         }
+        if (what == "iteration") {
+            return {cmd::write_iteration{has_dest ? std::optional{dest} : std::nullopt}, {}, {}};
+        }
         return {{}, {}, "unknown: write " + what};
     }
 
@@ -212,6 +215,7 @@ MIST_INLINE auto parse_command(std::string_view input) -> parsed_command_t {
         if (what == "message") return {cmd::show_message{}, {}, {}};
         if (what == "physics") return {cmd::show_physics{}, {}, {}};
         if (what == "initial") return {cmd::show_initial{}, {}, {}};
+        if (what == "iteration") return {cmd::show_iteration{}, {}, {}};
         if (what == "timeseries") return {cmd::show_timeseries{}, {}, {}};
         if (what == "products") return {cmd::show_products{}, {}, {}};
         if (what == "profiler") return {cmd::show_profiler{}, {}, {}};
@@ -220,7 +224,12 @@ MIST_INLINE auto parse_command(std::string_view input) -> parsed_command_t {
     }
 
     // help / stop
-    if (first == "help") return {cmd::help{}, {}, {}};
+    if (first == "help") {
+        auto what = std::string{};
+        iss >> what;
+        if (what == "schema") return {cmd::help_schema{}, {}, {}};
+        return {cmd::help{}, {}, {}};
+    }
     if (first == "stop" || first == "quit" || first == "q") return {cmd::stop{}, {}, {}};
 
     return {{}, {}, "unknown command: " + first};

@@ -57,6 +57,7 @@ MIST_INLINE const char* help_text = R"(
     write timeseries [file]        - Write timeseries
     write checkpoint [file]        - Write checkpoint
     write products [file]          - Write products
+    write iteration [file]         - Write iteration info
 
   ---------------------------------------------------------------------------
   Recurring commands
@@ -71,12 +72,60 @@ MIST_INLINE const char* help_text = R"(
     show                           - Show state summary
     show physics                   - Show physics configuration
     show initial                   - Show initial configuration
+    show iteration                 - Show iteration info (n, t, dt, zps)
     show products                  - Show available and selected products
-    show timeseries                - Show timeseries data
+    show timeseries                - Show timeseries columns
     show driver                    - Show driver state
     show profiler                  - Show profiler
     help                           - Show this help
+    help schema                    - Show command/response schema
     stop | quit | q                - Exit simulation
+)";
+
+MIST_INLINE const char* schema_text = R"(
+Commands:
+  advance_by        { var: string, delta: double }
+  advance_to        { var: string, target: double }
+  set_output        { format: string }
+  set_physics       { key: string, value: string }
+  set_initial       { key: string, value: string }
+  set_exec          { key: string, value: string }
+  select_timeseries { cols: [string] }
+  select_products   { prods: [string] }
+  do_timeseries     { }
+  write_physics     { dest: string }
+  write_initial     { dest: string }
+  write_driver      { dest: string }
+  write_profiler    { dest: string }
+  write_timeseries  { dest?: string }
+  write_checkpoint  { dest?: string }
+  write_products    { dest?: string }
+  write_iteration   { dest?: string }
+  repeat_add        { interval: double, unit: string, sub_command: command }
+  clear_repeat      { }
+  init              { }
+  reset             { }
+  load              { filename: string }
+  show_*            { }
+  help              { }
+  stop              { }
+
+Responses:
+  ok                { message: string }
+  error             { what: string }
+  interrupted       { }
+  stopped           { }
+  state_info        { initialized: bool, zone_count: int, times: {string: double} }
+  iteration_info    { n: int, times: {string: double}, dt: double, zps: double }
+  timeseries_sample { values: {string: double} }
+  physics_config    { text: string }
+  initial_config    { text: string }
+  driver_state      { text: string }
+  help_text         { text: string }
+  timeseries_info   { available: [string], selected: [string], counts: {string: int} }
+  products_info     { available: [string], selected: [string] }
+  profiler_info     { entries: [{name, count, time}], total_time: double }
+  wrote_file        { filename: string, bytes: int }
 )";
 
 // =============================================================================
@@ -123,23 +172,23 @@ MIST_INLINE void engine_t::execute(const cmd::repeat_add& cmd, emit_fn emit) {
     handle(cmd, emit);
 }
 
-MIST_INLINE auto engine_t::make_iteration_status() const -> resp::iteration_status {
-    auto status = resp::iteration_status{};
-    status.n = state_.iteration;
+MIST_INLINE auto engine_t::make_iteration_info() const -> resp::iteration_info {
+    auto info = resp::iteration_info{};
+    info.n = state_.iteration;
 
     for (const auto& name : physics_.time_names()) {
-        status.times[name] = physics_.get_time(name);
+        info.times[name] = physics_.get_time(name);
     }
 
-    status.dt = last_dt_;
+    info.dt = last_dt_;
 
     auto wall_elapsed = get_wall_time() - command_start_wall_time_;
     auto iter_elapsed = state_.iteration - command_start_iteration_;
-    status.zps = (wall_elapsed > 0)
+    info.zps = (wall_elapsed > 0)
         ? (iter_elapsed * physics_.zone_count()) / wall_elapsed
         : 0.0;
 
-    return status;
+    return info;
 }
 
 MIST_INLINE void engine_t::do_timestep(double dt_max) {
@@ -153,14 +202,13 @@ MIST_INLINE void engine_t::do_timestep(double dt_max) {
 
 MIST_INLINE auto engine_t::time_to_next_task() const -> double {
     auto dt_max = std::numeric_limits<double>::infinity();
-    auto time_var = physics_.time_names()[0];
-    auto current_time = physics_.get_time(time_var);
 
     for (const auto& rc : state_.recurring_commands) {
         if (rc.unit == "n") continue;  // Iteration-based tasks don't constrain dt
 
         auto current = physics_.get_time(rc.unit);
-        auto last = rc.last_executed.value_or(current);
+        // Use same initialization as execute_recurring_commands: -interval if not set
+        auto last = rc.last_executed.value_or(-rc.interval);
         auto next_due = last + rc.interval;
         auto time_until = next_due - current;
 
@@ -179,11 +227,13 @@ MIST_INLINE void engine_t::execute_recurring_commands(emit_fn emit) {
             : physics_.get_time(rc.unit);
 
         if (!rc.last_executed.has_value()) {
-            rc.last_executed = current;
+            // Initialize to -interval so first check triggers at first multiple >= 0
+            rc.last_executed = -rc.interval;
         }
 
         if (current >= *rc.last_executed + rc.interval) {
-            execute(rc.sub_command, emit);
+            // Use handle() directly to preserve command_start timing for zps calculation
+            std::visit([this, &emit](const auto& c) { handle(c, emit); }, rc.sub_command);
             rc.last_executed = current;
         }
     }
@@ -197,6 +247,9 @@ MIST_INLINE void engine_t::advance_to_target(const std::string& var, double targ
 
     auto guard = signal::interrupt_guard_t{};
 
+    // Check recurring commands at initial state (e.g., t=0 or n=0)
+    execute_recurring_commands(emit);
+
     if (var == "n") {
         auto target_n = static_cast<int>(target);
         while (state_.iteration < target_n && !guard.is_interrupted()) {
@@ -205,7 +258,8 @@ MIST_INLINE void engine_t::advance_to_target(const std::string& var, double targ
             execute_recurring_commands(emit);
         }
     } else {
-        while (physics_.get_time(var) < target && !guard.is_interrupted()) {
+        auto eps = 1e-12 * std::abs(target);
+        while (physics_.get_time(var) < target - eps && !guard.is_interrupted()) {
             auto time_to_target = target - physics_.get_time(var);
             auto dt_max = std::min(time_to_target, time_to_next_task());
             do_timestep(dt_max);
@@ -215,9 +269,9 @@ MIST_INLINE void engine_t::advance_to_target(const std::string& var, double targ
 
     if (guard.is_interrupted()) {
         emit(resp::interrupted{});
+    } else {
+        emit(resp::ok{"done"});
     }
-
-    emit(make_iteration_status());
 }
 
 // -----------------------------------------------------------------------------
@@ -307,7 +361,7 @@ MIST_INLINE void engine_t::write_products(std::ostream& os, output_format fmt) {
 }
 
 MIST_INLINE void engine_t::write_iteration_info(std::ostream& os, const color::scheme_t& c) {
-    format(os, c, make_iteration_status());
+    format(os, c, make_iteration_info());
 }
 
 // -----------------------------------------------------------------------------
@@ -563,6 +617,25 @@ MIST_INLINE void engine_t::handle(const cmd::write_products& c, emit_fn emit) {
     emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
 }
 
+MIST_INLINE void engine_t::handle(const cmd::write_iteration& c, emit_fn emit) {
+    if (!physics_.has_state()) {
+        emit(resp::error{"physics state not initialized; use 'init' first"});
+        return;
+    }
+
+    if (c.dest) {
+        auto file = std::ofstream{*c.dest};
+        if (!file) {
+            emit(resp::error{"failed to open " + *c.dest});
+            return;
+        }
+        write_iteration_info(file, color::disabled());
+        emit(resp::wrote_file{*c.dest, static_cast<std::size_t>(file.tellp())});
+    } else {
+        emit(make_iteration_info());
+    }
+}
+
 MIST_INLINE void engine_t::handle(const cmd::repeat_add& c, emit_fn emit) {
     if (!is_repeatable(c.sub_command)) {
         emit(resp::error{"command is not repeatable"});
@@ -606,8 +679,12 @@ MIST_INLINE void engine_t::handle(const cmd::init&, emit_fn emit) {
 
 MIST_INLINE void engine_t::handle(const cmd::reset&, emit_fn emit) {
     physics_.reset();
-    state_ = state_t{};
-    emit(resp::ok{"reset physics and driver state"});
+    state_.iteration = 0;
+    state_.checkpoint_count = 0;
+    state_.products_count = 0;
+    state_.timeseries_count = 0;
+    state_.timeseries.clear();
+    emit(resp::ok{"reset driver and physics state"});
 }
 
 MIST_INLINE void engine_t::handle(const cmd::load& c, emit_fn emit) {
@@ -686,6 +763,14 @@ MIST_INLINE void engine_t::handle(const cmd::show_initial&, emit_fn emit) {
     emit(resp::initial_config{oss.str()});
 }
 
+MIST_INLINE void engine_t::handle(const cmd::show_iteration&, emit_fn emit) {
+    if (!physics_.has_state()) {
+        emit(resp::error{"physics state not initialized; use 'init' first"});
+        return;
+    }
+    emit(make_iteration_info());
+}
+
 MIST_INLINE void engine_t::handle(const cmd::show_timeseries&, emit_fn emit) {
     auto info = resp::timeseries_info{};
     info.available = physics_.timeseries_names();
@@ -727,6 +812,10 @@ MIST_INLINE void engine_t::handle(const cmd::show_driver&, emit_fn emit) {
 
 MIST_INLINE void engine_t::handle(const cmd::help&, emit_fn emit) {
     emit(resp::help_text{help_text});
+}
+
+MIST_INLINE void engine_t::handle(const cmd::help_schema&, emit_fn emit) {
+    emit(resp::help_text{schema_text});
 }
 
 MIST_INLINE void engine_t::handle(const cmd::stop&, emit_fn emit) {

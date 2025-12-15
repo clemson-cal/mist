@@ -94,7 +94,7 @@ struct state_info {
 
 // --- Iteration ---
 
-struct iteration_status {
+struct iteration_info {
     int n;
     std::map<std::string, double> times;
     double dt;
@@ -191,9 +191,9 @@ inline void format(std::ostream& os, const color::scheme_t& c, const resp::state
     os << "\n";
 }
 
-inline void format(std::ostream& os, const color::scheme_t& c, const resp::iteration_status& r) {
+inline void format(std::ostream& os, const color::scheme_t& c, const resp::iteration_info& r) {
     os << c.iteration << "[" << std::setw(6) << std::setfill('0')
-       << r.n << "]" << c.reset << " ";
+       << r.n << std::setfill(' ') << "]" << c.reset << " ";
 
     for (const auto& [name, value] : r.times) {
         os << c.label << name << "=" << c.reset
@@ -332,7 +332,7 @@ using response_t = std::variant<
     resp::stopped,
     resp::state_info,
     // Iteration
-    resp::iteration_status,
+    resp::iteration_info,
     resp::timeseries_sample,
     // Show (serialized)
     resp::physics_config,
