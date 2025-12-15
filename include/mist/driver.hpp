@@ -26,6 +26,7 @@
 #include "binary_writer.hpp"
 #include "parallel/profiler.hpp"
 #include "serialize.hpp"
+#include "socket.hpp"
 
 // =============================================================================
 // ANSI Color Support
@@ -338,13 +339,18 @@ struct command_t {
         select_products,  // select products [prod1 prod2 ...]
         clear_products,   // clear products
         do_timeseries,    // do timeseries
-        write_timeseries, // write timeseries <filename>
-        write_checkpoint, // write checkpoint [filename]
-        write_products,   // write products [filename]
-        write_profiler,   // write profiler [filename]
+        write_physics,    // write physics <filename|socket>
+        write_initial,    // write initial <filename|socket>
+        write_driver,     // write driver <filename|socket>
+        write_timeseries, // write timeseries [filename|socket]
+        write_checkpoint, // write checkpoint [filename|socket]
+        write_products,   // write products [filename|socket]
+        write_profiler,   // write profiler [filename|socket]
         repeat_add,       // repeat <interval> <unit> <sub-command>
         repeat_list,      // repeat list
         repeat_clear,     // repeat clear
+        open_socket,      // open socket [port]
+        close_socket,     // close socket
         init,             // init
         reset,            // reset
         load,             // load <filename>
@@ -542,11 +548,48 @@ struct command_t {
             return {command_t::type::invalid, {}, {}, {}, {}, {}, "unknown action: do " + action};
         }
     }
-    // write checkpoint|products|timeseries|message [filename|text]
+    // socket open [port] | socket close
+    else if (first == "socket") {
+        auto action = std::string{};
+        iss >> action;
+        if (action == "open") {
+            result.cmd = command_t::type::open_socket;
+            auto port = 0;
+            if (iss >> port) {
+                result.int_value = port;
+            }
+        } else if (action == "close") {
+            result.cmd = command_t::type::close_socket;
+        } else {
+            return {command_t::type::invalid, {}, {}, {}, {}, {}, "unknown: socket " + action};
+        }
+    }
+    // write physics|initial|driver|checkpoint|products|timeseries|profiler [filename|socket]
     else if (first == "write") {
         auto what = std::string{};
         iss >> what;
-        if (what == "checkpoint") {
+        if (what == "physics") {
+            result.cmd = command_t::type::write_physics;
+            auto filename = std::string{};
+            if (!(iss >> filename)) {
+                return {command_t::type::invalid, {}, {}, {}, {}, {}, "write physics requires filename or 'socket'"};
+            }
+            result.string_value = filename;
+        } else if (what == "initial") {
+            result.cmd = command_t::type::write_initial;
+            auto filename = std::string{};
+            if (!(iss >> filename)) {
+                return {command_t::type::invalid, {}, {}, {}, {}, {}, "write initial requires filename or 'socket'"};
+            }
+            result.string_value = filename;
+        } else if (what == "driver") {
+            result.cmd = command_t::type::write_driver;
+            auto filename = std::string{};
+            if (!(iss >> filename)) {
+                return {command_t::type::invalid, {}, {}, {}, {}, {}, "write driver requires filename or 'socket'"};
+            }
+            result.string_value = filename;
+        } else if (what == "checkpoint") {
             result.cmd = command_t::type::write_checkpoint;
             auto filename = std::string{};
             if (iss >> filename) {
@@ -561,9 +604,10 @@ struct command_t {
         } else if (what == "profiler") {
             result.cmd = command_t::type::write_profiler;
             auto filename = std::string{};
-            if (iss >> filename) {
-                result.string_value = filename;
+            if (!(iss >> filename)) {
+                return {command_t::type::invalid, {}, {}, {}, {}, {}, "write profiler requires filename or 'socket'"};
             }
+            result.string_value = filename;
         } else if (what == "timeseries") {
             result.cmd = command_t::type::write_timeseries;
             auto filename = std::string{};
@@ -571,7 +615,7 @@ struct command_t {
                 result.string_value = filename;
             }
         } else {
-            return {command_t::type::invalid, {}, {}, {}, {}, {}, "write requires checkpoint, products, profiler, or timeseries"};
+            return {command_t::type::invalid, {}, {}, {}, {}, {}, "write requires physics, initial, driver, checkpoint, products, profiler, or timeseries"};
         }
     }
     // load <filename>
@@ -717,10 +761,19 @@ inline const char* help_text = R"(
   ---------------------------------------------------------------------------------------
   File I/O
   ---------------------------------------------------------------------------------------
-    write timeseries [file]        - Write timeseries to file
-    write checkpoint [file]        - Write checkpoint to file
-    write products [file]          - Write products to file
-    write message <text>           - Write custom message to stdout
+    write physics <file|socket>    - Write physics config to file or socket
+    write initial <file|socket>    - Write initial config to file or socket
+    write driver <file|socket>     - Write driver state to file or socket
+    write timeseries [file|socket] - Write timeseries to file or socket
+    write checkpoint [file|socket] - Write checkpoint to file or socket
+    write products [file|socket]   - Write products to file or socket
+    write profiler <file|socket>   - Write profiler data to file or socket
+
+  ---------------------------------------------------------------------------------------
+  Socket
+  ---------------------------------------------------------------------------------------
+    socket open [port]             - Open socket server (port 0 = auto-assign)
+    socket close                   - Close socket connection
 
   ---------------------------------------------------------------------------------------
   Recurring commands
@@ -763,6 +816,10 @@ class driver_t {
     double command_start_wall_time = 0.0;
     int command_start_iteration = 0;
     double last_dt = 0.0;
+
+    // Socket for binary output
+    socket_t server_socket_;
+    socket_t client_socket_;
 
 public:
     explicit driver_t(program_t<P>& prog, std::ostream& out = std::cout, std::ostream& err = std::cerr)
@@ -818,13 +875,18 @@ private:
     void handle_select_products(std::vector<std::string> products);
     void handle_clear_products();
     void handle_do_timeseries();
+    void handle_write_physics(const std::string& filename);
+    void handle_write_initial(const std::string& filename);
+    void handle_write_driver(const std::string& filename);
     void handle_write_timeseries(const std::optional<std::string>& filename);
     void handle_write_checkpoint(const std::optional<std::string>& filename);
     void handle_write_products(const std::optional<std::string>& filename);
-    void handle_write_profiler(const std::optional<std::string>& filename);
+    void handle_write_profiler(const std::string& filename);
     void handle_repeat_add(double interval, const std::string& unit, const std::string& sub_cmd);
     void handle_repeat_list();
     void handle_repeat_clear(const std::vector<std::string>& indices);
+    void handle_open_socket(std::optional<int> port);
+    void handle_close_socket();
     void handle_init();
     void handle_reset();
     void handle_load(const std::string& filename);
@@ -954,7 +1016,7 @@ void driver_t<P>::execute_recurring_commands() {
                         handle_write_products(subcmd.string_value);
                         break;
                     case command_t::type::write_profiler:
-                        handle_write_profiler(subcmd.string_value);
+                        handle_write_profiler(subcmd.string_value.value());
                         break;
                     case command_t::type::show_message:
                         handle_show_message();
@@ -1158,10 +1220,141 @@ void driver_t<P>::handle_do_timeseries() {
 }
 
 template<Physics P>
+void driver_t<P>::handle_write_physics(const std::string& filename) {
+    // Handle socket output
+    if (filename == "socket") {
+        if (!client_socket_.is_open()) {
+            *err << err_colors.error << "error: " << err_colors.reset
+                 << "no socket connection; use 'socket open' first\n";
+            return;
+        }
+        auto buffer = std::ostringstream{std::ios::binary};
+        auto writer = binary_writer{buffer};
+        serialize(writer, "physics", prog.physics);
+        auto data = buffer.str();
+        client_socket_.send_with_size(data.data(), data.size());
+        *out << colors.info << "write " << colors.value << "socket"
+             << colors.reset << " (" << data.size() << " bytes)\n";
+        return;
+    }
+
+    const auto format = driver::infer_format_from_filename(filename);
+    if (format == driver::output_format::hdf5) {
+        throw std::runtime_error("HDF5 output format not implemented");
+    }
+
+    auto file = std::ofstream{filename};
+    if (!file) {
+        throw std::runtime_error("failed to open " + filename);
+    }
+    if (format == driver::output_format::ascii) {
+        auto writer = ascii_writer{file};
+        serialize(writer, "physics", prog.physics);
+    } else {
+        auto writer = binary_writer{file};
+        serialize(writer, "physics", prog.physics);
+    }
+    *out << colors.info << "write " << colors.value << filename << colors.reset << "\n";
+}
+
+template<Physics P>
+void driver_t<P>::handle_write_initial(const std::string& filename) {
+    // Handle socket output
+    if (filename == "socket") {
+        if (!client_socket_.is_open()) {
+            *err << err_colors.error << "error: " << err_colors.reset
+                 << "no socket connection; use 'socket open' first\n";
+            return;
+        }
+        auto buffer = std::ostringstream{std::ios::binary};
+        auto writer = binary_writer{buffer};
+        serialize(writer, "initial", prog.initial);
+        auto data = buffer.str();
+        client_socket_.send_with_size(data.data(), data.size());
+        *out << colors.info << "write " << colors.value << "socket"
+             << colors.reset << " (" << data.size() << " bytes)\n";
+        return;
+    }
+
+    const auto format = driver::infer_format_from_filename(filename);
+    if (format == driver::output_format::hdf5) {
+        throw std::runtime_error("HDF5 output format not implemented");
+    }
+
+    auto file = std::ofstream{filename};
+    if (!file) {
+        throw std::runtime_error("failed to open " + filename);
+    }
+    if (format == driver::output_format::ascii) {
+        auto writer = ascii_writer{file};
+        serialize(writer, "initial", prog.initial);
+    } else {
+        auto writer = binary_writer{file};
+        serialize(writer, "initial", prog.initial);
+    }
+    *out << colors.info << "write " << colors.value << filename << colors.reset << "\n";
+}
+
+template<Physics P>
+void driver_t<P>::handle_write_driver(const std::string& filename) {
+    // Handle socket output
+    if (filename == "socket") {
+        if (!client_socket_.is_open()) {
+            *err << err_colors.error << "error: " << err_colors.reset
+                 << "no socket connection; use 'socket open' first\n";
+            return;
+        }
+        auto buffer = std::ostringstream{std::ios::binary};
+        auto writer = binary_writer{buffer};
+        serialize(writer, "driver_state", prog.driver_state);
+        auto data = buffer.str();
+        client_socket_.send_with_size(data.data(), data.size());
+        *out << colors.info << "write " << colors.value << "socket"
+             << colors.reset << " (" << data.size() << " bytes)\n";
+        return;
+    }
+
+    const auto format = driver::infer_format_from_filename(filename);
+    if (format == driver::output_format::hdf5) {
+        throw std::runtime_error("HDF5 output format not implemented");
+    }
+
+    auto file = std::ofstream{filename};
+    if (!file) {
+        throw std::runtime_error("failed to open " + filename);
+    }
+    if (format == driver::output_format::ascii) {
+        auto writer = ascii_writer{file};
+        serialize(writer, "driver_state", prog.driver_state);
+    } else {
+        auto writer = binary_writer{file};
+        serialize(writer, "driver_state", prog.driver_state);
+    }
+    *out << colors.info << "write " << colors.value << filename << colors.reset << "\n";
+}
+
+template<Physics P>
 void driver_t<P>::handle_write_timeseries(const std::optional<std::string>& filename_opt) {
     if (prog.driver_state.timeseries.empty()) {
         *err << err_colors.warning << "no timeseries selected; " << err_colors.reset
              << "use 'select timeseries [names...]'\n";
+        return;
+    }
+
+    // Handle socket output
+    if (filename_opt && *filename_opt == "socket") {
+        if (!client_socket_.is_open()) {
+            *err << err_colors.error << "error: " << err_colors.reset
+                 << "no socket connection; use 'socket open' first\n";
+            return;
+        }
+        auto buffer = std::ostringstream{std::ios::binary};
+        auto writer = binary_writer{buffer};
+        serialize(writer, "timeseries", prog.driver_state.timeseries);
+        auto data = buffer.str();
+        client_socket_.send_with_size(data.data(), data.size());
+        *out << colors.info << "write " << colors.value << "socket"
+             << colors.reset << " (" << data.size() << " bytes)\n";
         return;
     }
 
@@ -1200,6 +1393,23 @@ void driver_t<P>::handle_write_timeseries(const std::optional<std::string>& file
 
 template<Physics P>
 void driver_t<P>::handle_write_checkpoint(const std::optional<std::string>& filename_opt) {
+    // Handle socket output
+    if (filename_opt && *filename_opt == "socket") {
+        if (!client_socket_.is_open()) {
+            *err << err_colors.error << "error: " << err_colors.reset
+                 << "no socket connection; use 'socket open' first\n";
+            return;
+        }
+        auto buffer = std::ostringstream{std::ios::binary};
+        auto writer = binary_writer{buffer};
+        serialize(writer, "checkpoint", prog);
+        auto data = buffer.str();
+        client_socket_.send_with_size(data.data(), data.size());
+        *out << colors.info << "write " << colors.value << "socket"
+             << colors.reset << " (" << data.size() << " bytes)\n";
+        return;
+    }
+
     auto filename = std::string{};
     auto format = driver::output_format{};
 
@@ -1241,6 +1451,28 @@ void driver_t<P>::handle_write_products(const std::optional<std::string>& filena
         return;
     }
 
+    // Handle socket output
+    if (filename_opt && *filename_opt == "socket") {
+        if (!client_socket_.is_open()) {
+            *err << err_colors.error << "error: " << err_colors.reset
+                 << "no socket connection; use 'open socket' first\n";
+            return;
+        }
+        // Serialize to memory buffer
+        auto buffer = std::ostringstream{std::ios::binary};
+        auto writer = binary_writer{buffer};
+        for (const auto& name : prog.driver_state.selected_products) {
+            const auto product = get_product(*prog.physics_state, name, exec_context);
+            serialize(writer, name.c_str(), product);
+        }
+        // Send with size prefix
+        auto data = buffer.str();
+        client_socket_.send_with_size(data.data(), data.size());
+        *out << colors.info << "write " << colors.value << "socket"
+             << colors.reset << " (" << data.size() << " bytes)\n";
+        return;
+    }
+
     auto filename = std::string{};
     auto format = driver::output_format{};
 
@@ -1279,9 +1511,25 @@ void driver_t<P>::handle_write_products(const std::optional<std::string>& filena
 }
 
 template<Physics P>
-void driver_t<P>::handle_write_profiler(const std::optional<std::string>& filename_opt) {
-    auto filename = filename_opt.value_or("profiler.dat");
+void driver_t<P>::handle_write_profiler(const std::string& filename) {
     auto profiler_data = get_profiler_data(exec_context);
+
+    // Handle socket output
+    if (filename == "socket") {
+        if (!client_socket_.is_open()) {
+            *err << err_colors.error << "error: " << err_colors.reset
+                 << "no socket connection; use 'socket open' first\n";
+            return;
+        }
+        auto buffer = std::ostringstream{std::ios::binary};
+        auto writer = binary_writer{buffer};
+        serialize(writer, "profiler", profiler_data);
+        auto data = buffer.str();
+        client_socket_.send_with_size(data.data(), data.size());
+        *out << colors.info << "write " << colors.value << "socket"
+             << colors.reset << " (" << data.size() << " bytes)\n";
+        return;
+    }
 
     // Sort by time descending
     auto sorted = std::vector<std::pair<std::string, perf::profile_entry_t>>(
@@ -1359,6 +1607,35 @@ void driver_t<P>::handle_repeat_clear(const std::vector<std::string>& indices) {
         *out << colors.info << "clear " << colors.value << idx_list.size()
              << colors.reset << colors.info << " recurring command(s)" << colors.reset << "\n";
     }
+}
+
+template<Physics P>
+void driver_t<P>::handle_open_socket(std::optional<int> port) {
+    if (server_socket_.is_open()) {
+        *err << err_colors.error << "error: " << err_colors.reset
+             << "socket already open; use 'close socket' first\n";
+        return;
+    }
+    auto listen_port = static_cast<uint16_t>(port.value_or(0));
+    server_socket_.listen(listen_port);
+    auto actual_port = server_socket_.port();
+    *out << colors.info << "socket listening on port " << colors.value << actual_port
+         << colors.reset << "\n";
+    *out << colors.info << "waiting for connection..." << colors.reset << "\n" << std::flush;
+    client_socket_ = server_socket_.accept();
+    *out << colors.info << "connected" << colors.reset << "\n";
+}
+
+template<Physics P>
+void driver_t<P>::handle_close_socket() {
+    if (!server_socket_.is_open()) {
+        *err << err_colors.error << "error: " << err_colors.reset
+             << "no socket is open\n";
+        return;
+    }
+    client_socket_.close();
+    server_socket_.close();
+    *out << colors.info << "socket closed" << colors.reset << "\n";
 }
 
 template<Physics P>
@@ -1698,6 +1975,18 @@ bool driver_t<P>::execute(const command_t& cmd) {
                 handle_do_timeseries();
                 break;
 
+            case command_t::type::write_physics:
+                handle_write_physics(cmd.string_value.value());
+                break;
+
+            case command_t::type::write_initial:
+                handle_write_initial(cmd.string_value.value());
+                break;
+
+            case command_t::type::write_driver:
+                handle_write_driver(cmd.string_value.value());
+                break;
+
             case command_t::type::write_timeseries:
                 handle_write_timeseries(cmd.string_value);
                 break;
@@ -1711,7 +2000,7 @@ bool driver_t<P>::execute(const command_t& cmd) {
                 break;
 
             case command_t::type::write_profiler:
-                handle_write_profiler(cmd.string_value);
+                handle_write_profiler(cmd.string_value.value());
                 break;
 
             case command_t::type::show_message:
@@ -1729,6 +2018,14 @@ bool driver_t<P>::execute(const command_t& cmd) {
 
             case command_t::type::repeat_clear:
                 handle_repeat_clear(cmd.string_list.value_or(std::vector<std::string>{}));
+                break;
+
+            case command_t::type::open_socket:
+                handle_open_socket(cmd.int_value);
+                break;
+
+            case command_t::type::close_socket:
+                handle_close_socket();
                 break;
 
             case command_t::type::init:
@@ -1804,6 +2101,10 @@ public:
         : driver(driver)
         , is_tty(isatty(STDIN_FILENO)) {
         setup_readline();
+        // Unbuffered stdout when not a TTY (for subprocess communication)
+        if (!is_tty) {
+            std::cout.setf(std::ios::unitbuf);
+        }
     }
 
     ~repl_t() {

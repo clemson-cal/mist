@@ -4,6 +4,7 @@
 #include <concepts>
 #include <map>
 #include <string>
+#include "../serialize.hpp"
 
 namespace mist {
 namespace perf {
@@ -15,6 +16,20 @@ namespace perf {
 struct profile_entry_t {
     std::size_t count = 0;
     double time = 0.0;
+
+    auto fields() const {
+        return std::make_tuple(
+            field("count", count),
+            field("time", time)
+        );
+    }
+
+    auto fields() {
+        return std::make_tuple(
+            field("count", count),
+            field("time", time)
+        );
+    }
 };
 
 template<typename P>
