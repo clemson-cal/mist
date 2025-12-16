@@ -82,17 +82,4 @@ struct state_t {
     }
 };
 
-// =============================================================================
-// Check if any recurring command uses a non-"n" time variable
-// =============================================================================
-
-inline auto has_non_n_recurring(const state_t& state) -> bool {
-    for (const auto& rc : state.recurring_commands) {
-        if (rc.unit != "n") {
-            return true;
-        }
-    }
-    return false;
-}
-
 } // namespace mist::driver

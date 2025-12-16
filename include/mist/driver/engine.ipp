@@ -375,10 +375,6 @@ MIST_INLINE void engine_t::handle(const cmd::advance_by& c, emit_fn emit) {
     }
 
     if (c.var == "n") {
-        if (c.delta == 1.0 && has_non_n_recurring(state_)) {
-            emit(resp::error{"cannot advance by single iteration with non-n recurring commands"});
-            return;
-        }
         auto target = static_cast<double>(state_.iteration) + c.delta;
         advance_to_target("n", target, emit);
     } else {
