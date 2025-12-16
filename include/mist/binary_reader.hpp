@@ -47,6 +47,8 @@ public:
                 return false;
             }
             pending_name_ = nullptr;
+        } else if (!check_list_item()) {
+            return false;
         }
         uint8_t type_tag = read_type_tag();
         if (type_tag == binary_format::TYPE_FLOAT64) {
@@ -74,6 +76,8 @@ public:
                 return false;
             }
             pending_name_ = nullptr;
+        } else if (!check_list_item()) {
+            return false;
         }
         uint8_t type_tag = read_type_tag();
         if (type_tag != binary_format::TYPE_STRING) {
@@ -285,6 +289,17 @@ private:
     };
     std::vector<group_info_t> group_stack_;
     bool header_read_ = false;
+
+    // Check if we can read the next item in a list, decrementing remaining count
+    auto check_list_item() -> bool {
+        if (!group_stack_.empty() && group_stack_.back().is_list) {
+            if (group_stack_.back().remaining == 0) {
+                return false;
+            }
+            group_stack_.back().remaining--;
+        }
+        return true;
+    }
 
     void ensure_header() {
         if (header_read_) return;

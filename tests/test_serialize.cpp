@@ -656,6 +656,29 @@ void test_nested_vector_string_serialization() {
     std::cout << "PASSED\n";
 }
 
+void test_binary_vector_string_serialization() {
+    std::cout << "Testing binary std::vector<std::string> serialization... ";
+
+    std::vector<std::string> original = {"default", "primitive", "conserved"};
+
+    std::stringstream ss(std::ios::binary | std::ios::in | std::ios::out);
+    binary_writer writer(ss);
+    serialize(writer, "products", original);
+
+    ss.seekg(0);
+    binary_reader reader(ss);
+
+    std::vector<std::string> loaded;
+    deserialize(reader, "products", loaded);
+
+    assert(original.size() == loaded.size());
+    for (std::size_t i = 0; i < original.size(); ++i) {
+        assert(original[i] == loaded[i]);
+    }
+
+    std::cout << "PASSED\n";
+}
+
 void test_binary_file_output() {
     std::cout << "Testing binary file output (1000 doubles)... ";
 
@@ -895,6 +918,7 @@ int main() {
     test_vector_string_serialization();
     test_empty_vector_string_serialization();
     test_nested_vector_string_serialization();
+    test_binary_vector_string_serialization();
     test_binary_file_output();
 
     std::cout << "\n=== NdArray Serialization Tests ===\n\n";
