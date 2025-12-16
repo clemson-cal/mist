@@ -729,7 +729,7 @@ MIST_INLINE void engine_t::handle(const cmd::load& c, emit_fn emit) {
     emit(resp::error{"could not load checkpoint, physics, or initial from " + c.filename});
 }
 
-MIST_INLINE void engine_t::handle(const cmd::show_message&, emit_fn emit) {
+MIST_INLINE void engine_t::handle(const cmd::show_state&, emit_fn emit) {
     auto info = resp::state_info{};
     info.initialized = physics_.has_state();
     if (info.initialized) {
@@ -742,7 +742,7 @@ MIST_INLINE void engine_t::handle(const cmd::show_message&, emit_fn emit) {
 }
 
 MIST_INLINE void engine_t::handle(const cmd::show_all&, emit_fn emit) {
-    handle(cmd::show_message{}, emit);
+    handle(cmd::show_state{}, emit);
     handle(cmd::show_physics{}, emit);
     handle(cmd::show_initial{}, emit);
     handle(cmd::show_driver{}, emit);

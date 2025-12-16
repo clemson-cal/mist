@@ -212,7 +212,7 @@ MIST_INLINE auto parse_command(std::string_view input) -> parsed_command_t {
         auto what = std::string{};
         iss >> what;
         if (what.empty() || what == "all") return {cmd::show_all{}, {}, {}};
-        if (what == "message") return {cmd::show_message{}, {}, {}};
+        if (what == "state") return {cmd::show_state{}, {}, {}};
         if (what == "physics") return {cmd::show_physics{}, {}, {}};
         if (what == "initial") return {cmd::show_initial{}, {}, {}};
         if (what == "iteration") return {cmd::show_iteration{}, {}, {}};

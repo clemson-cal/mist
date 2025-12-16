@@ -143,7 +143,7 @@ struct load {
     auto fields() { return std::make_tuple(field("filename", filename)); }
 };
 
-struct show_message {
+struct show_state {
     auto fields() const { return std::make_tuple(); }
     auto fields() { return std::make_tuple(); }
 };
@@ -231,7 +231,7 @@ using command_t = std::variant<
     cmd::init,
     cmd::reset,
     cmd::load,
-    cmd::show_message,
+    cmd::show_state,
     cmd::show_all,
     cmd::show_physics,
     cmd::show_initial,
@@ -289,7 +289,7 @@ inline auto is_repeatable(const command_t& cmd) -> bool {
             || std::is_same_v<T, cmd::write_checkpoint>
             || std::is_same_v<T, cmd::write_products>
             || std::is_same_v<T, cmd::write_iteration>
-            || std::is_same_v<T, cmd::show_message>
+            || std::is_same_v<T, cmd::show_state>
             || std::is_same_v<T, cmd::show_all>
             || std::is_same_v<T, cmd::show_physics>
             || std::is_same_v<T, cmd::show_initial>

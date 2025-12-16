@@ -117,7 +117,7 @@ private:
     void handle(const cmd::init& c, emit_fn emit);
     void handle(const cmd::reset& c, emit_fn emit);
     void handle(const cmd::load& c, emit_fn emit);
-    void handle(const cmd::show_message& c, emit_fn emit);
+    void handle(const cmd::show_state& c, emit_fn emit);
     void handle(const cmd::show_all& c, emit_fn emit);
     void handle(const cmd::show_physics& c, emit_fn emit);
     void handle(const cmd::show_initial& c, emit_fn emit);
