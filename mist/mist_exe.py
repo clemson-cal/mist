@@ -220,6 +220,106 @@ class _MistConnection:
 
 
 # =============================================================================
+# Config wrapper classes for dict-like access
+# =============================================================================
+
+class _PhysicsConfig:
+    """Dict-like wrapper for physics configuration with read/write access."""
+
+    def __init__(self, mist: "Mist"):
+        self._mist = mist
+
+    def __getitem__(self, key: str) -> Any:
+        data = self._mist._conn.fetch_data("write_physics")
+        return data.get("physics", {}).get(key)
+
+    def __setitem__(self, key: str, value: Any):
+        self._mist._conn.send_command("set_physics", {"key": key, "value": str(value)})
+
+    def __repr__(self) -> str:
+        data = self._mist._conn.fetch_data("write_physics")
+        return repr(data.get("physics", {}))
+
+    def keys(self):
+        data = self._mist._conn.fetch_data("write_physics")
+        return data.get("physics", {}).keys()
+
+    def items(self):
+        data = self._mist._conn.fetch_data("write_physics")
+        return data.get("physics", {}).items()
+
+    def to_dict(self) -> dict:
+        data = self._mist._conn.fetch_data("write_physics")
+        return data.get("physics", {})
+
+
+class _InitialConfig:
+    """Dict-like wrapper for initial configuration (read-only after init)."""
+
+    def __init__(self, mist: "Mist"):
+        self._mist = mist
+
+    def __getitem__(self, key: str) -> Any:
+        data = self._mist._conn.fetch_data("write_initial")
+        return data.get("initial", {}).get(key)
+
+    def __setitem__(self, key: str, value: Any):
+        if self._mist._initialized:
+            raise RuntimeError("Cannot modify initial config after init(). Call reset() first.")
+        self._mist._conn.send_command("set_initial", {"key": key, "value": str(value)})
+
+    def __repr__(self) -> str:
+        data = self._mist._conn.fetch_data("write_initial")
+        return repr(data.get("initial", {}))
+
+    def keys(self):
+        data = self._mist._conn.fetch_data("write_initial")
+        return data.get("initial", {}).keys()
+
+    def items(self):
+        data = self._mist._conn.fetch_data("write_initial")
+        return data.get("initial", {}).items()
+
+    def to_dict(self) -> dict:
+        data = self._mist._conn.fetch_data("write_initial")
+        return data.get("initial", {})
+
+
+class _Products:
+    """Dict-like wrapper for products with array extraction."""
+
+    def __init__(self, mist: "Mist"):
+        self._mist = mist
+
+    def __getitem__(self, key: str) -> Any:
+        data = self._mist._conn.fetch_data("write_products")
+        product = data.get(key)
+        if product is None:
+            raise KeyError(f"Product '{key}' not found. Available: {list(data.keys())}")
+        # If it's a list of patches, concatenate the data arrays
+        if isinstance(product, list) and len(product) > 0 and "data" in product[0]:
+            import numpy as np
+            return np.concatenate([p["data"] for p in product])
+        return product
+
+    def __repr__(self) -> str:
+        data = self._mist._conn.fetch_data("write_products")
+        return f"Products({list(data.keys())})"
+
+    def keys(self):
+        data = self._mist._conn.fetch_data("write_products")
+        return data.keys()
+
+    def items(self):
+        for key in self.keys():
+            yield key, self[key]
+
+    def raw(self) -> dict:
+        """Get raw products data without concatenation."""
+        return self._mist._conn.fetch_data("write_products")
+
+
+# =============================================================================
 # High-level interface
 # =============================================================================
 
@@ -227,22 +327,60 @@ class Mist:
     """High-level interface for running mist simulations.
 
     Example:
-        sim = Mist("./advect1d")
-        sim.init()
-        sim.select_products(["concentration"])
-        sim.run(t=1.0)
-        print(sim.products)
-        sim.close()
+        from mist import Mist
+
+        with Mist("./advect1d") as sim:
+            u = sim.products["concentration"]
+            sim.physics["cfl"] = 0.8
+            sim.advance_to(1.0)
+            print(sim.time, sim.iteration)
+
+        # With configuration:
+        with Mist("./advect1d", physics={"cfl": 0.8}, initial={"num_zones": 400}) as sim:
+            sim.advance_by(0.1)
     """
 
-    def __init__(self, executable: str):
-        """Connect to a mist executable.
+    def __init__(
+        self,
+        executable: str,
+        *,
+        physics: Optional[dict] = None,
+        initial: Optional[dict] = None,
+        exec: Optional[dict] = None,
+        init: bool = True,
+    ):
+        """Connect to a mist executable and optionally initialize.
 
         Args:
             executable: Path to the mist executable
+            physics: Optional physics configuration dict
+            initial: Optional initial configuration dict
+            exec: Optional execution configuration dict
+            init: Whether to auto-initialize (default: True)
         """
         self._conn = _MistConnection(executable)
         self._initialized = False
+
+        # Wrapper objects for dict-like access
+        self._physics = _PhysicsConfig(self)
+        self._initial = _InitialConfig(self)
+        self._products = _Products(self)
+
+        # Apply configuration before init
+        if physics:
+            for key, value in physics.items():
+                self._conn.send_command("set_physics", {"key": key, "value": str(value)})
+
+        if initial:
+            for key, value in initial.items():
+                self._conn.send_command("set_initial", {"key": key, "value": str(value)})
+
+        if exec:
+            for key, value in exec.items():
+                self._conn.send_command("set_exec", {"key": key, "value": str(value)})
+
+        if init:
+            self.init()
 
     def _check_response(self, responses: list[tuple[str, dict]]):
         """Check responses for errors."""
@@ -254,6 +392,8 @@ class Mist:
 
     def init(self):
         """Initialize the simulation state."""
+        if self._initialized:
+            return
         responses = self._conn.send_command("init")
         self._check_response(responses)
         self._initialized = True
@@ -276,8 +416,32 @@ class Mist:
 
     # --- Time evolution ---
 
+    def advance_to(self, target: float, var: str = "t"):
+        """Advance simulation to a target value.
+
+        Args:
+            target: Target value to advance to
+            var: Variable name (default: "t" for time)
+        """
+        if not self._initialized:
+            raise RuntimeError("Simulation not initialized. Call init() first.")
+        responses = self._conn.send_command("advance_to", {"var": var, "target": target})
+        self._check_response(responses)
+
+    def advance_by(self, delta: float, var: str = "t"):
+        """Advance simulation by a delta.
+
+        Args:
+            delta: Amount to advance by
+            var: Variable name (default: "t" for time)
+        """
+        if not self._initialized:
+            raise RuntimeError("Simulation not initialized. Call init() first.")
+        responses = self._conn.send_command("advance_by", {"var": var, "delta": delta})
+        self._check_response(responses)
+
     def run(self, *, t: Optional[float] = None, dt: Optional[float] = None, var: str = "t"):
-        """Advance the simulation.
+        """Advance the simulation (legacy interface).
 
         Args:
             t: Target time to advance to
@@ -286,28 +450,32 @@ class Mist:
 
         Exactly one of t or dt must be specified.
         """
-        if not self._initialized:
-            raise RuntimeError("Simulation not initialized. Call init() first.")
         if (t is None) == (dt is None):
             raise ValueError("Specify exactly one of t= or dt=")
 
         if t is not None:
-            responses = self._conn.send_command("advance_to", {"var": var, "target": t})
+            self.advance_to(t, var)
         else:
-            responses = self._conn.send_command("advance_by", {"var": var, "delta": dt})
-        self._check_response(responses)
+            self.advance_by(dt, var)
 
-    # --- Configuration ---
+    # --- Configuration (dict-like access) ---
 
-    def set_physics(self, key: str, value: str):
-        """Set a physics configuration parameter."""
-        responses = self._conn.send_command("set_physics", {"key": key, "value": value})
-        self._check_response(responses)
+    @property
+    def physics(self) -> _PhysicsConfig:
+        """Physics configuration (read/write dict-like access)."""
+        return self._physics
 
-    def set_initial(self, key: str, value: str):
-        """Set an initial configuration parameter."""
-        responses = self._conn.send_command("set_initial", {"key": key, "value": value})
-        self._check_response(responses)
+    @property
+    def initial(self) -> _InitialConfig:
+        """Initial configuration (read-only after init, dict-like access)."""
+        return self._initial
+
+    @property
+    def products(self) -> _Products:
+        """Products data (dict-like access with automatic array concatenation)."""
+        return self._products
+
+    # --- Selection ---
 
     def select_products(self, names: list[str]):
         """Select products to include when reading products."""
@@ -322,11 +490,6 @@ class Mist:
     # --- Data properties ---
 
     @property
-    def products(self) -> dict:
-        """Get current products data."""
-        return self._conn.fetch_data("write_products")
-
-    @property
     def checkpoint(self) -> dict:
         """Get checkpoint (full state) data."""
         return self._conn.fetch_data("write_checkpoint")
@@ -335,16 +498,6 @@ class Mist:
     def timeseries(self) -> dict:
         """Get recorded timeseries data."""
         return self._conn.fetch_data("write_timeseries")
-
-    @property
-    def physics(self) -> dict:
-        """Get physics configuration."""
-        return self._conn.fetch_data("write_physics")
-
-    @property
-    def initial(self) -> dict:
-        """Get initial configuration."""
-        return self._conn.fetch_data("write_initial")
 
     @property
     def profiler(self) -> dict:
@@ -362,10 +515,46 @@ class Mist:
 
     @property
     def time(self) -> float:
-        """Get current simulation time (shortcut for state['times'])."""
+        """Get current simulation time."""
         state = self.state
         times = state.get("times", [])
         for entry in times:
             if entry.get("key") == "t":
                 return entry.get("value", 0.0)
         return 0.0
+
+    @property
+    def iteration(self) -> int:
+        """Get current iteration number."""
+        responses = self._conn.send_command("show_iteration")
+        for resp_type, resp_data in responses:
+            if resp_type == "iteration_info":
+                return resp_data.get("n", 0)
+        return 0
+
+    @property
+    def dt(self) -> float:
+        """Get last timestep size."""
+        responses = self._conn.send_command("show_iteration")
+        for resp_type, resp_data in responses:
+            if resp_type == "iteration_info":
+                return resp_data.get("dt", 0.0)
+        return 0.0
+
+    @property
+    def product_names(self) -> list[str]:
+        """Get list of available product names."""
+        responses = self._conn.send_command("show_products")
+        for resp_type, resp_data in responses:
+            if resp_type == "products_info":
+                return resp_data.get("available", [])
+        return []
+
+    @property
+    def timeseries_names(self) -> list[str]:
+        """Get list of available timeseries column names."""
+        responses = self._conn.send_command("show_timeseries")
+        for resp_type, resp_data in responses:
+            if resp_type == "timeseries_info":
+                return resp_data.get("available", [])
+        return []
