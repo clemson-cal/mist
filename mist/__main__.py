@@ -128,7 +128,20 @@ class MistTUI(App):
     }
 
     #products-checkboxes {
-        height: auto;
+        width: 20;
+        height: 1fr;
+        padding: 1;
+        border-right: solid $primary;
+    }
+
+    #plot-container {
+        width: 1fr;
+        height: 1fr;
+    }
+
+    #plot-content {
+        width: 1fr;
+        height: 1fr;
     }
 
     .section-title {
@@ -165,9 +178,6 @@ class MistTUI(App):
                 with TabPane("Initial", id="tab-initial"):
                     with ScrollableContainer(classes="tab-content"):
                         yield ConfigTable(id="initial-table")
-                with TabPane("Products", id="tab-products"):
-                    with ScrollableContainer(classes="tab-content"):
-                        yield Vertical(id="products-checkboxes")
                 with TabPane("Timeseries", id="tab-timeseries"):
                     with ScrollableContainer(classes="tab-content"):
                         yield Static(id="timeseries-content")
@@ -178,10 +188,13 @@ class MistTUI(App):
                     with ScrollableContainer(classes="tab-content"):
                         yield Static(id="profiler-content")
                 with TabPane("Plot", id="tab-plot"):
-                    if HAVE_PLOTEXT:
-                        yield PlotextPlot(id="plot-content")
-                    else:
-                        yield Static("Install textual-plotext for plotting", id="plot-content")
+                    with Horizontal():
+                        with ScrollableContainer(id="products-checkboxes"):
+                            yield Static("[bold]Products[/]", classes="section-title")
+                        if HAVE_PLOTEXT:
+                            yield PlotextPlot(id="plot-content")
+                        else:
+                            yield Static("Install textual-plotext for plotting", id="plot-content")
         with Container(id="controls"):
             with Horizontal(id="control-buttons"):
                 yield Button("Init", id="btn-init", variant="success")
@@ -190,7 +203,6 @@ class MistTUI(App):
                 yield Input(value="0.1", id="advance-input", placeholder="target")
                 yield Button("Reset", id="btn-reset", variant="warning")
                 yield Button("Refresh", id="btn-refresh")
-                yield Button("Plot", id="btn-plot")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -241,19 +253,26 @@ class MistTUI(App):
             self.log_message(f"[red]Error refreshing initial: {e}[/]")
 
     def refresh_products(self) -> None:
-        """Refresh the products tab with checkboxes."""
+        """Refresh the products checkboxes in the Plot tab."""
         if not self.sim or not self.sim._initialized:
             return
         try:
-            container = self.query_one("#products-checkboxes", Vertical)
-            names = self.sim.product_names
+            container = self.query_one("#products-checkboxes", ScrollableContainer)
+            existing_ids = {cb.id for cb in container.query(Checkbox)}
 
-            # Remove all existing checkboxes and recreate
-            container.remove_children()
-            for name in names:
+            names = self.sim.product_names
+            # Exclude cell_x since it's used as x-axis
+            plot_names = [n for n in names if n != "cell_x"]
+
+            # Only add checkboxes that don't exist yet
+            for name in plot_names:
                 cb_id = f"product-{name}"
-                checkbox = Checkbox(name, value=True, id=cb_id)
-                container.mount(checkbox)
+                if cb_id not in existing_ids:
+                    checkbox = Checkbox(name, value=True, id=cb_id)
+                    container.mount(checkbox)
+
+            # Auto-update plot after refreshing products
+            self.update_plot()
         except Exception as e:
             self.log_message(f"[red]Error refreshing products: {e}[/]")
 
@@ -315,7 +334,7 @@ class MistTUI(App):
         self.update_info_bar()
         self.refresh_physics()
         self.refresh_initial()
-        self.refresh_products()
+        self.refresh_products()  # Also updates plot
         self.refresh_timeseries()
         self.refresh_state()
         self.refresh_profiler()
@@ -347,6 +366,7 @@ class MistTUI(App):
             self.sim.advance_by(self.sim.dt or 0.001)
             self.show_iteration_info()
             self.update_info_bar()
+            self.update_plot()
         except Exception as e:
             self.log_message(f"[red]Error: {e}[/]")
 
@@ -365,6 +385,7 @@ class MistTUI(App):
             self.log_message(f"[green]Advanced to t={self.sim.time:.6g}[/]")
             self.show_iteration_info()
             self.update_info_bar()
+            self.update_plot()
         except ValueError:
             self.log_message("[red]Invalid target value[/]")
         except Exception as e:
@@ -388,49 +409,43 @@ class MistTUI(App):
         self.refresh_all()
         self.log_message("[green]Refreshed[/]")
 
-    def action_plot(self) -> None:
-        """Plot selected products using textual-plotext."""
+    def update_plot(self) -> None:
+        """Update the plot with selected products vs cell_x."""
         if not HAVE_PLOTEXT:
-            self.log_message("[red]textual-plotext not installed. Run: pip install textual-plotext[/]")
             return
-
         if not self.sim or not self.sim._initialized:
-            self.log_message("[yellow]Not initialized - press Init first[/]")
             return
 
         try:
-            container = self.query_one("#products-checkboxes", Vertical)
+            container = self.query_one("#products-checkboxes", ScrollableContainer)
             selected = [
                 cb.id.replace("product-", "", 1)
                 for cb in container.query(Checkbox)
                 if cb.value
             ]
-        except Exception:
+        except Exception as e:
+            self.log_message(f"[red]Error getting selected: {e}[/]")
             selected = []
-
-        if not selected:
-            self.log_message("[yellow]No products selected[/]")
-            return
-
-        self.log_message(f"Plotting: {selected}")
 
         try:
             plot_widget = self.query_one("#plot-content", PlotextPlot)
             plt = plot_widget.plt
             plt.clear_figure()
 
-            for name in selected:
-                values = list(self.sim.products[name])
-                plt.plot(values, label=name)
+            if selected and "cell_x" in self.sim.product_names:
+                # Select products including cell_x for x-axis
+                self.sim.select_products(["cell_x"] + selected)
 
-            plt.title("Products")
-            plt.xlabel("Index")
-            plt.ylabel("Value")
+                cell_x = list(self.sim.products["cell_x"])
+                for name in selected:
+                    values = list(self.sim.products[name])
+                    plt.plot(cell_x, values, label=name)
+
+                plt.title(f"t = {self.sim.time:.6g}")
+                plt.xlabel("x")
+                plt.ylabel("Value")
 
             plot_widget.refresh()
-
-            self.query_one(TabbedContent).active = "tab-plot"
-            self.log_message("[green]Plot updated[/]")
         except Exception as e:
             self.log_message(f"[red]Error plotting: {e}[/]")
 
@@ -456,8 +471,6 @@ class MistTUI(App):
             self.action_reset()
         elif button_id == "btn-refresh":
             self.action_refresh()
-        elif button_id == "btn-plot":
-            self.action_plot()
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         """Handle checkbox changes for product selection."""
@@ -465,17 +478,7 @@ class MistTUI(App):
             return
         if not self.sim or not self.sim._initialized:
             return
-        try:
-            container = self.query_one("#products-checkboxes", Vertical)
-            selected = [
-                cb.id.replace("product-", "", 1)
-                for cb in container.query(Checkbox)
-                if cb.value
-            ]
-            self.sim.select_products(selected)
-            self.log_message(f"Selected products: {selected}")
-        except Exception as e:
-            self.log_message(f"[red]Error selecting products: {e}[/]")
+        self.update_plot()
 
     def on_unmount(self) -> None:
         """Clean up on exit."""
