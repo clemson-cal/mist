@@ -53,7 +53,7 @@ private:
     void switch_to_interactive_mode();
     auto execute_line(const std::string& input) -> bool;
     auto load_script(const std::string& filename) -> bool;
-    void show_recurring_commands();
+    void show_repeating_commands();
     void format_response(const response_t& r);
 };
 

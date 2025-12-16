@@ -60,11 +60,11 @@ MIST_INLINE const char* help_text = R"(
     write iteration [file]         - Write iteration info
 
   ---------------------------------------------------------------------------
-  Recurring commands
+  repeating commands
   ---------------------------------------------------------------------------
     repeat <interval> <unit> <cmd> - Execute command every interval
-    repeat list                    - Show recurring commands
-    clear repeat                   - Clear all recurring commands
+    repeat list                    - Show repeating commands
+    clear repeat                   - Clear all repeating commands
 
   ---------------------------------------------------------------------------
   Information
@@ -203,36 +203,27 @@ MIST_INLINE void engine_t::do_timestep(double dt_max) {
 MIST_INLINE auto engine_t::time_to_next_task() const -> double {
     auto dt_max = std::numeric_limits<double>::infinity();
 
-    for (const auto& rc : state_.recurring_commands) {
-        if (rc.unit == "n") continue;  // Iteration-based tasks don't constrain dt
+    for (const auto& rc : state_.repeating_commands) {
+        if (rc.unit == "n") continue;
 
         auto current = physics_.get_time(rc.unit);
-        // Use same initialization as execute_recurring_commands: -interval if not set
-        auto last = rc.last_executed.value_or(-rc.interval);
-        auto next_due = last + rc.interval;
-        auto time_until = next_due - current;
+        auto time_until = rc.time_until_due(current);
 
-        if (time_until > 0 && time_until < dt_max) {
-            dt_max = time_until;
+        if (time_until > 0) {
+            dt_max = std::min(dt_max, time_until);
         }
     }
 
     return dt_max;
 }
 
-MIST_INLINE void engine_t::execute_recurring_commands(emit_fn emit) {
-    for (auto& rc : state_.recurring_commands) {
+MIST_INLINE void engine_t::execute_repeating_commands(emit_fn emit) {
+    for (auto& rc : state_.repeating_commands) {
         auto current = (rc.unit == "n")
             ? static_cast<double>(state_.iteration)
             : physics_.get_time(rc.unit);
 
-        if (!rc.last_executed.has_value()) {
-            // Initialize to -interval so first check triggers at first multiple >= 0
-            rc.last_executed = -rc.interval;
-        }
-
-        if (current >= *rc.last_executed + rc.interval) {
-            // Use handle() directly to preserve command_start timing for zps calculation
+        if (rc.time_until_due(current) <= 0) {
             std::visit([this, &emit](const auto& c) { handle(c, emit); }, rc.sub_command);
             rc.last_executed = current;
         }
@@ -247,15 +238,15 @@ MIST_INLINE void engine_t::advance_to_target(const std::string& var, double targ
 
     auto guard = signal::interrupt_guard_t{};
 
-    // Check recurring commands at initial state (e.g., t=0 or n=0)
-    execute_recurring_commands(emit);
+    // Fire any due tasks (including newly registered ones) before stepping
+    execute_repeating_commands(emit);
 
     if (var == "n") {
         auto target_n = static_cast<int>(target);
         while (state_.iteration < target_n && !guard.is_interrupted()) {
             auto dt_max = time_to_next_task();
             do_timestep(dt_max);
-            execute_recurring_commands(emit);
+            execute_repeating_commands(emit);
         }
     } else {
         auto eps = 1e-12 * std::abs(target);
@@ -263,7 +254,7 @@ MIST_INLINE void engine_t::advance_to_target(const std::string& var, double targ
             auto time_to_target = target - physics_.get_time(var);
             auto dt_max = std::min(time_to_target, time_to_next_task());
             do_timestep(dt_max);
-            execute_recurring_commands(emit);
+            execute_repeating_commands(emit);
         }
     }
 
@@ -646,18 +637,18 @@ MIST_INLINE void engine_t::handle(const cmd::repeat_add& c, emit_fn emit) {
         }
     }
 
-    auto rc = recurring_command_t{};
+    auto rc = repeating_command_t{};
     rc.interval = c.interval;
     rc.unit = c.unit;
     rc.sub_command = c.sub_command;
-    state_.recurring_commands.push_back(rc);
+    state_.repeating_commands.push_back(rc);
 
-    emit(resp::ok{"added recurring command"});
+    emit(resp::ok{"added repeating command"});
 }
 
 MIST_INLINE void engine_t::handle(const cmd::clear_repeat&, emit_fn emit) {
-    state_.recurring_commands.clear();
-    emit(resp::ok{"cleared all recurring commands"});
+    state_.repeating_commands.clear();
+    emit(resp::ok{"cleared all repeating commands"});
 }
 
 MIST_INLINE void engine_t::handle(const cmd::init&, emit_fn emit) {

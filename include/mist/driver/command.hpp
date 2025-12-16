@@ -302,14 +302,19 @@ inline auto is_repeatable(const command_t& cmd) -> bool {
 }
 
 // =============================================================================
-// recurring_command_t - stored in state, includes last_executed
+// repeating_command_t - stored in state, includes last_executed
 // =============================================================================
 
-struct recurring_command_t {
+struct repeating_command_t {
     double interval;
     std::string unit;
     command_t sub_command;
     std::optional<double> last_executed;
+
+    auto time_until_due(double current) const -> double {
+        if (!last_executed) return 0.0;
+        return *last_executed + interval - current;
+    }
 
     auto fields() const {
         return std::make_tuple(

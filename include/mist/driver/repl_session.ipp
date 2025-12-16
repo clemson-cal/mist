@@ -371,7 +371,7 @@ MIST_INLINE auto repl_session_t::execute_line(const std::string& input) -> bool 
 
     // Handle special "repeat list" case
     if (parsed.error == "repeat list") {
-        show_recurring_commands();
+        show_repeating_commands();
         return true;
     }
 
@@ -431,16 +431,16 @@ MIST_INLINE auto repl_session_t::load_script(const std::string& filename) -> boo
     return true;
 }
 
-MIST_INLINE void repl_session_t::show_recurring_commands() {
+MIST_INLINE void repl_session_t::show_repeating_commands() {
     auto& state = engine_.state();
-    if (state.recurring_commands.empty()) {
-        out_ << colors_.unselected << "no recurring commands" << colors_.reset << "\n";
+    if (state.repeating_commands.empty()) {
+        out_ << colors_.unselected << "no repeating commands" << colors_.reset << "\n";
         return;
     }
 
-    out_ << colors_.header << "Recurring commands:" << colors_.reset << "\n";
-    for (std::size_t i = 0; i < state.recurring_commands.size(); ++i) {
-        const auto& rc = state.recurring_commands[i];
+    out_ << colors_.header << "repeating commands:" << colors_.reset << "\n";
+    for (std::size_t i = 0; i < state.repeating_commands.size(); ++i) {
+        const auto& rc = state.repeating_commands[i];
         out_ << "  " << colors_.iteration << "[" << i << "]" << colors_.reset
              << " every " << colors_.value << rc.interval << colors_.reset
              << " " << rc.unit << "\n";

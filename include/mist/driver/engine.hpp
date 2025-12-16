@@ -92,7 +92,7 @@ private:
     auto time_to_next_task() const -> double;
 
     void do_timestep(double dt_max);
-    void execute_recurring_commands(emit_fn emit);
+    void execute_repeating_commands(emit_fn emit);
     void advance_to_target(const std::string& var, double target, emit_fn emit);
 
     void handle(const cmd::advance_by& c, emit_fn emit);

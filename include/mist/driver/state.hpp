@@ -52,7 +52,7 @@ struct state_t {
     int products_count = 0;
     int timeseries_count = 0;
     std::map<std::string, std::vector<double>> timeseries;
-    std::vector<recurring_command_t> recurring_commands;
+    std::vector<repeating_command_t> repeating_commands;
     std::vector<std::string> selected_products;
 
     auto fields() const {
@@ -63,7 +63,7 @@ struct state_t {
             field("products_count", products_count),
             field("timeseries_count", timeseries_count),
             field("timeseries", timeseries),
-            field("recurring_commands", recurring_commands),
+            field("repeating_commands", repeating_commands),
             field("selected_products", selected_products)
         );
     }
@@ -76,7 +76,7 @@ struct state_t {
             field("products_count", products_count),
             field("timeseries_count", timeseries_count),
             field("timeseries", timeseries),
-            field("recurring_commands", recurring_commands),
+            field("repeating_commands", repeating_commands),
             field("selected_products", selected_products)
         );
     }
