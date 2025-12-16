@@ -7,19 +7,36 @@ import argparse
 import sys
 from typing import Optional
 
+
 try:
     from textual.app import App, ComposeResult
     from textual.binding import Binding
     from textual.containers import Container, Horizontal, Vertical, ScrollableContainer
     from textual.widgets import (
-        Button, Checkbox, Footer, Header, Input, Label, Log, Static,
-        TabbedContent, TabPane, DataTable, Rule
+        Button,
+        Checkbox,
+        Footer,
+        Header,
+        Input,
+        Label,
+        Log,
+        Static,
+        TabbedContent,
+        TabPane,
+        DataTable,
+        Rule,
     )
     from textual.reactive import reactive
 except ImportError:
     print("Error: textual is required for the mist TUI")
     print("Install with: pip install textual")
     sys.exit(1)
+
+try:
+    from textual_plotext import PlotextPlot
+    HAVE_PLOTEXT = True
+except ImportError:
+    HAVE_PLOTEXT = False
 
 from .mist_exe import Mist
 
@@ -160,6 +177,11 @@ class MistTUI(App):
                 with TabPane("Profiler", id="tab-profiler"):
                     with ScrollableContainer(classes="tab-content"):
                         yield Static(id="profiler-content")
+                with TabPane("Plot", id="tab-plot"):
+                    if HAVE_PLOTEXT:
+                        yield PlotextPlot(id="plot-content")
+                    else:
+                        yield Static("Install textual-plotext for plotting", id="plot-content")
         with Container(id="controls"):
             with Horizontal(id="control-buttons"):
                 yield Button("Init", id="btn-init", variant="success")
@@ -168,6 +190,7 @@ class MistTUI(App):
                 yield Input(value="0.1", id="advance-input", placeholder="target")
                 yield Button("Reset", id="btn-reset", variant="warning")
                 yield Button("Refresh", id="btn-refresh")
+                yield Button("Plot", id="btn-plot")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -365,6 +388,52 @@ class MistTUI(App):
         self.refresh_all()
         self.log_message("[green]Refreshed[/]")
 
+    def action_plot(self) -> None:
+        """Plot selected products using textual-plotext."""
+        if not HAVE_PLOTEXT:
+            self.log_message("[red]textual-plotext not installed. Run: pip install textual-plotext[/]")
+            return
+
+        if not self.sim or not self.sim._initialized:
+            self.log_message("[yellow]Not initialized - press Init first[/]")
+            return
+
+        try:
+            container = self.query_one("#products-checkboxes", Vertical)
+            selected = [
+                cb.id.replace("product-", "", 1)
+                for cb in container.query(Checkbox)
+                if cb.value
+            ]
+        except Exception:
+            selected = []
+
+        if not selected:
+            self.log_message("[yellow]No products selected[/]")
+            return
+
+        self.log_message(f"Plotting: {selected}")
+
+        try:
+            plot_widget = self.query_one("#plot-content", PlotextPlot)
+            plt = plot_widget.plt
+            plt.clear_figure()
+
+            for name in selected:
+                values = list(self.sim.products[name])
+                plt.plot(values, label=name)
+
+            plt.title("Products")
+            plt.xlabel("Index")
+            plt.ylabel("Value")
+
+            plot_widget.refresh()
+
+            self.query_one(TabbedContent).active = "tab-plot"
+            self.log_message("[green]Plot updated[/]")
+        except Exception as e:
+            self.log_message(f"[red]Error plotting: {e}[/]")
+
     def show_iteration_info(self) -> None:
         """Log the current iteration info."""
         if not self.sim or not self.sim._initialized:
@@ -387,6 +456,8 @@ class MistTUI(App):
             self.action_reset()
         elif button_id == "btn-refresh":
             self.action_refresh()
+        elif button_id == "btn-plot":
+            self.action_plot()
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         """Handle checkbox changes for product selection."""
