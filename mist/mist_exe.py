@@ -50,19 +50,44 @@ COMMAND_INDICES = {
 }
 
 RESPONSE_NAMES = [
-    "ok", "error", "interrupted", "stopped", "state_info",
-    "iteration_info", "timeseries_sample", "physics_config",
-    "initial_config", "driver_state", "help_text", "timeseries_info",
-    "products_info", "profiler_info", "wrote_file", "socket_listening",
-    "socket_sent", "socket_cancelled",
+    "ok",
+    "error",
+    "interrupted",
+    "stopped",
+    "state_info",
+    "iteration_info",
+    "timeseries_sample",
+    "physics_config",
+    "initial_config",
+    "driver_state",
+    "help_text",
+    "timeseries_info",
+    "products_info",
+    "profiler_info",
+    "wrote_file",
+    "socket_listening",
+    "socket_sent",
+    "socket_cancelled",
 ]
 
 TERMINAL_RESPONSES = {
-    "ok", "error", "interrupted", "stopped",
-    "socket_sent", "socket_cancelled", "wrote_file",
-    "state_info", "iteration_info", "timeseries_sample",
-    "physics_config", "initial_config", "driver_state",
-    "help_text", "timeseries_info", "products_info", "profiler_info",
+    "ok",
+    "error",
+    "interrupted",
+    "stopped",
+    "socket_sent",
+    "socket_cancelled",
+    "wrote_file",
+    "state_info",
+    "iteration_info",
+    "timeseries_sample",
+    "physics_config",
+    "initial_config",
+    "driver_state",
+    "help_text",
+    "timeseries_info",
+    "products_info",
+    "profiler_info",
 }
 
 
@@ -91,7 +116,11 @@ def _serialize_command(cmd_name: str, fields: dict) -> bytes:
     # Transform fields: convert 'dest' to optional format only for commands that use optional
     transformed = {}
     for name, value in fields.items():
-        if name == "dest" and isinstance(value, str) and cmd_name in COMMANDS_WITH_OPTIONAL_DEST:
+        if (
+            name == "dest"
+            and isinstance(value, str)
+            and cmd_name in COMMANDS_WITH_OPTIONAL_DEST
+        ):
             # C++ expects std::optional<std::string> as GROUP{has_value, value}
             transformed[name] = {"has_value": 1, "value": value}
         else:
@@ -115,6 +144,7 @@ def _deserialize_response(data: bytes) -> tuple[str, dict]:
 # =============================================================================
 # Low-level socket connection
 # =============================================================================
+
 
 class _MistConnection:
     """Low-level socket connection to a mist executable."""
@@ -153,7 +183,9 @@ class _MistConnection:
             data += chunk
         return data
 
-    def send_command(self, cmd_name: str, fields: Optional[dict] = None) -> list[tuple[str, dict]]:
+    def send_command(
+        self, cmd_name: str, fields: Optional[dict] = None
+    ) -> list[tuple[str, dict]]:
         data = _serialize_command(cmd_name, fields or {})
         self.command_socket.sendall(struct.pack("<Q", len(data)))
         self.command_socket.sendall(data)
@@ -223,6 +255,7 @@ class _MistConnection:
 # Config wrapper classes for dict-like access
 # =============================================================================
 
+
 class _PhysicsConfig:
     """Dict-like wrapper for physics configuration with read/write access."""
 
@@ -265,7 +298,9 @@ class _InitialConfig:
 
     def __setitem__(self, key: str, value: Any):
         if self._mist._initialized:
-            raise RuntimeError("Cannot modify initial config after init(). Call reset() first.")
+            raise RuntimeError(
+                "Cannot modify initial config after init(). Call reset() first."
+            )
         self._mist._conn.send_command("set_initial", {"key": key, "value": str(value)})
 
     def __repr__(self) -> str:
@@ -299,6 +334,7 @@ class _Products:
         # If it's a list of patches, concatenate the data arrays
         if isinstance(product, list) and len(product) > 0 and "data" in product[0]:
             import numpy as np
+
             return np.concatenate([p["data"] for p in product])
         return product
 
@@ -322,6 +358,7 @@ class _Products:
 # =============================================================================
 # High-level interface
 # =============================================================================
+
 
 class Mist:
     """High-level interface for running mist simulations.
@@ -369,11 +406,15 @@ class Mist:
         # Apply configuration before init
         if physics:
             for key, value in physics.items():
-                self._conn.send_command("set_physics", {"key": key, "value": str(value)})
+                self._conn.send_command(
+                    "set_physics", {"key": key, "value": str(value)}
+                )
 
         if initial:
             for key, value in initial.items():
-                self._conn.send_command("set_initial", {"key": key, "value": str(value)})
+                self._conn.send_command(
+                    "set_initial", {"key": key, "value": str(value)}
+                )
 
         if exec:
             for key, value in exec.items():
@@ -425,7 +466,9 @@ class Mist:
         """
         if not self._initialized:
             raise RuntimeError("Simulation not initialized. Call init() first.")
-        responses = self._conn.send_command("advance_to", {"var": var, "target": target})
+        responses = self._conn.send_command(
+            "advance_to", {"var": var, "target": target}
+        )
         self._check_response(responses)
 
     def advance_by(self, delta: float, var: str = "t"):
@@ -440,7 +483,9 @@ class Mist:
         responses = self._conn.send_command("advance_by", {"var": var, "delta": delta})
         self._check_response(responses)
 
-    def run(self, *, t: Optional[float] = None, dt: Optional[float] = None, var: str = "t"):
+    def run(
+        self, *, t: Optional[float] = None, dt: Optional[float] = None, var: str = "t"
+    ):
         """Advance the simulation (legacy interface).
 
         Args:
@@ -567,3 +612,41 @@ class Mist:
             if resp_type == "timeseries_info":
                 return resp_data.get("available", [])
         return []
+
+    @property
+    def physics_text(self) -> str:
+        """Get physics config as formatted text."""
+        responses = self._conn.send_command("show_physics")
+        for resp_type, resp_data in responses:
+            if resp_type == "physics_config":
+                return resp_data.get("text", "")
+        return ""
+
+    @property
+    def initial_text(self) -> str:
+        """Get initial config as formatted text."""
+        responses = self._conn.send_command("show_initial")
+        for resp_type, resp_data in responses:
+            if resp_type == "initial_config":
+                return resp_data.get("text", "")
+        return ""
+
+    @property
+    def profiler_text(self) -> str:
+        """Get profiler data as formatted text."""
+        responses = self._conn.send_command("show_profiler")
+        for resp_type, resp_data in responses:
+            if resp_type == "profiler_info":
+                entries = resp_data.get("entries", [])
+                total = resp_data.get("total_time", 0.0)
+                lines = []
+                for entry in entries:
+                    name = entry.get("name", "")
+                    count = entry.get("count", 0)
+                    time = entry.get("time", 0.0)
+                    pct = (time / total * 100) if total > 0 else 0
+                    lines.append(f"{name:30} {count:8} {time:10.4f}s {pct:6.1f}%")
+                if lines:
+                    lines.append(f"{'Total':30} {' ':8} {total:10.4f}s")
+                return "\n".join(lines)
+        return ""

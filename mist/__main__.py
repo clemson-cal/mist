@@ -20,6 +20,8 @@ try:
         RichLog,
         Rule,
         Static,
+        TabbedContent,
+        TabPane,
     )
     from textual.reactive import reactive
 except ImportError:
@@ -111,9 +113,20 @@ class MistTUI(App):
         border-right: solid $primary;
     }
 
+    #content-tabs {
+        width: 1fr;
+        height: 1fr;
+    }
+
     #plot-content {
         width: 1fr;
         height: 1fr;
+    }
+
+    .config-text {
+        width: 1fr;
+        height: 1fr;
+        padding: 1;
     }
 
     #console {
@@ -180,10 +193,18 @@ class MistTUI(App):
                 yield Static("Products", classes="section-title")
                 with Vertical(id="products-section"):
                     pass
-            if HAVE_PLOTEXT:
-                yield PlotextPlot(id="plot-content")
-            else:
-                yield Static("Install textual-plotext", id="plot-content")
+            with TabbedContent(id="content-tabs"):
+                with TabPane("Plot", id="tab-plot"):
+                    if HAVE_PLOTEXT:
+                        yield PlotextPlot(id="plot-content")
+                    else:
+                        yield Static("Install textual-plotext", id="plot-content")
+                with TabPane("Physics", id="tab-physics"):
+                    yield Static("", id="physics-text", classes="config-text")
+                with TabPane("Initial", id="tab-initial"):
+                    yield Static("", id="initial-text", classes="config-text")
+                with TabPane("Profiler", id="tab-profiler"):
+                    yield Static("", id="profiler-text", classes="config-text")
         yield RichLog(id="console", highlight=True, markup=True)
         with Horizontal(id="controls"):
             with Horizontal(id="control-buttons"):
@@ -202,9 +223,25 @@ class MistTUI(App):
             self.log_message("Connected successfully")
             self.log_message("Press 'i' or click Init to initialize")
             self.refresh_configs()
+            self.refresh_tab_content()
             self.refresh_all()
         except Exception as e:
             self.log_message(f"[red]Error connecting: {e}[/]")
+
+    def refresh_tab_content(self) -> None:
+        """Update the content in the config/profiler tabs."""
+        if not self.sim:
+            return
+        try:
+            self.query_one("#physics-text", Static).update(self.sim.physics_text)
+            self.query_one("#initial-text", Static).update(self.sim.initial_text)
+            self.query_one("#profiler-text", Static).update(self.sim.profiler_text)
+        except Exception as e:
+            self.log_message(f"[red]Error updating tabs: {e}[/]")
+
+    def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+        """Refresh tab content when switching tabs."""
+        self.refresh_tab_content()
 
     def refresh_configs(self) -> None:
         """Populate config inputs from simulation."""
@@ -276,6 +313,7 @@ class MistTUI(App):
         """Refresh all displays."""
         self.update_info_bar()
         self.refresh_products()  # Also updates plot
+        self.refresh_tab_content()
 
     def action_init(self) -> None:
         """Initialize the simulation."""
@@ -306,6 +344,7 @@ class MistTUI(App):
             self.show_iteration_info()
             self.update_info_bar()
             self.update_plot()
+            self.refresh_tab_content()
         except Exception as e:
             self.log_message(f"[red]Error: {e}[/]")
 
@@ -319,12 +358,12 @@ class MistTUI(App):
         try:
             inp = self.query_one("#advance-input", Input)
             target = float(inp.value)
-            # self.log_message(f"Advancing to t={target}...")
             self.sim.advance_to(target)
             self.log_message(f"[green]Advanced to t={self.sim.time:.6g}[/]")
             self.show_iteration_info()
             self.update_info_bar()
             self.update_plot()
+            self.refresh_tab_content()
         except ValueError:
             self.log_message("[red]Invalid target value[/]")
         except Exception as e:
