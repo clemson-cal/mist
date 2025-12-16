@@ -12,7 +12,7 @@ try:
     from textual.binding import Binding
     from textual.containers import Container, Horizontal, Vertical, ScrollableContainer
     from textual.widgets import (
-        Button, Footer, Header, Input, Label, Log, Static,
+        Button, Checkbox, Footer, Header, Input, Label, Log, Static,
         TabbedContent, TabPane, DataTable, Rule
     )
     from textual.reactive import reactive
@@ -72,7 +72,7 @@ class MistTUI(App):
     }
 
     #main-content {
-        height: 100%;
+        height: 1fr;
     }
 
     #controls {
@@ -97,7 +97,7 @@ class MistTUI(App):
     }
 
     #console {
-        height: 100%;
+        height: 1fr;
         border: solid $primary;
         background: $surface-darken-1;
     }
@@ -107,11 +107,11 @@ class MistTUI(App):
     }
 
     ConfigTable {
-        height: 100%;
+        height: 1fr;
     }
 
-    #products-content {
-        height: 100%;
+    #products-checkboxes {
+        height: auto;
     }
 
     .section-title {
@@ -150,7 +150,7 @@ class MistTUI(App):
                         yield ConfigTable(id="initial-table")
                 with TabPane("Products", id="tab-products"):
                     with ScrollableContainer(classes="tab-content"):
-                        yield Static(id="products-content")
+                        yield Vertical(id="products-checkboxes")
                 with TabPane("Timeseries", id="tab-timeseries"):
                     with ScrollableContainer(classes="tab-content"):
                         yield Static(id="timeseries-content")
@@ -218,18 +218,19 @@ class MistTUI(App):
             self.log_message(f"[red]Error refreshing initial: {e}[/]")
 
     def refresh_products(self) -> None:
-        """Refresh the products tab."""
+        """Refresh the products tab with checkboxes."""
         if not self.sim or not self.sim._initialized:
             return
         try:
-            content = self.query_one("#products-content", Static)
+            container = self.query_one("#products-checkboxes", Vertical)
             names = self.sim.product_names
-            lines = ["[bold]Available Products:[/]", ""]
+
+            # Remove all existing checkboxes and recreate
+            container.remove_children()
             for name in names:
-                lines.append(f"  - {name}")
-            if not names:
-                lines.append("  (none)")
-            content.update("\n".join(lines))
+                cb_id = f"product-{name}"
+                checkbox = Checkbox(name, value=True, id=cb_id)
+                container.mount(checkbox)
         except Exception as e:
             self.log_message(f"[red]Error refreshing products: {e}[/]")
 
@@ -386,6 +387,24 @@ class MistTUI(App):
             self.action_reset()
         elif button_id == "btn-refresh":
             self.action_refresh()
+
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        """Handle checkbox changes for product selection."""
+        if not event.checkbox.id or not event.checkbox.id.startswith("product-"):
+            return
+        if not self.sim or not self.sim._initialized:
+            return
+        try:
+            container = self.query_one("#products-checkboxes", Vertical)
+            selected = [
+                cb.id.replace("product-", "", 1)
+                for cb in container.query(Checkbox)
+                if cb.value
+            ]
+            self.sim.select_products(selected)
+            self.log_message(f"Selected products: {selected}")
+        except Exception as e:
+            self.log_message(f"[red]Error selecting products: {e}[/]")
 
     def on_unmount(self) -> None:
         """Clean up on exit."""
