@@ -99,6 +99,7 @@ private:
     double command_start_wall_time_;
     int command_start_iteration_;
     double last_dt_ = 0.0;
+    double last_zps_ = 0.0;
     socket_t data_socket_;
 
     auto make_iteration_info() const -> resp::iteration_info;

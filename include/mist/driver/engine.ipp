@@ -188,9 +188,12 @@ MIST_INLINE auto engine_t::make_iteration_info() const -> resp::iteration_info {
 
     auto wall_elapsed = get_wall_time() - command_start_wall_time_;
     auto iter_elapsed = state_.iteration - command_start_iteration_;
-    info.zps = (wall_elapsed > 0)
-        ? (iter_elapsed * physics_.zone_count()) / wall_elapsed
-        : 0.0;
+
+    if (iter_elapsed > 0 && wall_elapsed > 0) {
+        info.zps = (iter_elapsed * physics_.zone_count()) / wall_elapsed;
+    } else {
+        info.zps = last_zps_;
+    }
 
     return info;
 }
@@ -260,6 +263,13 @@ MIST_INLINE void engine_t::advance_to_target(const std::string& var, double targ
             do_timestep(dt_max);
             execute_repeating_commands(emit);
         }
+    }
+
+    // Store zps from this advance command for later queries
+    auto wall_elapsed = get_wall_time() - command_start_wall_time_;
+    auto iter_elapsed = state_.iteration - command_start_iteration_;
+    if (iter_elapsed > 0 && wall_elapsed > 0) {
+        last_zps_ = (iter_elapsed * physics_.zone_count()) / wall_elapsed;
     }
 
     if (guard.is_interrupted()) {
