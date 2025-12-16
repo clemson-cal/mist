@@ -192,15 +192,21 @@ public:
         }
         if (fmt == output_format::ascii) {
             auto writer = ascii_writer{os};
-            serialize(writer, "physics", config_);
-            serialize(writer, "initial", initial_);
-            serialize(writer, "physics_state", *state_);
+            serialize_state_to(writer);
         } else {
             auto writer = binary_writer{os};
-            serialize(writer, "physics", config_);
-            serialize(writer, "initial", initial_);
-            serialize(writer, "physics_state", *state_);
+            serialize_state_to(writer);
         }
+    }
+
+    template<typename Writer>
+    void serialize_state_to(Writer& writer) {
+        if (!state_.has_value()) {
+            throw std::runtime_error("state not initialized");
+        }
+        serialize(writer, "physics", config_);
+        serialize(writer, "initial", initial_);
+        serialize(writer, "physics_state", *state_);
     }
 
     void write_products(std::ostream& os, output_format fmt,
@@ -257,30 +263,33 @@ public:
 
     auto load_state(std::istream& is, output_format fmt) -> bool override {
         try {
-            typename P::config_t cfg;
-            typename P::initial_t ini;
-            typename P::state_t state;
-
             if (fmt == output_format::ascii) {
                 auto reader = ascii_reader{is};
-                if (!deserialize(reader, "physics", cfg)) return false;
-                if (!deserialize(reader, "initial", ini)) return false;
-                if (!deserialize(reader, "physics_state", state)) return false;
+                return deserialize_state_from(reader);
             } else {
                 auto reader = binary_reader{is};
-                if (!deserialize(reader, "physics", cfg)) return false;
-                if (!deserialize(reader, "initial", ini)) return false;
-                if (!deserialize(reader, "physics_state", state)) return false;
+                return deserialize_state_from(reader);
             }
-
-            config_ = std::move(cfg);
-            initial_ = std::move(ini);
-            state_ = std::move(state);
-            exec_context_ = std::make_unique<typename P::exec_context_t>(config_, initial_);
-            return true;
         } catch (...) {
             return false;
         }
+    }
+
+    template<typename Reader>
+    auto deserialize_state_from(Reader& reader) -> bool {
+        typename P::config_t cfg;
+        typename P::initial_t ini;
+        typename P::state_t state;
+
+        if (!deserialize(reader, "physics", cfg)) return false;
+        if (!deserialize(reader, "initial", ini)) return false;
+        if (!deserialize(reader, "physics_state", state)) return false;
+
+        config_ = std::move(cfg);
+        initial_ = std::move(ini);
+        state_ = std::move(state);
+        exec_context_ = std::make_unique<typename P::exec_context_t>(config_, initial_);
+        return true;
     }
 
     // -------------------------------------------------------------------------

@@ -28,7 +28,8 @@ namespace mist {
 
 class binary_reader {
 public:
-    explicit binary_reader(std::istream& is) : is_(is) {}
+    explicit binary_reader(std::istream& is, bool skip_header = false)
+        : is_(is), header_read_(skip_header), base_position_(is.tellg()) {}
 
     // --- Name context ---
 
@@ -292,6 +293,7 @@ private:
     };
     std::vector<group_info_t> group_stack_;
     bool header_read_ = false;
+    std::streampos base_position_ = 0;
 
     // Check if we can read the next item in a list, decrementing remaining count
     auto check_list_item() -> bool {
@@ -306,6 +308,7 @@ private:
 
     void ensure_header() {
         if (header_read_) return;
+        is_.seekg(base_position_);
         uint32_t magic;
         read_raw(magic);
         if (magic != binary_format::MAGIC) {
@@ -421,7 +424,8 @@ private:
     auto seek_field(const char* name) -> bool {
         ensure_header();
 
-        auto start = group_stack_.empty() ? std::streampos(5) : group_stack_.back().start;
+        // Start position: base + 5 bytes (header) for root level, or group's start position
+        auto start = group_stack_.empty() ? base_position_ + std::streamoff(5) : group_stack_.back().start;
         is_.seekg(start);
 
         // If in a list, we can't seek by name - just return false

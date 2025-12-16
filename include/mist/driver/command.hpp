@@ -73,25 +73,25 @@ struct do_timeseries {
 };
 
 struct write_physics {
-    std::string dest;
+    std::optional<std::string> dest;
     auto fields() const { return std::make_tuple(field("dest", dest)); }
     auto fields() { return std::make_tuple(field("dest", dest)); }
 };
 
 struct write_initial {
-    std::string dest;
+    std::optional<std::string> dest;
     auto fields() const { return std::make_tuple(field("dest", dest)); }
     auto fields() { return std::make_tuple(field("dest", dest)); }
 };
 
 struct write_driver {
-    std::string dest;
+    std::optional<std::string> dest;
     auto fields() const { return std::make_tuple(field("dest", dest)); }
     auto fields() { return std::make_tuple(field("dest", dest)); }
 };
 
 struct write_profiler {
-    std::string dest;
+    std::optional<std::string> dest;
     auto fields() const { return std::make_tuple(field("dest", dest)); }
     auto fields() { return std::make_tuple(field("dest", dest)); }
 };

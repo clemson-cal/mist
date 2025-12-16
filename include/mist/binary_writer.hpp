@@ -77,8 +77,8 @@ namespace binary_format {
 
 class binary_writer {
 public:
-    explicit binary_writer(std::ostream& os)
-        : os_(os), header_written_(false) {}
+    explicit binary_writer(std::ostream& os, bool skip_header = false)
+        : os_(os), header_written_(skip_header) {}
 
     // =========================================================================
     // Name context

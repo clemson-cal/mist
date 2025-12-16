@@ -126,20 +126,16 @@ MIST_INLINE auto parse_command(std::string_view input) -> parsed_command_t {
         auto has_dest = static_cast<bool>(iss >> dest);
 
         if (what == "physics") {
-            if (!has_dest) return {{}, {}, "write physics requires destination"};
-            return {cmd::write_physics{dest}, {}, {}};
+            return {cmd::write_physics{has_dest ? std::optional{dest} : std::nullopt}, {}, {}};
         }
         if (what == "initial") {
-            if (!has_dest) return {{}, {}, "write initial requires destination"};
-            return {cmd::write_initial{dest}, {}, {}};
+            return {cmd::write_initial{has_dest ? std::optional{dest} : std::nullopt}, {}, {}};
         }
         if (what == "driver") {
-            if (!has_dest) return {{}, {}, "write driver requires destination"};
-            return {cmd::write_driver{dest}, {}, {}};
+            return {cmd::write_driver{has_dest ? std::optional{dest} : std::nullopt}, {}, {}};
         }
         if (what == "profiler") {
-            if (!has_dest) return {{}, {}, "write profiler requires destination"};
-            return {cmd::write_profiler{dest}, {}, {}};
+            return {cmd::write_profiler{has_dest ? std::optional{dest} : std::nullopt}, {}, {}};
         }
         if (what == "timeseries") {
             return {cmd::write_timeseries{has_dest ? std::optional{dest} : std::nullopt}, {}, {}};
@@ -196,11 +192,18 @@ MIST_INLINE auto parse_command(std::string_view input) -> parsed_command_t {
 
     // load
     if (first == "load") {
-        auto filename = std::string{};
-        if (!(iss >> filename)) {
+        auto first_arg = std::string{};
+        if (!(iss >> first_arg)) {
             return {{}, {}, "load requires filename"};
         }
-        return {cmd::load{filename}, {}, {}};
+        // Support both "load <file>" and "load <what> <file>" for consistency with write
+        auto second_arg = std::string{};
+        if (iss >> second_arg) {
+            // Two arguments: first is category (ignored), second is filename
+            return {cmd::load{second_arg}, {}, {}};
+        }
+        // One argument: it's the filename
+        return {cmd::load{first_arg}, {}, {}};
     }
 
     // init / reset

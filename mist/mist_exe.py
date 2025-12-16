@@ -70,15 +70,28 @@ TERMINAL_RESPONSES = {
 # Command serialization (handles optional fields for C++ compatibility)
 # =============================================================================
 
+# Commands where 'dest' is std::optional<std::string>
+COMMANDS_WITH_OPTIONAL_DEST = {
+    "write_physics",
+    "write_initial",
+    "write_driver",
+    "write_profiler",
+    "write_timeseries",
+    "write_checkpoint",
+    "write_products",
+    "write_iteration",
+}
+
+
 def _serialize_command(cmd_name: str, fields: dict) -> bytes:
     """Serialize a command to binary format for socket transmission."""
     if cmd_name not in COMMAND_INDICES:
         raise ValueError(f"Unknown command: {cmd_name}")
 
-    # Transform fields: convert 'dest' to optional format
+    # Transform fields: convert 'dest' to optional format only for commands that use optional
     transformed = {}
     for name, value in fields.items():
-        if name == "dest" and isinstance(value, str):
+        if name == "dest" and isinstance(value, str) and cmd_name in COMMANDS_WITH_OPTIONAL_DEST:
             # C++ expects std::optional<std::string> as GROUP{has_value, value}
             transformed[name] = {"has_value": 1, "value": value}
         else:

@@ -510,7 +510,7 @@ MIST_INLINE void engine_t::handle(const cmd::do_timeseries&, emit_fn emit) {
 }
 
 MIST_INLINE void engine_t::handle(const cmd::write_physics& c, emit_fn emit) {
-    if (c.dest == "socket") {
+    if (c.dest && *c.dest == "socket") {
         write_to_socket([this](std::ostream& os) {
             write_physics(os, output_format::binary);
         }, emit);
@@ -518,21 +518,22 @@ MIST_INLINE void engine_t::handle(const cmd::write_physics& c, emit_fn emit) {
     }
 
     try {
-        auto fmt = infer_format_from_filename(c.dest);
-        auto file = std::ofstream{c.dest, std::ios::binary};
+        auto filename = c.dest.value_or("physics.cfg");
+        auto fmt = infer_format_from_filename(filename);
+        auto file = std::ofstream{filename, std::ios::binary};
         if (!file) {
-            emit(resp::error{"failed to open " + c.dest});
+            emit(resp::error{"failed to open " + filename});
             return;
         }
         write_physics(file, fmt);
-        emit(resp::wrote_file{c.dest, static_cast<std::size_t>(file.tellp())});
+        emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
     } catch (const std::exception& e) {
         emit(resp::error{e.what()});
     }
 }
 
 MIST_INLINE void engine_t::handle(const cmd::write_initial& c, emit_fn emit) {
-    if (c.dest == "socket") {
+    if (c.dest && *c.dest == "socket") {
         write_to_socket([this](std::ostream& os) {
             write_initial(os, output_format::binary);
         }, emit);
@@ -540,21 +541,22 @@ MIST_INLINE void engine_t::handle(const cmd::write_initial& c, emit_fn emit) {
     }
 
     try {
-        auto fmt = infer_format_from_filename(c.dest);
-        auto file = std::ofstream{c.dest, std::ios::binary};
+        auto filename = c.dest.value_or("initial.cfg");
+        auto fmt = infer_format_from_filename(filename);
+        auto file = std::ofstream{filename, std::ios::binary};
         if (!file) {
-            emit(resp::error{"failed to open " + c.dest});
+            emit(resp::error{"failed to open " + filename});
             return;
         }
         write_initial(file, fmt);
-        emit(resp::wrote_file{c.dest, static_cast<std::size_t>(file.tellp())});
+        emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
     } catch (const std::exception& e) {
         emit(resp::error{e.what()});
     }
 }
 
 MIST_INLINE void engine_t::handle(const cmd::write_driver& c, emit_fn emit) {
-    if (c.dest == "socket") {
+    if (c.dest && *c.dest == "socket") {
         write_to_socket([this](std::ostream& os) {
             write_driver(os, output_format::binary);
         }, emit);
@@ -562,21 +564,22 @@ MIST_INLINE void engine_t::handle(const cmd::write_driver& c, emit_fn emit) {
     }
 
     try {
-        auto fmt = infer_format_from_filename(c.dest);
-        auto file = std::ofstream{c.dest, std::ios::binary};
+        auto filename = c.dest.value_or("driver.cfg");
+        auto fmt = infer_format_from_filename(filename);
+        auto file = std::ofstream{filename, std::ios::binary};
         if (!file) {
-            emit(resp::error{"failed to open " + c.dest});
+            emit(resp::error{"failed to open " + filename});
             return;
         }
         write_driver(file, fmt);
-        emit(resp::wrote_file{c.dest, static_cast<std::size_t>(file.tellp())});
+        emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
     } catch (const std::exception& e) {
         emit(resp::error{e.what()});
     }
 }
 
 MIST_INLINE void engine_t::handle(const cmd::write_profiler& c, emit_fn emit) {
-    if (c.dest == "socket") {
+    if (c.dest && *c.dest == "socket") {
         write_to_socket([this](std::ostream& os) {
             write_profiler(os, output_format::binary);
         }, emit);
@@ -584,14 +587,15 @@ MIST_INLINE void engine_t::handle(const cmd::write_profiler& c, emit_fn emit) {
     }
 
     try {
-        auto fmt = infer_format_from_filename(c.dest);
-        auto file = std::ofstream{c.dest, std::ios::binary};
+        auto filename = c.dest.value_or("profiler.dat");
+        auto fmt = infer_format_from_filename(filename);
+        auto file = std::ofstream{filename, std::ios::binary};
         if (!file) {
-            emit(resp::error{"failed to open " + c.dest});
+            emit(resp::error{"failed to open " + filename});
             return;
         }
         write_profiler(file, fmt);
-        emit(resp::wrote_file{c.dest, static_cast<std::size_t>(file.tellp())});
+        emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
     } catch (const std::exception& e) {
         emit(resp::error{e.what()});
     }

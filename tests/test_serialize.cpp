@@ -354,6 +354,10 @@ struct binary_tag {
     }
 };
 
+struct binary_file_tag {
+    static constexpr const char* filename = "test_round_trip.bin";
+};
+
 // Default construction for most types
 template<typename T>
 auto make_default() -> T {
@@ -380,6 +384,24 @@ auto round_trip(const T& original, const char* name) -> T {
     return loaded;
 }
 
+template<typename T>
+auto round_trip_file(const T& original, const char* name) -> T {
+    {
+        auto file = std::ofstream(binary_file_tag::filename, std::ios::binary);
+        auto writer = binary_writer(file);
+        serialize(writer, name, original);
+    }
+
+    auto loaded = make_default<T>();
+    {
+        auto file = std::ifstream(binary_file_tag::filename, std::ios::binary);
+        auto reader = binary_reader(file);
+        deserialize(reader, name, loaded);
+    }
+    std::remove(binary_file_tag::filename);
+    return loaded;
+}
+
 // =============================================================================
 // Test driver
 // =============================================================================
@@ -392,10 +414,18 @@ void test_format(Factory make_value, const char* field_name) {
 }
 
 template<typename Factory>
+void test_format_file(Factory make_value, const char* field_name) {
+    auto original = make_value();
+    auto loaded = round_trip_file(original, field_name);
+    assert(equal(original, loaded));
+}
+
+template<typename Factory>
 void test_round_trip(const char* type_name, Factory make_value, const char* field_name) {
     std::cout << "Testing " << type_name << "... ";
     test_format<ascii_tag>(make_value, field_name);
     test_format<binary_tag>(make_value, field_name);
+    test_format_file(make_value, field_name);
     std::cout << "PASSED\n";
 }
 
