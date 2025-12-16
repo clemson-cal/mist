@@ -542,6 +542,15 @@ class Mist:
         return 0.0
 
     @property
+    def zps(self) -> float:
+        """Get zones per second."""
+        responses = self._conn.send_command("show_iteration")
+        for resp_type, resp_data in responses:
+            if resp_type == "iteration_info":
+                return resp_data.get("zps", 0.0)
+        return 0.0
+
+    @property
     def product_names(self) -> list[str]:
         """Get list of available product names."""
         responses = self._conn.send_command("show_products")

@@ -15,16 +15,11 @@ try:
     from textual.widgets import (
         Button,
         Checkbox,
-        Footer,
-        Header,
         Input,
         Label,
-        Log,
-        Static,
-        TabbedContent,
-        TabPane,
-        DataTable,
+        RichLog,
         Rule,
+        Static,
     )
     from textual.reactive import reactive
 except ImportError:
@@ -34,6 +29,7 @@ except ImportError:
 
 try:
     from textual_plotext import PlotextPlot
+
     HAVE_PLOTEXT = True
 except ImportError:
     HAVE_PLOTEXT = False
@@ -41,16 +37,33 @@ except ImportError:
 from .mist_exe import Mist
 
 
-class ConfigTable(DataTable):
-    """A table showing key-value configuration."""
+class ConfigInput(Horizontal):
+    """A labeled input for config values."""
 
-    def update_config(self, config: dict):
-        """Update the table with new config data."""
-        self.clear()
-        if not self.columns:
-            self.add_columns("Key", "Value")
-        for key, value in sorted(config.items()):
-            self.add_row(str(key), str(value))
+    DEFAULT_CSS = """
+    ConfigInput {
+        height: auto;
+        width: 100%;
+    }
+    ConfigInput Label {
+        width: 16;
+        text-align: right;
+        padding: 0 1 0 0;
+    }
+    ConfigInput Input {
+        width: 1fr;
+    }
+    """
+
+    def __init__(self, key: str, value: str, config_type: str, **kwargs):
+        super().__init__(**kwargs)
+        self.config_key = key
+        self.config_type = config_type  # "physics" or "initial"
+        self._value = value
+
+    def compose(self) -> ComposeResult:
+        yield Label(self.config_key)
+        yield Input(value=self._value, id=f"cfg-{self.config_type}-{self.config_key}")
 
 
 class SimulationInfo(Static):
@@ -78,25 +91,41 @@ class MistTUI(App):
     Screen {
         layout: grid;
         grid-size: 1 4;
-        grid-rows: auto 1fr 12 auto;
+        grid-rows: auto 2fr 1fr auto;
     }
 
     #info-bar {
-        height: 3;
-        padding: 1;
+        height: auto;
+        padding: 0 1;
         background: $surface;
-        border-bottom: solid $primary;
     }
 
-    #main-content {
+    #main-area {
         height: 1fr;
+    }
+
+    #sidebar {
+        width: 30;
+        height: 1fr;
+        padding: 1;
+        border-right: solid $primary;
+    }
+
+    #plot-content {
+        width: 1fr;
+        height: 1fr;
+    }
+
+    #console {
+        height: 1fr;
+        border-top: solid $primary;
+        background: $surface-darken-1;
     }
 
     #controls {
         height: auto;
-        padding: 1;
+        padding: 0 1;
         background: $surface;
-        border-top: solid $primary;
     }
 
     #control-buttons {
@@ -105,48 +134,22 @@ class MistTUI(App):
     }
 
     #control-buttons Button {
+        min-width: 8;
         margin: 0 1;
     }
 
     #advance-input {
-        width: 20;
+        width: 12;
         margin: 0 1;
-    }
-
-    #console {
-        height: 1fr;
-        border: solid $primary;
-        background: $surface-darken-1;
-    }
-
-    .tab-content {
-        padding: 1;
-    }
-
-    ConfigTable {
-        height: 1fr;
-    }
-
-    #products-checkboxes {
-        width: 20;
-        height: 1fr;
-        padding: 1;
-        border-right: solid $primary;
-    }
-
-    #plot-container {
-        width: 1fr;
-        height: 1fr;
-    }
-
-    #plot-content {
-        width: 1fr;
-        height: 1fr;
     }
 
     .section-title {
         text-style: bold;
-        padding: 0 0 1 0;
+        margin: 1 0 0 0;
+    }
+
+    #physics-config, #initial-config, #products-section {
+        height: auto;
     }
     """
 
@@ -155,8 +158,7 @@ class MistTUI(App):
         Binding("i", "init", "Init"),
         Binding("s", "step", "Step"),
         Binding("r", "reset", "Reset"),
-        Binding("a", "advance", "Advance"),
-        Binding("f5", "refresh", "Refresh"),
+        Binding("g", "advance", "Go"),
     ]
 
     def __init__(self, executable: str):
@@ -166,44 +168,30 @@ class MistTUI(App):
         self.advance_target = 0.1
 
     def compose(self) -> ComposeResult:
-        yield Header()
         yield SimulationInfo(id="info-bar")
-        with Container(id="main-content"):
-            with TabbedContent():
-                with TabPane("Console", id="tab-console"):
-                    yield Log(id="console", highlight=True)
-                with TabPane("Physics", id="tab-physics"):
-                    with ScrollableContainer(classes="tab-content"):
-                        yield ConfigTable(id="physics-table")
-                with TabPane("Initial", id="tab-initial"):
-                    with ScrollableContainer(classes="tab-content"):
-                        yield ConfigTable(id="initial-table")
-                with TabPane("Timeseries", id="tab-timeseries"):
-                    with ScrollableContainer(classes="tab-content"):
-                        yield Static(id="timeseries-content")
-                with TabPane("State", id="tab-state"):
-                    with ScrollableContainer(classes="tab-content"):
-                        yield Static(id="state-content")
-                with TabPane("Profiler", id="tab-profiler"):
-                    with ScrollableContainer(classes="tab-content"):
-                        yield Static(id="profiler-content")
-                with TabPane("Plot", id="tab-plot"):
-                    with Horizontal():
-                        with ScrollableContainer(id="products-checkboxes"):
-                            yield Static("[bold]Products[/]", classes="section-title")
-                        if HAVE_PLOTEXT:
-                            yield PlotextPlot(id="plot-content")
-                        else:
-                            yield Static("Install textual-plotext for plotting", id="plot-content")
-        with Container(id="controls"):
+        with Horizontal(id="main-area"):
+            with ScrollableContainer(id="sidebar"):
+                yield Static("Physics", classes="section-title")
+                with Vertical(id="physics-config"):
+                    pass
+                yield Static("Initial", classes="section-title")
+                with Vertical(id="initial-config"):
+                    pass
+                yield Static("Products", classes="section-title")
+                with Vertical(id="products-section"):
+                    pass
+            if HAVE_PLOTEXT:
+                yield PlotextPlot(id="plot-content")
+            else:
+                yield Static("Install textual-plotext", id="plot-content")
+        yield RichLog(id="console", highlight=True, markup=True)
+        with Horizontal(id="controls"):
             with Horizontal(id="control-buttons"):
                 yield Button("Init", id="btn-init", variant="success")
                 yield Button("Step", id="btn-step")
-                yield Button("Advance to:", id="btn-advance", variant="primary")
-                yield Input(value="0.1", id="advance-input", placeholder="target")
+                yield Button("Go", id="btn-advance", variant="primary")
+                yield Input(value="0.1", id="advance-input", placeholder="t")
                 yield Button("Reset", id="btn-reset", variant="warning")
-                yield Button("Refresh", id="btn-refresh")
-        yield Footer()
 
     def on_mount(self) -> None:
         """Connect to the simulation on startup."""
@@ -213,14 +201,42 @@ class MistTUI(App):
             self.sim = Mist(self.executable, init=False)
             self.log_message("Connected successfully")
             self.log_message("Press 'i' or click Init to initialize")
+            self.refresh_configs()
             self.refresh_all()
         except Exception as e:
             self.log_message(f"[red]Error connecting: {e}[/]")
 
+    def refresh_configs(self) -> None:
+        """Populate config inputs from simulation."""
+        if not self.sim:
+            return
+
+        try:
+            # Physics config
+            physics_container = self.query_one("#physics-config", Vertical)
+            physics_data = self.sim.physics.to_dict()
+            for key, value in physics_data.items():
+                input_id = f"cfg-physics-{key}"
+                if not self.query(f"#{input_id}"):
+                    widget = ConfigInput(key, str(value), "physics")
+                    physics_container.mount(widget)
+
+            # Initial config
+            initial_container = self.query_one("#initial-config", Vertical)
+            initial_data = self.sim.initial.to_dict()
+            for key, value in initial_data.items():
+                input_id = f"cfg-initial-{key}"
+                if not self.query(f"#{input_id}"):
+                    widget = ConfigInput(key, str(value), "initial")
+                    initial_container.mount(widget)
+
+        except Exception as e:
+            self.log_message(f"[red]Error loading configs: {e}[/]")
+
     def log_message(self, message: str) -> None:
         """Add a message to the console log."""
-        log = self.query_one("#console", Log)
-        log.write_line(message)
+        log = self.query_one("#console", RichLog)
+        log.write(message)
 
     def update_info_bar(self) -> None:
         """Update the info bar with current state."""
@@ -232,32 +248,12 @@ class MistTUI(App):
                 info.iteration = self.sim.iteration
                 info.dt = self.sim.dt
 
-    def refresh_physics(self) -> None:
-        """Refresh the physics config tab."""
-        if not self.sim:
-            return
-        try:
-            table = self.query_one("#physics-table", ConfigTable)
-            table.update_config(self.sim.physics.to_dict())
-        except Exception as e:
-            self.log_message(f"[red]Error refreshing physics: {e}[/]")
-
-    def refresh_initial(self) -> None:
-        """Refresh the initial config tab."""
-        if not self.sim:
-            return
-        try:
-            table = self.query_one("#initial-table", ConfigTable)
-            table.update_config(self.sim.initial.to_dict())
-        except Exception as e:
-            self.log_message(f"[red]Error refreshing initial: {e}[/]")
-
     def refresh_products(self) -> None:
-        """Refresh the products checkboxes in the Plot tab."""
+        """Refresh the products checkboxes."""
         if not self.sim or not self.sim._initialized:
             return
         try:
-            container = self.query_one("#products-checkboxes", ScrollableContainer)
+            container = self.query_one("#products-section", Vertical)
             existing_ids = {cb.id for cb in container.query(Checkbox)}
 
             names = self.sim.product_names
@@ -276,68 +272,10 @@ class MistTUI(App):
         except Exception as e:
             self.log_message(f"[red]Error refreshing products: {e}[/]")
 
-    def refresh_timeseries(self) -> None:
-        """Refresh the timeseries tab."""
-        if not self.sim or not self.sim._initialized:
-            return
-        try:
-            content = self.query_one("#timeseries-content", Static)
-            names = self.sim.timeseries_names
-            lines = ["[bold]Available Timeseries:[/]", ""]
-            for name in names:
-                lines.append(f"  - {name}")
-            if not names:
-                lines.append("  (none)")
-            content.update("\n".join(lines))
-        except Exception as e:
-            self.log_message(f"[red]Error refreshing timeseries: {e}[/]")
-
-    def refresh_state(self) -> None:
-        """Refresh the state tab."""
-        if not self.sim:
-            return
-        try:
-            content = self.query_one("#state-content", Static)
-            state = self.sim.state
-            lines = ["[bold]Simulation State:[/]", ""]
-            lines.append(f"  Initialized: {bool(state.get('initialized', 0))}")
-            lines.append(f"  Zone count: {state.get('zone_count', 0)}")
-            lines.append("")
-            lines.append("[bold]Time Variables:[/]")
-            for entry in state.get("times", []):
-                lines.append(f"  {entry.get('key', '?')}: {entry.get('value', 0):.6g}")
-            content.update("\n".join(lines))
-        except Exception as e:
-            self.log_message(f"[red]Error refreshing state: {e}[/]")
-
-    def refresh_profiler(self) -> None:
-        """Refresh the profiler tab."""
-        if not self.sim or not self.sim._initialized:
-            return
-        try:
-            content = self.query_one("#profiler-content", Static)
-            data = self.sim.profiler
-            lines = ["[bold]Profiler Data:[/]", ""]
-            for key, value in sorted(data.items()):
-                if isinstance(value, float):
-                    lines.append(f"  {key}: {value:.6g}")
-                else:
-                    lines.append(f"  {key}: {value}")
-            if len(data) == 0:
-                lines.append("  (no profiler data)")
-            content.update("\n".join(lines))
-        except Exception as e:
-            self.log_message(f"[red]Error refreshing profiler: {e}[/]")
-
     def refresh_all(self) -> None:
-        """Refresh all tabs and info."""
+        """Refresh all displays."""
         self.update_info_bar()
-        self.refresh_physics()
-        self.refresh_initial()
         self.refresh_products()  # Also updates plot
-        self.refresh_timeseries()
-        self.refresh_state()
-        self.refresh_profiler()
 
     def action_init(self) -> None:
         """Initialize the simulation."""
@@ -351,6 +289,7 @@ class MistTUI(App):
             self.sim.init()
             self.log_message("[green]Initialized successfully[/]")
             self.show_iteration_info()
+            self.update_initial_inputs_state()
             self.refresh_all()
         except Exception as e:
             self.log_message(f"[red]Error: {e}[/]")
@@ -380,7 +319,7 @@ class MistTUI(App):
         try:
             inp = self.query_one("#advance-input", Input)
             target = float(inp.value)
-            self.log_message(f"Advancing to t={target}...")
+            # self.log_message(f"Advancing to t={target}...")
             self.sim.advance_to(target)
             self.log_message(f"[green]Advanced to t={self.sim.time:.6g}[/]")
             self.show_iteration_info()
@@ -399,15 +338,10 @@ class MistTUI(App):
             self.log_message("Resetting...")
             self.sim.reset()
             self.log_message("[green]Reset complete[/]")
+            self.update_initial_inputs_state()
             self.refresh_all()
         except Exception as e:
             self.log_message(f"[red]Error: {e}[/]")
-
-    def action_refresh(self) -> None:
-        """Refresh all displays."""
-        self.log_message("Refreshing...")
-        self.refresh_all()
-        self.log_message("[green]Refreshed[/]")
 
     def update_plot(self) -> None:
         """Update the plot with selected products vs cell_x."""
@@ -417,7 +351,7 @@ class MistTUI(App):
             return
 
         try:
-            container = self.query_one("#products-checkboxes", ScrollableContainer)
+            container = self.query_one("#products-section", Vertical)
             selected = [
                 cb.id.replace("product-", "", 1)
                 for cb in container.query(Checkbox)
@@ -456,7 +390,8 @@ class MistTUI(App):
         t = self.sim.time
         n = self.sim.iteration
         dt = self.sim.dt
-        self.log_message(f"[{n:06d}] t={t:+.6e} dt={dt:.6e}")
+        zps = self.sim.zps
+        self.log_message(f"[{n:06d}] t={t:+.6e} dt={dt:.6e} zps={zps:.2e}")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """Handle button presses."""
@@ -469,8 +404,6 @@ class MistTUI(App):
             self.action_advance()
         elif button_id == "btn-reset":
             self.action_reset()
-        elif button_id == "btn-refresh":
-            self.action_refresh()
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
         """Handle checkbox changes for product selection."""
@@ -479,6 +412,48 @@ class MistTUI(App):
         if not self.sim or not self.sim._initialized:
             return
         self.update_plot()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle config input changes on Enter."""
+        if not event.input.id or not self.sim:
+            return
+
+        input_id = event.input.id
+        if not input_id.startswith("cfg-"):
+            return
+
+        # Parse input id: cfg-{type}-{key}
+        parts = input_id.split("-", 2)
+        if len(parts) != 3:
+            return
+
+        config_type = parts[1]  # "physics" or "initial"
+        key = parts[2]
+        value = event.value
+
+        try:
+            if config_type == "physics":
+                self.sim.physics[key] = value
+                self.log_message(f"[green]Set physics.{key} = {value}[/]")
+            elif config_type == "initial":
+                if self.sim._initialized:
+                    self.log_message(f"[yellow]Cannot modify initial.{key} - state exists, reset first[/]")
+                else:
+                    self.sim.initial[key] = value
+                    self.log_message(f"[green]Set initial.{key} = {value}[/]")
+        except Exception as e:
+            self.log_message(f"[red]Error setting {config_type}.{key}: {e}[/]")
+
+    def update_initial_inputs_state(self) -> None:
+        """Enable/disable initial config inputs based on initialization state."""
+        if not self.sim:
+            return
+        try:
+            container = self.query_one("#initial-config", Vertical)
+            for inp in container.query(Input):
+                inp.disabled = self.sim._initialized
+        except Exception:
+            pass
 
     def on_unmount(self) -> None:
         """Clean up on exit."""

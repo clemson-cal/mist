@@ -248,21 +248,26 @@ MIST_INLINE void engine_t::advance_to_target(const std::string& var, double targ
     // Fire any due tasks (including newly registered ones) before stepping
     execute_repeating_commands(emit);
 
-    if (var == "n") {
-        auto target_n = static_cast<int>(target);
-        while (state_.iteration < target_n && !guard.is_interrupted()) {
-            auto dt_max = time_to_next_task();
-            do_timestep(dt_max);
-            execute_repeating_commands(emit);
+    try {
+        if (var == "n") {
+            auto target_n = static_cast<int>(target);
+            while (state_.iteration < target_n && !guard.is_interrupted()) {
+                auto dt_max = time_to_next_task();
+                do_timestep(dt_max);
+                execute_repeating_commands(emit);
+            }
+        } else {
+            auto eps = 1e-12 * std::abs(target);
+            while (physics_.get_time(var) < target - eps && !guard.is_interrupted()) {
+                auto time_to_target = target - physics_.get_time(var);
+                auto dt_max = std::min(time_to_target, time_to_next_task());
+                do_timestep(dt_max);
+                execute_repeating_commands(emit);
+            }
         }
-    } else {
-        auto eps = 1e-12 * std::abs(target);
-        while (physics_.get_time(var) < target - eps && !guard.is_interrupted()) {
-            auto time_to_target = target - physics_.get_time(var);
-            auto dt_max = std::min(time_to_target, time_to_next_task());
-            do_timestep(dt_max);
-            execute_repeating_commands(emit);
-        }
+    } catch (const std::runtime_error& e) {
+        emit(resp::error{e.what()});
+        return;
     }
 
     // Store zps from this advance command for later queries

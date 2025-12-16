@@ -352,7 +352,7 @@ void advance(advection::state_t& state, const advection::exec_context_t& ctx, do
     auto v = ctx.config.wavespeed;
     auto cfl = ctx.config.cfl;
 
-    if (ctx.config.use_flux_buffer) { // Use of separate flux buffer (poor scaling)
+    if (ctx.config.use_flux_buffer) { // Use of separate flux buffer (poor scaling -- memory bandwidth?)
         auto pipeline = parallel::pipeline(
             ghost_exchange_t{},
             compute_local_dt_t{cfl, v, dx, dt_max},
