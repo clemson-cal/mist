@@ -1,4 +1,5 @@
 #include <cmath>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <limits>
@@ -8,6 +9,7 @@
 #include "mist/core.hpp"
 #include "mist/driver/physics_impl.hpp"
 #include "mist/driver/repl_session.hpp"
+#include "mist/driver/socket_session.hpp"
 #include "mist/ndarray.hpp"
 #include "mist/pipeline.hpp"
 #include "mist/serialize.hpp"
@@ -462,12 +464,25 @@ auto get_profiler_data(const advection::exec_context_t& ctx)
 // Main
 // =============================================================================
 
-int main()
+int main(int argc, char* argv[])
 {
+    auto use_socket = false;
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--socket") == 0 || std::strcmp(argv[i], "-s") == 0) {
+            use_socket = true;
+        }
+    }
+
     auto physics = mist::driver::make_physics<advection>();
     auto state = mist::driver::state_t{};
     auto engine = mist::driver::engine_t{state, *physics};
-    auto repl = mist::driver::repl_session_t{engine};
-    repl.run();
+
+    if (use_socket) {
+        auto session = mist::driver::socket_session_t{engine};
+        session.run();
+    } else {
+        auto session = mist::driver::repl_session_t{engine};
+        session.run();
+    }
     return 0;
 }

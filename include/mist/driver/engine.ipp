@@ -160,7 +160,11 @@ MIST_INLINE engine_t::engine_t(state_t& state, physics_interface_t& physics)
     , physics_(physics)
     , command_start_wall_time_(get_wall_time())
     , command_start_iteration_(state.iteration)
-{}
+{
+    data_socket_.listen(0); // port 0 = any available port
+}
+
+MIST_INLINE engine_t::~engine_t() = default;
 
 MIST_INLINE void engine_t::execute(const command_t& cmd, emit_fn emit) {
     command_start_wall_time_ = get_wall_time();
@@ -265,6 +269,29 @@ MIST_INLINE void engine_t::advance_to_target(const std::string& var, double targ
     }
 }
 
+MIST_INLINE void engine_t::write_to_socket(const std::function<void(std::ostream&)>& writer, emit_fn emit) {
+    emit(resp::socket_listening{static_cast<int>(data_socket_.port())});
+
+    auto guard = signal::interrupt_guard_t{};
+    auto client = data_socket_.accept_interruptible([&guard] { return guard.is_interrupted(); });
+
+    if (!client) {
+        emit(resp::socket_cancelled{});
+        return;
+    }
+
+    try {
+        // Write data to client with size prefix
+        auto oss = std::ostringstream{};
+        writer(oss);
+        auto data = oss.str();
+        client->send_with_size(data.data(), data.size());
+        emit(resp::socket_sent{data.size()});
+    } catch (const std::exception& e) {
+        emit(resp::error{e.what()});
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Direct write methods
 // -----------------------------------------------------------------------------
@@ -349,6 +376,17 @@ MIST_INLINE void engine_t::write_checkpoint(std::ostream& os, output_format fmt)
 
 MIST_INLINE void engine_t::write_products(std::ostream& os, output_format fmt) {
     physics_.write_products(os, fmt, state_.selected_products);
+}
+
+MIST_INLINE void engine_t::write_iteration(std::ostream& os, output_format fmt) {
+    auto info = make_iteration_info();
+    if (fmt == output_format::binary) {
+        auto writer = binary_writer{os};
+        serialize(writer, "iteration", info);
+    } else {
+        auto writer = ascii_writer{os};
+        serialize(writer, "iteration", info);
+    }
 }
 
 MIST_INLINE void engine_t::write_iteration_info(std::ostream& os, const color::scheme_t& c) {
@@ -472,47 +510,91 @@ MIST_INLINE void engine_t::handle(const cmd::do_timeseries&, emit_fn emit) {
 }
 
 MIST_INLINE void engine_t::handle(const cmd::write_physics& c, emit_fn emit) {
-    auto fmt = infer_format_from_filename(c.dest);
-    auto file = std::ofstream{c.dest, std::ios::binary};
-    if (!file) {
-        emit(resp::error{"failed to open " + c.dest});
+    if (c.dest == "socket") {
+        write_to_socket([this](std::ostream& os) {
+            write_physics(os, output_format::binary);
+        }, emit);
         return;
     }
-    write_physics(file, fmt);
-    emit(resp::wrote_file{c.dest, static_cast<std::size_t>(file.tellp())});
+
+    try {
+        auto fmt = infer_format_from_filename(c.dest);
+        auto file = std::ofstream{c.dest, std::ios::binary};
+        if (!file) {
+            emit(resp::error{"failed to open " + c.dest});
+            return;
+        }
+        write_physics(file, fmt);
+        emit(resp::wrote_file{c.dest, static_cast<std::size_t>(file.tellp())});
+    } catch (const std::exception& e) {
+        emit(resp::error{e.what()});
+    }
 }
 
 MIST_INLINE void engine_t::handle(const cmd::write_initial& c, emit_fn emit) {
-    auto fmt = infer_format_from_filename(c.dest);
-    auto file = std::ofstream{c.dest, std::ios::binary};
-    if (!file) {
-        emit(resp::error{"failed to open " + c.dest});
+    if (c.dest == "socket") {
+        write_to_socket([this](std::ostream& os) {
+            write_initial(os, output_format::binary);
+        }, emit);
         return;
     }
-    write_initial(file, fmt);
-    emit(resp::wrote_file{c.dest, static_cast<std::size_t>(file.tellp())});
+
+    try {
+        auto fmt = infer_format_from_filename(c.dest);
+        auto file = std::ofstream{c.dest, std::ios::binary};
+        if (!file) {
+            emit(resp::error{"failed to open " + c.dest});
+            return;
+        }
+        write_initial(file, fmt);
+        emit(resp::wrote_file{c.dest, static_cast<std::size_t>(file.tellp())});
+    } catch (const std::exception& e) {
+        emit(resp::error{e.what()});
+    }
 }
 
 MIST_INLINE void engine_t::handle(const cmd::write_driver& c, emit_fn emit) {
-    auto fmt = infer_format_from_filename(c.dest);
-    auto file = std::ofstream{c.dest, std::ios::binary};
-    if (!file) {
-        emit(resp::error{"failed to open " + c.dest});
+    if (c.dest == "socket") {
+        write_to_socket([this](std::ostream& os) {
+            write_driver(os, output_format::binary);
+        }, emit);
         return;
     }
-    write_driver(file, fmt);
-    emit(resp::wrote_file{c.dest, static_cast<std::size_t>(file.tellp())});
+
+    try {
+        auto fmt = infer_format_from_filename(c.dest);
+        auto file = std::ofstream{c.dest, std::ios::binary};
+        if (!file) {
+            emit(resp::error{"failed to open " + c.dest});
+            return;
+        }
+        write_driver(file, fmt);
+        emit(resp::wrote_file{c.dest, static_cast<std::size_t>(file.tellp())});
+    } catch (const std::exception& e) {
+        emit(resp::error{e.what()});
+    }
 }
 
 MIST_INLINE void engine_t::handle(const cmd::write_profiler& c, emit_fn emit) {
-    auto fmt = infer_format_from_filename(c.dest);
-    auto file = std::ofstream{c.dest, std::ios::binary};
-    if (!file) {
-        emit(resp::error{"failed to open " + c.dest});
+    if (c.dest == "socket") {
+        write_to_socket([this](std::ostream& os) {
+            write_profiler(os, output_format::binary);
+        }, emit);
         return;
     }
-    write_profiler(file, fmt);
-    emit(resp::wrote_file{c.dest, static_cast<std::size_t>(file.tellp())});
+
+    try {
+        auto fmt = infer_format_from_filename(c.dest);
+        auto file = std::ofstream{c.dest, std::ios::binary};
+        if (!file) {
+            emit(resp::error{"failed to open " + c.dest});
+            return;
+        }
+        write_profiler(file, fmt);
+        emit(resp::wrote_file{c.dest, static_cast<std::size_t>(file.tellp())});
+    } catch (const std::exception& e) {
+        emit(resp::error{e.what()});
+    }
 }
 
 MIST_INLINE void engine_t::handle(const cmd::write_timeseries& c, emit_fn emit) {
@@ -521,53 +603,75 @@ MIST_INLINE void engine_t::handle(const cmd::write_timeseries& c, emit_fn emit) 
         return;
     }
 
-    auto filename = std::string{};
-    auto fmt = output_format{};
-
-    if (c.dest) {
-        filename = *c.dest;
-        fmt = infer_format_from_filename(filename);
-    } else {
-        fmt = state_.format;
-        auto ext = (fmt == output_format::ascii) ? ".dat" : ".bin";
-        auto oss = std::ostringstream{};
-        oss << "timeseries." << std::setw(4) << std::setfill('0') << state_.timeseries_count << ext;
-        filename = oss.str();
-        state_.timeseries_count++;
-    }
-
-    auto file = std::ofstream{filename, std::ios::binary};
-    if (!file) {
-        emit(resp::error{"failed to open " + filename});
+    if (c.dest && *c.dest == "socket") {
+        write_to_socket([this](std::ostream& os) {
+            write_timeseries(os, output_format::binary);
+        }, emit);
         return;
     }
-    write_timeseries(file, fmt);
-    emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
+
+    try {
+        auto filename = std::string{};
+        auto fmt = output_format{};
+
+        if (c.dest) {
+            filename = *c.dest;
+            fmt = infer_format_from_filename(filename);
+        } else {
+            fmt = state_.format;
+            auto ext = (fmt == output_format::ascii) ? ".dat" : ".bin";
+            auto oss = std::ostringstream{};
+            oss << "timeseries." << std::setw(4) << std::setfill('0') << state_.timeseries_count << ext;
+            filename = oss.str();
+            state_.timeseries_count++;
+        }
+
+        auto file = std::ofstream{filename, std::ios::binary};
+        if (!file) {
+            emit(resp::error{"failed to open " + filename});
+            return;
+        }
+        write_timeseries(file, fmt);
+        emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
+    } catch (const std::exception& e) {
+        emit(resp::error{e.what()});
+    }
 }
 
 MIST_INLINE void engine_t::handle(const cmd::write_checkpoint& c, emit_fn emit) {
-    auto filename = std::string{};
-    auto fmt = output_format{};
-
-    if (c.dest) {
-        filename = *c.dest;
-        fmt = infer_format_from_filename(filename);
-    } else {
-        fmt = state_.format;
-        auto ext = (fmt == output_format::ascii) ? ".dat" : ".bin";
-        auto oss = std::ostringstream{};
-        oss << "chkpt." << std::setw(4) << std::setfill('0') << state_.checkpoint_count << ext;
-        filename = oss.str();
-        state_.checkpoint_count++;
-    }
-
-    auto file = std::ofstream{filename, std::ios::binary};
-    if (!file) {
-        emit(resp::error{"failed to open " + filename});
+    if (c.dest && *c.dest == "socket") {
+        write_to_socket([this](std::ostream& os) {
+            write_checkpoint(os, output_format::binary);
+        }, emit);
         return;
     }
-    write_checkpoint(file, fmt);
-    emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
+
+    try {
+        auto filename = std::string{};
+        auto fmt = output_format{};
+
+        if (c.dest) {
+            filename = *c.dest;
+            fmt = infer_format_from_filename(filename);
+        } else {
+            fmt = state_.format;
+            auto ext = (fmt == output_format::ascii) ? ".dat" : ".bin";
+            auto oss = std::ostringstream{};
+            oss << "chkpt." << std::setw(4) << std::setfill('0') << state_.checkpoint_count << ext;
+            filename = oss.str();
+            state_.checkpoint_count++;
+        }
+
+        auto file = std::ofstream{filename, std::ios::binary};
+        if (!file) {
+            emit(resp::error{"failed to open " + filename});
+            return;
+        }
+        write_checkpoint(file, fmt);
+        emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
+    } catch (const std::exception& e) {
+        emit(resp::error{e.what()});
+    }
 }
 
 MIST_INLINE void engine_t::handle(const cmd::write_products& c, emit_fn emit) {
@@ -580,28 +684,39 @@ MIST_INLINE void engine_t::handle(const cmd::write_products& c, emit_fn emit) {
         return;
     }
 
-    auto filename = std::string{};
-    auto fmt = output_format{};
-
-    if (c.dest) {
-        filename = *c.dest;
-        fmt = infer_format_from_filename(filename);
-    } else {
-        fmt = state_.format;
-        auto ext = (fmt == output_format::ascii) ? ".dat" : ".bin";
-        auto oss = std::ostringstream{};
-        oss << "prods." << std::setw(4) << std::setfill('0') << state_.products_count << ext;
-        filename = oss.str();
-        state_.products_count++;
-    }
-
-    auto file = std::ofstream{filename, std::ios::binary};
-    if (!file) {
-        emit(resp::error{"failed to open " + filename});
+    if (c.dest && *c.dest == "socket") {
+        write_to_socket([this](std::ostream& os) {
+            write_products(os, output_format::binary);
+        }, emit);
         return;
     }
-    write_products(file, fmt);
-    emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
+
+    try {
+        auto filename = std::string{};
+        auto fmt = output_format{};
+
+        if (c.dest) {
+            filename = *c.dest;
+            fmt = infer_format_from_filename(filename);
+        } else {
+            fmt = state_.format;
+            auto ext = (fmt == output_format::ascii) ? ".dat" : ".bin";
+            auto oss = std::ostringstream{};
+            oss << "prods." << std::setw(4) << std::setfill('0') << state_.products_count << ext;
+            filename = oss.str();
+            state_.products_count++;
+        }
+
+        auto file = std::ofstream{filename, std::ios::binary};
+        if (!file) {
+            emit(resp::error{"failed to open " + filename});
+            return;
+        }
+        write_products(file, fmt);
+        emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
+    } catch (const std::exception& e) {
+        emit(resp::error{e.what()});
+    }
 }
 
 MIST_INLINE void engine_t::handle(const cmd::write_iteration& c, emit_fn emit) {
@@ -610,14 +725,26 @@ MIST_INLINE void engine_t::handle(const cmd::write_iteration& c, emit_fn emit) {
         return;
     }
 
+    if (c.dest && *c.dest == "socket") {
+        write_to_socket([this](std::ostream& os) {
+            write_iteration(os, output_format::binary);
+        }, emit);
+        return;
+    }
+
     if (c.dest) {
-        auto file = std::ofstream{*c.dest};
-        if (!file) {
-            emit(resp::error{"failed to open " + *c.dest});
-            return;
+        try {
+            auto fmt = infer_format_from_filename(*c.dest);
+            auto file = std::ofstream{*c.dest, std::ios::binary};
+            if (!file) {
+                emit(resp::error{"failed to open " + *c.dest});
+                return;
+            }
+            write_iteration(file, fmt);
+            emit(resp::wrote_file{*c.dest, static_cast<std::size_t>(file.tellp())});
+        } catch (const std::exception& e) {
+            emit(resp::error{e.what()});
         }
-        write_iteration_info(file, color::disabled());
-        emit(resp::wrote_file{*c.dest, static_cast<std::size_t>(file.tellp())});
     } else {
         emit(make_iteration_info());
     }

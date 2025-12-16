@@ -213,6 +213,9 @@ public:
                 return false;
             }
             group_stack_.back().remaining--;
+        } else if (group_stack_.empty()) {
+            // Root anonymous group - need to read header first
+            ensure_header();
         }
         uint8_t type_tag = read_type_tag();
         if (type_tag != binary_format::TYPE_GROUP) {

@@ -530,6 +530,10 @@ class BinaryReader:
             raise ParseError("Unexpected end of binary data")
         return struct.unpack("<d", data)[0]
 
+    def read_header(self):
+        """Read and verify the binary header. Safe to call multiple times."""
+        self._ensure_header()
+
     def _read_name(self) -> str:
         length = self._read_uint64()
         if length == 0:
@@ -628,6 +632,81 @@ class BinaryReader:
                 raise ParseError(f"Unexpected type tag in list: {first_type_tag}")
         else:
             raise ParseError(f"Unknown type tag: {type_tag}")
+
+    def read_value(self) -> Any:
+        """Read a typed value (type_tag + value, no field name).
+
+        Use this for reading anonymous values or variant contents.
+        """
+        type_tag = self._read_uint8()
+
+        if type_tag == TYPE_INT32:
+            return self._read_int32()
+        elif type_tag == TYPE_INT64:
+            return self._read_int64()
+        elif type_tag == TYPE_FLOAT64:
+            return self._read_double()
+        elif type_tag == TYPE_STRING:
+            return self._read_string_value()
+        elif type_tag == TYPE_ARRAY:
+            elem_tag = self._read_uint8()
+            return self._read_array_value(elem_tag)
+        elif type_tag == TYPE_GROUP:
+            field_count = self._read_uint64()
+            result = {}
+            for _ in range(field_count):
+                field_name, field_value = self._read_field()
+                result[field_name] = field_value
+            return result
+        elif type_tag == TYPE_LIST:
+            item_count = self._read_uint64()
+            if item_count == 0:
+                return []
+            items = []
+            for _ in range(item_count):
+                items.append(self.read_value())
+            return items
+        else:
+            raise ParseError(f"Unknown type tag: {type_tag}")
+
+    def read_variant(self) -> tuple[int, Any]:
+        """Read a variant (anonymous group with index and value fields).
+
+        This handles the C++ std::variant serialization format.
+
+        Returns:
+            (index, value) tuple where index is the variant type index
+            and value is the variant's content (usually a dict)
+        """
+        self._ensure_header()
+
+        type_tag = self._read_uint8()
+        if type_tag != TYPE_GROUP:
+            raise ParseError(f"Expected TYPE_GROUP for variant, got {type_tag}")
+
+        field_count = self._read_uint64()
+        if field_count != 2:
+            raise ParseError(f"Variant should have 2 fields, got {field_count}")
+
+        # Read index field
+        index_name = self._read_name()
+        if index_name != "index":
+            raise ParseError(f"Expected 'index' field, got '{index_name}'")
+        index_type = self._read_uint8()
+        if index_type == TYPE_INT64:
+            index = self._read_int64()
+        elif index_type == TYPE_INT32:
+            index = self._read_int32()
+        else:
+            raise ParseError(f"Expected int type for variant index, got {index_type}")
+
+        # Read value field
+        value_name = self._read_name()
+        if value_name != "value":
+            raise ParseError(f"Expected 'value' field, got '{value_name}'")
+        value = self.read_value()
+
+        return index, value
 
     def _read_list_item_with_schema(self) -> dict:
         """Read a list item with full field names and type tags."""
@@ -967,6 +1046,36 @@ class BinaryWriter:
         """Write entire nested dict to binary archive."""
         for name, value in data.items():
             self._write_field(name, value)
+
+    def write_variant(self, index: int, value: dict):
+        """Write a variant (anonymous group with index and value fields).
+
+        This produces the C++ std::variant serialization format.
+
+        Args:
+            index: The variant type index
+            value: The variant content as a dict
+        """
+        self._ensure_header()
+        # Write anonymous group with 2 fields
+        self._file.write(struct.pack("<B", TYPE_GROUP))
+        self._file.write(struct.pack("<Q", 2))
+
+        # Write index field
+        encoded = b"index"
+        self._file.write(struct.pack("<Q", len(encoded)))
+        self._file.write(encoded)
+        self._file.write(struct.pack("<B", TYPE_INT64))
+        self._file.write(struct.pack("<q", index))
+
+        # Write value field
+        encoded = b"value"
+        self._file.write(struct.pack("<Q", len(encoded)))
+        self._file.write(encoded)
+        self._file.write(struct.pack("<B", TYPE_GROUP))
+        self._file.write(struct.pack("<Q", len(value)))
+        for name, val in value.items():
+            self._write_field(name, val)
 
 
 # Convenience functions

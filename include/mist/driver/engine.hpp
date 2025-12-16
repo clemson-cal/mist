@@ -15,6 +15,7 @@
 #include "../ascii_writer.hpp"
 #include "../binary_reader.hpp"
 #include "../binary_writer.hpp"
+#include "../socket.hpp"
 
 namespace mist::driver {
 
@@ -60,12 +61,22 @@ public:
     using emit_fn = std::function<void(const response_t&)>;
 
     engine_t(state_t& state, physics_interface_t& physics);
+    ~engine_t();
+
+    // Non-copyable, non-movable (owns socket)
+    engine_t(const engine_t&) = delete;
+    engine_t& operator=(const engine_t&) = delete;
+    engine_t(engine_t&&) = delete;
+    engine_t& operator=(engine_t&&) = delete;
 
     void execute(const command_t& cmd, emit_fn emit);
     void execute(const cmd::repeat_add& cmd, emit_fn emit);
 
     auto state() const -> const state_t& { return state_; }
     auto state() -> state_t& { return state_; }
+
+    // Data socket for write commands
+    auto data_socket_port() const -> int { return data_socket_.port(); }
 
     // Direct write methods - session handles I/O, engine handles data
     void write_physics(std::ostream& os, output_format fmt);
@@ -75,6 +86,7 @@ public:
     void write_timeseries(std::ostream& os, output_format fmt);
     void write_checkpoint(std::ostream& os, output_format fmt);
     void write_products(std::ostream& os, output_format fmt);
+    void write_iteration(std::ostream& os, output_format fmt);
 
     // Human-readable info methods (for show commands / REPL display)
     void write_iteration_info(std::ostream& os, const color::scheme_t& c);
@@ -87,9 +99,11 @@ private:
     double command_start_wall_time_;
     int command_start_iteration_;
     double last_dt_ = 0.0;
+    socket_t data_socket_;
 
     auto make_iteration_info() const -> resp::iteration_info;
     auto time_to_next_task() const -> double;
+    void write_to_socket(const std::function<void(std::ostream&)>& writer, emit_fn emit);
 
     void do_timestep(double dt_max);
     void execute_repeating_commands(emit_fn emit);

@@ -76,20 +76,44 @@ namespace resp {
 
 struct ok {
     std::string message;
+    auto fields() const { return std::make_tuple(field("message", message)); }
+    auto fields() { return std::make_tuple(field("message", message)); }
 };
 
 struct error {
     std::string what;
+    auto fields() const { return std::make_tuple(field("what", what)); }
+    auto fields() { return std::make_tuple(field("what", what)); }
 };
 
-struct interrupted {};
+struct interrupted {
+    auto fields() const { return std::make_tuple(); }
+    auto fields() { return std::make_tuple(); }
+};
 
-struct stopped {};
+struct stopped {
+    auto fields() const { return std::make_tuple(); }
+    auto fields() { return std::make_tuple(); }
+};
 
 struct state_info {
     bool initialized;
     std::size_t zone_count;
     std::map<std::string, double> times;
+    auto fields() const {
+        return std::make_tuple(
+            field("initialized", initialized),
+            field("zone_count", zone_count),
+            field("times", times)
+        );
+    }
+    auto fields() {
+        return std::make_tuple(
+            field("initialized", initialized),
+            field("zone_count", zone_count),
+            field("times", times)
+        );
+    }
 };
 
 // --- Iteration ---
@@ -99,28 +123,55 @@ struct iteration_info {
     std::map<std::string, double> times;
     double dt;
     double zps;
+
+    auto fields() const {
+        return std::make_tuple(
+            field("n", n),
+            field("times", times),
+            field("dt", dt),
+            field("zps", zps)
+        );
+    }
+    auto fields() {
+        return std::make_tuple(
+            field("n", n),
+            field("times", times),
+            field("dt", dt),
+            field("zps", zps)
+        );
+    }
 };
 
 struct timeseries_sample {
     std::map<std::string, double> values;
+    auto fields() const { return std::make_tuple(field("values", values)); }
+    auto fields() { return std::make_tuple(field("values", values)); }
 };
 
 // --- Show (serialized) ---
 
 struct physics_config {
     std::string text;
+    auto fields() const { return std::make_tuple(field("text", text)); }
+    auto fields() { return std::make_tuple(field("text", text)); }
 };
 
 struct initial_config {
     std::string text;
+    auto fields() const { return std::make_tuple(field("text", text)); }
+    auto fields() { return std::make_tuple(field("text", text)); }
 };
 
 struct driver_state {
     std::string text;
+    auto fields() const { return std::make_tuple(field("text", text)); }
+    auto fields() { return std::make_tuple(field("text", text)); }
 };
 
 struct help_text {
     std::string text;
+    auto fields() const { return std::make_tuple(field("text", text)); }
+    auto fields() { return std::make_tuple(field("text", text)); }
 };
 
 // --- Show (structured) ---
@@ -129,22 +180,74 @@ struct timeseries_info {
     std::vector<std::string> available;
     std::vector<std::string> selected;
     std::map<std::string, std::size_t> counts;
+    auto fields() const {
+        return std::make_tuple(
+            field("available", available),
+            field("selected", selected),
+            field("counts", counts)
+        );
+    }
+    auto fields() {
+        return std::make_tuple(
+            field("available", available),
+            field("selected", selected),
+            field("counts", counts)
+        );
+    }
 };
 
 struct products_info {
     std::vector<std::string> available;
     std::vector<std::string> selected;
+    auto fields() const {
+        return std::make_tuple(
+            field("available", available),
+            field("selected", selected)
+        );
+    }
+    auto fields() {
+        return std::make_tuple(
+            field("available", available),
+            field("selected", selected)
+        );
+    }
 };
 
 struct profiler_entry {
     std::string name;
     std::size_t count;
     double time;
+    auto fields() const {
+        return std::make_tuple(
+            field("name", name),
+            field("count", count),
+            field("time", time)
+        );
+    }
+    auto fields() {
+        return std::make_tuple(
+            field("name", name),
+            field("count", count),
+            field("time", time)
+        );
+    }
 };
 
 struct profiler_info {
     std::vector<profiler_entry> entries;
     double total_time;
+    auto fields() const {
+        return std::make_tuple(
+            field("entries", entries),
+            field("total_time", total_time)
+        );
+    }
+    auto fields() {
+        return std::make_tuple(
+            field("entries", entries),
+            field("total_time", total_time)
+        );
+    }
 };
 
 // --- Write ---
@@ -152,6 +255,37 @@ struct profiler_info {
 struct wrote_file {
     std::string filename;
     std::size_t bytes;
+    auto fields() const {
+        return std::make_tuple(
+            field("filename", filename),
+            field("bytes", bytes)
+        );
+    }
+    auto fields() {
+        return std::make_tuple(
+            field("filename", filename),
+            field("bytes", bytes)
+        );
+    }
+};
+
+// --- Socket ---
+
+struct socket_listening {
+    int port;
+    auto fields() const { return std::make_tuple(field("port", port)); }
+    auto fields() { return std::make_tuple(field("port", port)); }
+};
+
+struct socket_sent {
+    std::size_t bytes;
+    auto fields() const { return std::make_tuple(field("bytes", bytes)); }
+    auto fields() { return std::make_tuple(field("bytes", bytes)); }
+};
+
+struct socket_cancelled {
+    auto fields() const { return std::make_tuple(); }
+    auto fields() { return std::make_tuple(); }
 };
 
 } // namespace resp
@@ -320,6 +454,18 @@ inline void format(std::ostream& os, const color::scheme_t& c, const resp::wrote
        << c.reset << " (" << r.bytes << " bytes)\n";
 }
 
+inline void format(std::ostream& os, const color::scheme_t& c, const resp::socket_listening& r) {
+    os << c.info << "listening on port " << c.value << r.port << c.reset << "...\n";
+}
+
+inline void format(std::ostream& os, const color::scheme_t& c, const resp::socket_sent& r) {
+    os << c.info << "sent " << c.value << r.bytes << c.reset << " bytes\n";
+}
+
+inline void format(std::ostream& os, const color::scheme_t&, const resp::socket_cancelled&) {
+    os << "cancelled\n";
+}
+
 // =============================================================================
 // response_t variant
 // =============================================================================
@@ -344,7 +490,11 @@ using response_t = std::variant<
     resp::products_info,
     resp::profiler_info,
     // Write
-    resp::wrote_file
+    resp::wrote_file,
+    // Socket
+    resp::socket_listening,
+    resp::socket_sent,
+    resp::socket_cancelled
 >;
 
 // =============================================================================
