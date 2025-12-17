@@ -107,7 +107,7 @@ class MistTUI(App):
     }
 
     #sidebar {
-        width: 30;
+        width: 40;
         height: 1fr;
         padding: 1;
         border-right: solid $primary;
@@ -123,7 +123,7 @@ class MistTUI(App):
         height: 1fr;
     }
 
-    .config-text {
+    #physics-text, #initial-text, #profiler-text {
         width: 1fr;
         height: 1fr;
         padding: 1;
@@ -200,11 +200,11 @@ class MistTUI(App):
                     else:
                         yield Static("Install textual-plotext", id="plot-content")
                 with TabPane("Physics", id="tab-physics"):
-                    yield Static("", id="physics-text", classes="config-text")
+                    yield RichLog(id="physics-text", highlight=False, markup=False)
                 with TabPane("Initial", id="tab-initial"):
-                    yield Static("", id="initial-text", classes="config-text")
+                    yield RichLog(id="initial-text", highlight=False, markup=False)
                 with TabPane("Profiler", id="tab-profiler"):
-                    yield Static("", id="profiler-text", classes="config-text")
+                    yield RichLog(id="profiler-text", highlight=False, markup=False)
         yield RichLog(id="console", highlight=True, markup=True)
         with Horizontal(id="controls"):
             with Horizontal(id="control-buttons"):
@@ -233,13 +233,20 @@ class MistTUI(App):
         if not self.sim:
             return
         try:
-            self.query_one("#physics-text", Static).update(self.sim.physics_text)
-            self.query_one("#initial-text", Static).update(self.sim.initial_text)
-            self.query_one("#profiler-text", Static).update(self.sim.profiler_text)
+            for log_id, content in [
+                ("#physics-text", self.sim.physics_text),
+                ("#initial-text", self.sim.initial_text),
+                ("#profiler-text", self.sim.profiler_text),
+            ]:
+                log = self.query_one(log_id, RichLog)
+                log.clear()
+                log.write(content)
         except Exception as e:
             self.log_message(f"[red]Error updating tabs: {e}[/]")
 
-    def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
+    def on_tabbed_content_tab_activated(
+        self, event: TabbedContent.TabActivated
+    ) -> None:
         """Refresh tab content when switching tabs."""
         self.refresh_tab_content()
 
@@ -294,8 +301,8 @@ class MistTUI(App):
             existing_ids = {cb.id for cb in container.query(Checkbox)}
 
             names = self.sim.product_names
-            # Exclude cell_x since it's used as x-axis
-            plot_names = [n for n in names if n != "cell_x"]
+            # Exclude coordinate products since they're used as x-axis
+            plot_names = [n for n in names if n not in ("cell_x", "cell_r")]
 
             # Only add checkboxes that don't exist yet
             for name in plot_names:
@@ -405,17 +412,27 @@ class MistTUI(App):
             plt = plot_widget.plt
             plt.clear_figure()
 
-            if selected and "cell_x" in self.sim.product_names:
-                # Select products including cell_x for x-axis
-                self.sim.select_products(["cell_x"] + selected)
+            # Determine x-axis coordinate product (cell_x or cell_r)
+            x_coord = None
+            x_label = "x"
+            if "cell_x" in self.sim.product_names:
+                x_coord = "cell_x"
+                x_label = "x"
+            elif "cell_r" in self.sim.product_names:
+                x_coord = "cell_r"
+                x_label = "r"
 
-                cell_x = list(self.sim.products["cell_x"])
+            if selected and x_coord:
+                # Select products including coordinate for x-axis
+                self.sim.select_products([x_coord] + selected)
+
+                x_values = list(self.sim.products[x_coord])
                 for name in selected:
                     values = list(self.sim.products[name])
-                    plt.plot(cell_x, values, label=name)
+                    plt.plot(x_values, values, label=name)
 
                 plt.title(f"t = {self.sim.time:.6g}")
-                plt.xlabel("x")
+                plt.xlabel(x_label)
                 plt.ylabel("Value")
 
             plot_widget.refresh()
@@ -476,7 +493,9 @@ class MistTUI(App):
                 self.log_message(f"[green]Set physics.{key} = {value}[/]")
             elif config_type == "initial":
                 if self.sim._initialized:
-                    self.log_message(f"[yellow]Cannot modify initial.{key} - state exists, reset first[/]")
+                    self.log_message(
+                        f"[yellow]Cannot modify initial.{key} - state exists, reset first[/]"
+                    )
                 else:
                     self.sim.initial[key] = value
                     self.log_message(f"[green]Set initial.{key} = {value}[/]")
