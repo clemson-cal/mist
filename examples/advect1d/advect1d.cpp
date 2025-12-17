@@ -398,17 +398,16 @@ auto get_time(
 }
 
 auto get_timeseries(
-    const advection::config_t& cfg,
-    const advection::initial_t& ini,
     const advection::state_t& state,
-    const std::string& name
+    const std::string& name,
+    const advection::exec_context_t& ctx
 ) -> double {
     using std::views::transform;
 
     if (name == "time")
         return state.time;
 
-    const auto dx = ini.domain_length / ini.num_zones;
+    const auto dx = ctx.initial.domain_length / ctx.initial.num_zones;
     const auto& patches = state.patches;
     auto sums = patches | transform([](const auto& p) { return sum(p.cons); });
     auto mins = patches | transform([](const auto& p) { return min(p.cons); });

@@ -37,7 +37,7 @@ concept Physics = requires(
     { names_of_products(std::type_identity<P>{}) } -> std::same_as<std::vector<std::string>>;
 
     { get_time(s, std::string{}) } -> std::same_as<double>;
-    { get_timeseries(cfg, ini, s, std::string{}) } -> std::same_as<double>;
+    { get_timeseries(s, std::string{}, ctx) } -> std::same_as<double>;
     { get_product(s, std::string{}, ctx) } -> std::same_as<typename P::product_t>;
     { get_profiler_data(ctx) } -> std::same_as<std::map<std::string, perf::profile_entry_t>>;
 
@@ -54,9 +54,9 @@ void adl_advance(State& s, const Ctx& ctx, double dt_max) { advance(s, ctx, dt_m
 template<typename State>
 auto adl_get_time(const State& s, const std::string& var) -> double { return get_time(s, var); }
 
-template<typename Cfg, typename Ini, typename State>
-auto adl_get_timeseries(const Cfg& cfg, const Ini& ini, const State& s, const std::string& name) -> double {
-    return get_timeseries(cfg, ini, s, name);
+template<typename State, typename Ctx>
+auto adl_get_timeseries(const State& s, const std::string& name, const Ctx& ctx) -> double {
+    return get_timeseries(s, name, ctx);
 }
 
 template<typename State, typename Ctx>
@@ -132,7 +132,7 @@ public:
         if (!state_.has_value()) {
             throw std::runtime_error("state not initialized");
         }
-        return adl_get_timeseries(config_, initial_, *state_, name);
+        return adl_get_timeseries(*state_, name, *exec_context_);
     }
 
     // -------------------------------------------------------------------------
