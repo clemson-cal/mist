@@ -13,11 +13,40 @@ Mist is an evolution of [Vapor](https://github.com/clemson-cal/vapor), a library
 
 ## Quick Start
 
+Try an example:
+
 ```bash
 git clone https://github.com/jzrake/mist.git
 cd mist
+cmake .
 make
 ./examples/advect1d/advect1d
+```
+
+Start a new project:
+
+```bash
+mkdir my_sim && cd my_sim
+git init
+git submodule add https://github.com/jzrake/mist.git
+```
+
+Create `CMakeLists.txt`:
+
+```cmake
+cmake_minimum_required(VERSION 3.20)
+project(my_sim LANGUAGES CXX)
+add_subdirectory(mist)
+add_executable(my_sim main.cpp)
+target_link_libraries(my_sim PRIVATE mist_driver)
+```
+
+Create `main.cpp` (see Micro-Demo below), then build:
+
+```bash
+cmake -B build
+cmake --build build
+./build/my_sim
 ```
 
 ## Micro-Demo
