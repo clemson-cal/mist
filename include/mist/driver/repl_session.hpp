@@ -58,11 +58,3 @@ private:
 };
 
 } // namespace mist::driver
-
-// =============================================================================
-// Include implementations for header-only mode
-// =============================================================================
-
-#ifndef MIST_DRIVER_SEPARATE_COMPILATION
-#include "repl_session.ipp"
-#endif

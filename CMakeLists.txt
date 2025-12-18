@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Header-only library
+# Header-only core library
 add_library(mist INTERFACE)
 target_include_directories(mist INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -16,7 +16,6 @@ target_include_directories(mist INTERFACE
 # Collect all headers for dependency tracking
 file(GLOB_RECURSE MIST_HEADERS
     "${CMAKE_CURRENT_SOURCE_DIR}/include/*.hpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/include/*.ipp"
 )
 
 # Helper function to add mist headers as dependencies to a target
@@ -31,25 +30,36 @@ find_path(READLINE_INCLUDE_DIR readline/readline.h
     HINTS /opt/homebrew/opt/readline/include /usr/local/include
 )
 
-# Driver compilation mode
-option(MIST_DRIVER_HEADER_ONLY "Use header-only driver (slower compile, no library needed)" ON)
+# Driver library (compiled)
+add_library(mist_driver STATIC
+    src/driver/engine.cpp
+    src/driver/repl_session.cpp
+    src/driver/socket_session.cpp
+)
+target_include_directories(mist_driver PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(mist_driver PUBLIC mist)
+if(READLINE_LIBRARY AND READLINE_INCLUDE_DIR)
+    target_link_libraries(mist_driver PUBLIC ${READLINE_LIBRARY})
+    target_include_directories(mist_driver PUBLIC ${READLINE_INCLUDE_DIR})
+endif()
 
-if(NOT MIST_DRIVER_HEADER_ONLY)
-    add_library(mist_driver STATIC
-        src/driver/engine.cpp
-        src/driver/repl_session.cpp
-        src/driver/socket_session.cpp
+# Single-header generation target
+find_program(QUOM_EXECUTABLE quom)
+if(QUOM_EXECUTABLE)
+    add_custom_target(single_header
+        COMMAND ${QUOM_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/include/mist/mist.hpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/mist.hpp
+            --include_directory ${CMAKE_CURRENT_SOURCE_DIR}/include
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMENT "Generating single-header mist.hpp"
+        DEPENDS ${MIST_HEADERS}
     )
-    target_include_directories(mist_driver PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:include>
-    )
-    target_compile_definitions(mist_driver PUBLIC MIST_DRIVER_SEPARATE_COMPILATION)
-    target_link_libraries(mist_driver PUBLIC mist)
-    if(READLINE_LIBRARY AND READLINE_INCLUDE_DIR)
-        target_link_libraries(mist_driver PUBLIC ${READLINE_LIBRARY})
-        target_include_directories(mist_driver PUBLIC ${READLINE_INCLUDE_DIR})
-    endif()
+else()
+    message(STATUS "quom not found - single_header target disabled (pip install quom)")
 endif()
 
 # Build examples and tests

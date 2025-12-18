@@ -72,7 +72,7 @@ physics {
 > init
 [000000] t=0.00000
 > t -> 1.0
-[000500] t=1.0000 Mzps=2.954
+[000500] t=1.0000 zps=2.954e7
 > write checkpoint
 Wrote chkpt.0000.dat
 > stop
@@ -80,7 +80,7 @@ Wrote chkpt.0000.dat
 
 ### Scripted Runs
 
-Batch execution via heredoc:
+Program execution via heredoc:
 
 ```bash
 ./advect1d << EOF
