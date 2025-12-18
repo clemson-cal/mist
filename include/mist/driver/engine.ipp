@@ -169,7 +169,13 @@ MIST_INLINE engine_t::~engine_t() = default;
 MIST_INLINE void engine_t::execute(const command_t& cmd, emit_fn emit) {
     command_start_wall_time_ = get_wall_time();
     command_start_iteration_ = state_.iteration;
-    std::visit([this, &emit](const auto& c) { handle(c, emit); }, cmd);
+    try {
+        std::visit([this, &emit](const auto& c) { handle(c, emit); }, cmd);
+    } catch (const std::exception& e) {
+        emit(resp::error{e.what()});
+    } catch (...) {
+        emit(resp::error{"unknown error"});
+    }
 }
 
 MIST_INLINE void engine_t::execute(const cmd::repeat_add& cmd, emit_fn emit) {
@@ -248,26 +254,21 @@ MIST_INLINE void engine_t::advance_to_target(const std::string& var, double targ
     // Fire any due tasks (including newly registered ones) before stepping
     execute_repeating_commands(emit);
 
-    try {
-        if (var == "n") {
-            auto target_n = static_cast<int>(target);
-            while (state_.iteration < target_n && !guard.is_interrupted()) {
-                auto dt_max = time_to_next_task();
-                do_timestep(dt_max);
-                execute_repeating_commands(emit);
-            }
-        } else {
-            auto eps = 1e-12 * std::abs(target);
-            while (physics_.get_time(var) < target - eps && !guard.is_interrupted()) {
-                auto time_to_target = target - physics_.get_time(var);
-                auto dt_max = std::min(time_to_target, time_to_next_task());
-                do_timestep(dt_max);
-                execute_repeating_commands(emit);
-            }
+    if (var == "n") {
+        auto target_n = static_cast<int>(target);
+        while (state_.iteration < target_n && !guard.is_interrupted()) {
+            auto dt_max = time_to_next_task();
+            do_timestep(dt_max);
+            execute_repeating_commands(emit);
         }
-    } catch (const std::runtime_error& e) {
-        emit(resp::error{e.what()});
-        return;
+    } else {
+        auto eps = 1e-12 * std::abs(target);
+        while (physics_.get_time(var) < target - eps && !guard.is_interrupted()) {
+            auto time_to_target = target - physics_.get_time(var);
+            auto dt_max = std::min(time_to_target, time_to_next_task());
+            do_timestep(dt_max);
+            execute_repeating_commands(emit);
+        }
     }
 
     // Store zps from this advance command for later queries
@@ -295,16 +296,12 @@ MIST_INLINE void engine_t::write_to_socket(const std::function<void(std::ostream
         return;
     }
 
-    try {
-        // Write data to client with size prefix
-        auto oss = std::ostringstream{};
-        writer(oss);
-        auto data = oss.str();
-        client->send_with_size(data.data(), data.size());
-        emit(resp::socket_sent{data.size()});
-    } catch (const std::exception& e) {
-        emit(resp::error{e.what()});
-    }
+    // Write data to client with size prefix
+    auto oss = std::ostringstream{};
+    writer(oss);
+    auto data = oss.str();
+    client->send_with_size(data.data(), data.size());
+    emit(resp::socket_sent{data.size()});
 }
 
 // -----------------------------------------------------------------------------
@@ -432,21 +429,13 @@ MIST_INLINE void engine_t::handle(const cmd::advance_to& c, emit_fn emit) {
 }
 
 MIST_INLINE void engine_t::handle(const cmd::set_output& c, emit_fn emit) {
-    try {
-        state_.format = from_string(std::type_identity<output_format>{}, c.format);
-        emit(resp::ok{"output format set to " + c.format});
-    } catch (const std::exception& e) {
-        emit(resp::error{e.what()});
-    }
+    state_.format = from_string(std::type_identity<output_format>{}, c.format);
+    emit(resp::ok{"output format set to " + c.format});
 }
 
 MIST_INLINE void engine_t::handle(const cmd::set_physics& c, emit_fn emit) {
-    try {
-        physics_.set_physics(c.key, c.value);
-        emit(resp::ok{"physics " + c.key + " set to " + c.value});
-    } catch (const std::exception& e) {
-        emit(resp::error{e.what()});
-    }
+    physics_.set_physics(c.key, c.value);
+    emit(resp::ok{"physics " + c.key + " set to " + c.value});
 }
 
 MIST_INLINE void engine_t::handle(const cmd::set_initial& c, emit_fn emit) {
@@ -454,21 +443,13 @@ MIST_INLINE void engine_t::handle(const cmd::set_initial& c, emit_fn emit) {
         emit(resp::error{"cannot modify initial config when state exists; use 'reset' first"});
         return;
     }
-    try {
-        physics_.set_initial(c.key, c.value);
-        emit(resp::ok{"initial " + c.key + " set to " + c.value});
-    } catch (const std::exception& e) {
-        emit(resp::error{e.what()});
-    }
+    physics_.set_initial(c.key, c.value);
+    emit(resp::ok{"initial " + c.key + " set to " + c.value});
 }
 
 MIST_INLINE void engine_t::handle(const cmd::set_exec& c, emit_fn emit) {
-    try {
-        physics_.set_exec(c.key, c.value);
-        emit(resp::ok{"exec " + c.key + " set to " + c.value});
-    } catch (const std::exception& e) {
-        emit(resp::error{e.what()});
-    }
+    physics_.set_exec(c.key, c.value);
+    emit(resp::ok{"exec " + c.key + " set to " + c.value});
 }
 
 MIST_INLINE void engine_t::handle(const cmd::select_timeseries& c, emit_fn emit) {
@@ -532,19 +513,15 @@ MIST_INLINE void engine_t::handle(const cmd::write_physics& c, emit_fn emit) {
         return;
     }
 
-    try {
-        auto filename = c.dest.value_or("physics.cfg");
-        auto fmt = infer_format_from_filename(filename);
-        auto file = std::ofstream{filename, std::ios::binary};
-        if (!file) {
-            emit(resp::error{"failed to open " + filename});
-            return;
-        }
-        write_physics(file, fmt);
-        emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
-    } catch (const std::exception& e) {
-        emit(resp::error{e.what()});
+    auto filename = c.dest.value_or("physics.cfg");
+    auto fmt = infer_format_from_filename(filename);
+    auto file = std::ofstream{filename, std::ios::binary};
+    if (!file) {
+        emit(resp::error{"failed to open " + filename});
+        return;
     }
+    write_physics(file, fmt);
+    emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
 }
 
 MIST_INLINE void engine_t::handle(const cmd::write_initial& c, emit_fn emit) {
@@ -555,19 +532,15 @@ MIST_INLINE void engine_t::handle(const cmd::write_initial& c, emit_fn emit) {
         return;
     }
 
-    try {
-        auto filename = c.dest.value_or("initial.cfg");
-        auto fmt = infer_format_from_filename(filename);
-        auto file = std::ofstream{filename, std::ios::binary};
-        if (!file) {
-            emit(resp::error{"failed to open " + filename});
-            return;
-        }
-        write_initial(file, fmt);
-        emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
-    } catch (const std::exception& e) {
-        emit(resp::error{e.what()});
+    auto filename = c.dest.value_or("initial.cfg");
+    auto fmt = infer_format_from_filename(filename);
+    auto file = std::ofstream{filename, std::ios::binary};
+    if (!file) {
+        emit(resp::error{"failed to open " + filename});
+        return;
     }
+    write_initial(file, fmt);
+    emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
 }
 
 MIST_INLINE void engine_t::handle(const cmd::write_driver& c, emit_fn emit) {
@@ -578,19 +551,15 @@ MIST_INLINE void engine_t::handle(const cmd::write_driver& c, emit_fn emit) {
         return;
     }
 
-    try {
-        auto filename = c.dest.value_or("driver.cfg");
-        auto fmt = infer_format_from_filename(filename);
-        auto file = std::ofstream{filename, std::ios::binary};
-        if (!file) {
-            emit(resp::error{"failed to open " + filename});
-            return;
-        }
-        write_driver(file, fmt);
-        emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
-    } catch (const std::exception& e) {
-        emit(resp::error{e.what()});
+    auto filename = c.dest.value_or("driver.cfg");
+    auto fmt = infer_format_from_filename(filename);
+    auto file = std::ofstream{filename, std::ios::binary};
+    if (!file) {
+        emit(resp::error{"failed to open " + filename});
+        return;
     }
+    write_driver(file, fmt);
+    emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
 }
 
 MIST_INLINE void engine_t::handle(const cmd::write_profiler& c, emit_fn emit) {
@@ -601,19 +570,15 @@ MIST_INLINE void engine_t::handle(const cmd::write_profiler& c, emit_fn emit) {
         return;
     }
 
-    try {
-        auto filename = c.dest.value_or("profiler.dat");
-        auto fmt = infer_format_from_filename(filename);
-        auto file = std::ofstream{filename, std::ios::binary};
-        if (!file) {
-            emit(resp::error{"failed to open " + filename});
-            return;
-        }
-        write_profiler(file, fmt);
-        emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
-    } catch (const std::exception& e) {
-        emit(resp::error{e.what()});
+    auto filename = c.dest.value_or("profiler.dat");
+    auto fmt = infer_format_from_filename(filename);
+    auto file = std::ofstream{filename, std::ios::binary};
+    if (!file) {
+        emit(resp::error{"failed to open " + filename});
+        return;
     }
+    write_profiler(file, fmt);
+    emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
 }
 
 MIST_INLINE void engine_t::handle(const cmd::write_timeseries& c, emit_fn emit) {
@@ -629,32 +594,28 @@ MIST_INLINE void engine_t::handle(const cmd::write_timeseries& c, emit_fn emit) 
         return;
     }
 
-    try {
-        auto filename = std::string{};
-        auto fmt = output_format{};
+    auto filename = std::string{};
+    auto fmt = output_format{};
 
-        if (c.dest) {
-            filename = *c.dest;
-            fmt = infer_format_from_filename(filename);
-        } else {
-            fmt = state_.format;
-            auto ext = (fmt == output_format::ascii) ? ".dat" : ".bin";
-            auto oss = std::ostringstream{};
-            oss << "timeseries." << std::setw(4) << std::setfill('0') << state_.timeseries_count << ext;
-            filename = oss.str();
-            state_.timeseries_count++;
-        }
-
-        auto file = std::ofstream{filename, std::ios::binary};
-        if (!file) {
-            emit(resp::error{"failed to open " + filename});
-            return;
-        }
-        write_timeseries(file, fmt);
-        emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
-    } catch (const std::exception& e) {
-        emit(resp::error{e.what()});
+    if (c.dest) {
+        filename = *c.dest;
+        fmt = infer_format_from_filename(filename);
+    } else {
+        fmt = state_.format;
+        auto ext = (fmt == output_format::ascii) ? ".dat" : ".bin";
+        auto oss = std::ostringstream{};
+        oss << "timeseries." << std::setw(4) << std::setfill('0') << state_.timeseries_count << ext;
+        filename = oss.str();
+        state_.timeseries_count++;
     }
+
+    auto file = std::ofstream{filename, std::ios::binary};
+    if (!file) {
+        emit(resp::error{"failed to open " + filename});
+        return;
+    }
+    write_timeseries(file, fmt);
+    emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
 }
 
 MIST_INLINE void engine_t::handle(const cmd::write_checkpoint& c, emit_fn emit) {
@@ -665,32 +626,28 @@ MIST_INLINE void engine_t::handle(const cmd::write_checkpoint& c, emit_fn emit) 
         return;
     }
 
-    try {
-        auto filename = std::string{};
-        auto fmt = output_format{};
+    auto filename = std::string{};
+    auto fmt = output_format{};
 
-        if (c.dest) {
-            filename = *c.dest;
-            fmt = infer_format_from_filename(filename);
-        } else {
-            fmt = state_.format;
-            auto ext = (fmt == output_format::ascii) ? ".dat" : ".bin";
-            auto oss = std::ostringstream{};
-            oss << "chkpt." << std::setw(4) << std::setfill('0') << state_.checkpoint_count << ext;
-            filename = oss.str();
-            state_.checkpoint_count++;
-        }
-
-        auto file = std::ofstream{filename, std::ios::binary};
-        if (!file) {
-            emit(resp::error{"failed to open " + filename});
-            return;
-        }
-        write_checkpoint(file, fmt);
-        emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
-    } catch (const std::exception& e) {
-        emit(resp::error{e.what()});
+    if (c.dest) {
+        filename = *c.dest;
+        fmt = infer_format_from_filename(filename);
+    } else {
+        fmt = state_.format;
+        auto ext = (fmt == output_format::ascii) ? ".dat" : ".bin";
+        auto oss = std::ostringstream{};
+        oss << "chkpt." << std::setw(4) << std::setfill('0') << state_.checkpoint_count << ext;
+        filename = oss.str();
+        state_.checkpoint_count++;
     }
+
+    auto file = std::ofstream{filename, std::ios::binary};
+    if (!file) {
+        emit(resp::error{"failed to open " + filename});
+        return;
+    }
+    write_checkpoint(file, fmt);
+    emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
 }
 
 MIST_INLINE void engine_t::handle(const cmd::write_products& c, emit_fn emit) {
@@ -710,32 +667,28 @@ MIST_INLINE void engine_t::handle(const cmd::write_products& c, emit_fn emit) {
         return;
     }
 
-    try {
-        auto filename = std::string{};
-        auto fmt = output_format{};
+    auto filename = std::string{};
+    auto fmt = output_format{};
 
-        if (c.dest) {
-            filename = *c.dest;
-            fmt = infer_format_from_filename(filename);
-        } else {
-            fmt = state_.format;
-            auto ext = (fmt == output_format::ascii) ? ".dat" : ".bin";
-            auto oss = std::ostringstream{};
-            oss << "prods." << std::setw(4) << std::setfill('0') << state_.products_count << ext;
-            filename = oss.str();
-            state_.products_count++;
-        }
-
-        auto file = std::ofstream{filename, std::ios::binary};
-        if (!file) {
-            emit(resp::error{"failed to open " + filename});
-            return;
-        }
-        write_products(file, fmt);
-        emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
-    } catch (const std::exception& e) {
-        emit(resp::error{e.what()});
+    if (c.dest) {
+        filename = *c.dest;
+        fmt = infer_format_from_filename(filename);
+    } else {
+        fmt = state_.format;
+        auto ext = (fmt == output_format::ascii) ? ".dat" : ".bin";
+        auto oss = std::ostringstream{};
+        oss << "prods." << std::setw(4) << std::setfill('0') << state_.products_count << ext;
+        filename = oss.str();
+        state_.products_count++;
     }
+
+    auto file = std::ofstream{filename, std::ios::binary};
+    if (!file) {
+        emit(resp::error{"failed to open " + filename});
+        return;
+    }
+    write_products(file, fmt);
+    emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
 }
 
 MIST_INLINE void engine_t::handle(const cmd::write_iteration& c, emit_fn emit) {
@@ -752,18 +705,14 @@ MIST_INLINE void engine_t::handle(const cmd::write_iteration& c, emit_fn emit) {
     }
 
     if (c.dest) {
-        try {
-            auto fmt = infer_format_from_filename(*c.dest);
-            auto file = std::ofstream{*c.dest, std::ios::binary};
-            if (!file) {
-                emit(resp::error{"failed to open " + *c.dest});
-                return;
-            }
-            write_iteration(file, fmt);
-            emit(resp::wrote_file{*c.dest, static_cast<std::size_t>(file.tellp())});
-        } catch (const std::exception& e) {
-            emit(resp::error{e.what()});
+        auto fmt = infer_format_from_filename(*c.dest);
+        auto file = std::ofstream{*c.dest, std::ios::binary};
+        if (!file) {
+            emit(resp::error{"failed to open " + *c.dest});
+            return;
         }
+        write_iteration(file, fmt);
+        emit(resp::wrote_file{*c.dest, static_cast<std::size_t>(file.tellp())});
     } else {
         emit(make_iteration_info());
     }
@@ -802,12 +751,8 @@ MIST_INLINE void engine_t::handle(const cmd::init&, emit_fn emit) {
         emit(resp::error{"state already initialized; use 'reset' first"});
         return;
     }
-    try {
-        physics_.init();
-        emit(resp::ok{"initialized physics state"});
-    } catch (const std::exception& e) {
-        emit(resp::error{e.what()});
-    }
+    physics_.init();
+    emit(resp::ok{"initialized physics state"});
 }
 
 MIST_INLINE void engine_t::handle(const cmd::reset&, emit_fn emit) {
