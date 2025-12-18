@@ -9,7 +9,7 @@ Mist is an evolution of [Vapor](https://github.com/clemson-cal/vapor), a library
 - **CUDA compatible**: All functions work on both CPU and GPU (CUDA 12+)
 - **Zero dependencies**: Pure C++20 standard library
 - **Interactive driver**: Time-stepping REPL with checkpoint/restart
-- **Multiple interfaces**: C++, interactive REPL, Python, terminal UI
+- **Multiple interfaces**: via mist program (example below), interactive REPL, Python, terminal UI
 
 ## Quick Start
 
