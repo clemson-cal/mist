@@ -14,4 +14,3 @@
 // Parallelism
 #include "parallel.hpp"
 #include "profiler.hpp"
-#include "runge_kutta.hpp"
