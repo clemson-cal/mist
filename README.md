@@ -1,12 +1,11 @@
 # Mist
 
-A lightweight C++20 header-only library for deploy-anywhere physics simulations.
+A lightweight C++20 library for deploy-anywhere physics simulations.
 
 Mist is an evolution of [Vapor](https://github.com/clemson-cal/vapor), a library with similar goals for HPC physics applications.
 
 ## Features
 
-- **Header-only**: No compilation required, just include and go
 - **CUDA compatible**: All functions work on both CPU and GPU (CUDA 12+)
 - **Zero dependencies**: Pure C++20 standard library
 - **Interactive driver**: Time-stepping REPL with checkpoint/restart

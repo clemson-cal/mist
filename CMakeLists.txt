@@ -46,22 +46,6 @@ if(READLINE_LIBRARY AND READLINE_INCLUDE_DIR)
     target_include_directories(mist_driver PUBLIC ${READLINE_INCLUDE_DIR})
 endif()
 
-# Single-header generation target
-find_program(QUOM_EXECUTABLE quom)
-if(QUOM_EXECUTABLE)
-    add_custom_target(single_header
-        COMMAND ${QUOM_EXECUTABLE}
-            ${CMAKE_CURRENT_SOURCE_DIR}/include/mist/mist.hpp
-            ${CMAKE_CURRENT_SOURCE_DIR}/mist.hpp
-            --include_directory ${CMAKE_CURRENT_SOURCE_DIR}/include
-        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-        COMMENT "Generating single-header mist.hpp"
-        DEPENDS ${MIST_HEADERS}
-    )
-else()
-    message(STATUS "quom not found - single_header target disabled (pip install quom)")
-endif()
-
 # Build examples and tests
 option(MIST_BUILD_EXAMPLES "Build example programs" ON)
 option(MIST_BUILD_TESTS "Build tests" ON)
