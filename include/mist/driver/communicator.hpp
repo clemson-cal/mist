@@ -66,11 +66,24 @@ struct null_communicator_t : communicator_t {
 };
 
 // =============================================================================
-// Factory function
+// Factory functions
 // =============================================================================
 
 inline auto make_null_communicator() -> std::unique_ptr<communicator_t> {
     return std::make_unique<null_communicator_t>();
 }
+
+#ifdef MIST_HAS_MPI
+// Forward declaration - implementation in mpi_communicator.hpp
+auto make_mpi_communicator(int* argc, char*** argv) -> std::unique_ptr<communicator_t>;
+
+inline auto make_communicator(int* argc, char*** argv) -> std::unique_ptr<communicator_t> {
+    return make_mpi_communicator(argc, argv);
+}
+#else
+inline auto make_communicator(int* /*argc*/, char*** /*argv*/) -> std::unique_ptr<communicator_t> {
+    return make_null_communicator();
+}
+#endif
 
 } // namespace mist::driver

@@ -47,6 +47,15 @@ if(READLINE_LIBRARY AND READLINE_INCLUDE_DIR)
     target_include_directories(mist_driver PUBLIC ${READLINE_INCLUDE_DIR})
 endif()
 
+# Optional MPI support
+option(MIST_USE_MPI "Enable MPI support for distributed computing" OFF)
+if(MIST_USE_MPI)
+    find_package(MPI REQUIRED)
+    target_sources(mist_driver PRIVATE src/driver/mpi_communicator.cpp)
+    target_link_libraries(mist_driver PUBLIC MPI::MPI_CXX)
+    target_compile_definitions(mist_driver PUBLIC MIST_HAS_MPI)
+endif()
+
 # Build examples and tests
 option(MIST_BUILD_EXAMPLES "Build example programs" ON)
 option(MIST_BUILD_TESTS "Build tests" ON)

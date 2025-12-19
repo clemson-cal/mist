@@ -30,8 +30,9 @@ SOFTWARE.
 #include <numeric>
 #include <ranges>
 #include "mist/core.hpp"
+#include "mist/driver/communicator.hpp"
+#include "mist/driver/distributed_session.hpp"
 #include "mist/driver/physics_impl.hpp"
-#include "mist/driver/repl_session.hpp"
 #include "mist/ndarray.hpp"
 #include "mist/pipeline.hpp"
 #include "mist/serialize.hpp"
@@ -849,11 +850,12 @@ auto get_profiler_data(const srhd::exec_context_t& ctx)
 // Main
 // =============================================================================
 
-int main()
+int main(int argc, char* argv[])
 {
+    auto comm = mist::driver::make_communicator(&argc, &argv);
     auto physics = mist::driver::make_physics<srhd>();
     auto state = mist::driver::state_t{};
     auto engine = mist::driver::engine_t{state, *physics};
-    auto repl = mist::driver::repl_session_t{engine};
-    return repl.run();
+    auto session = mist::driver::distributed_session_t{engine, *comm};
+    return session.run();
 }

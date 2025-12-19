@@ -7,6 +7,8 @@
 #include <numeric>
 #include <ranges>
 #include "mist/core.hpp"
+#include "mist/driver/communicator.hpp"
+#include "mist/driver/distributed_session.hpp"
 #include "mist/driver/physics_impl.hpp"
 #include "mist/driver/repl_session.hpp"
 #include "mist/driver/socket_session.hpp"
@@ -472,6 +474,7 @@ int main(int argc, char* argv[])
         }
     }
 
+    auto comm = mist::driver::make_communicator(&argc, &argv);
     auto physics = mist::driver::make_physics<advection>();
     auto state = mist::driver::state_t{};
     auto engine = mist::driver::engine_t{state, *physics};
@@ -480,7 +483,7 @@ int main(int argc, char* argv[])
         auto session = mist::driver::socket_session_t{engine};
         return session.run();
     } else {
-        auto session = mist::driver::repl_session_t{engine};
+        auto session = mist::driver::distributed_session_t{engine, *comm};
         return session.run();
     }
 }
