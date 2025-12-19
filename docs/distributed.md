@@ -390,7 +390,19 @@ struct communicator_t {
 };
 ```
 
-**Next steps for MPI support:**
-1. Create `mpi_communicator_t` in `src/driver/mpi_communicator.cpp`
-2. Add CMake option `MIST_USE_MPI` with conditional compilation
-3. Test with `mpirun -n 4 ./advect1d`
+**MPI support (complete):**
+- `mpi_communicator_t` in `src/driver/mpi_communicator.cpp`
+- CMake option `MIST_USE_MPI` for conditional compilation
+- Tested with `mpirun -n 4 ./advect1d`
+
+**Build with MPI:**
+```bash
+cmake . -DMIST_USE_MPI=ON
+make
+mpirun -n 4 ./examples/advect1d/advect1d
+```
+
+**Next steps:**
+- Integrate communicator with pipeline for halo exchange
+- Add grid_t and distribution_t abstractions
+- Per-rank checkpoint/product output
