@@ -48,14 +48,8 @@ int distributed_session_t::run() {
             }
         }
 
-        // Broadcast command string length, then string
-        auto len = input.size();
-        // For null_communicator, this is a no-op; for MPI, we'd broadcast len then chars
-        // Currently just works for single-process
-        if (comm_.size() > 1) {
-            // TODO: implement actual broadcast of command string
-            // For now, this path won't be taken with null_communicator
-        }
+        // Broadcast command string to all ranks
+        comm_.broadcast_string(input);
 
         // Skip empty lines and comments
         if (input.empty() || input[0] == '#') {

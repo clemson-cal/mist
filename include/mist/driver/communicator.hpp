@@ -1,9 +1,10 @@
 #pragma once
 
 #include <cstddef>
+#include <memory>
 #include <span>
+#include <string>
 #include <vector>
-#include "command.hpp"
 
 namespace mist::driver {
 
@@ -29,8 +30,9 @@ struct communicator_t {
     virtual auto allreduce_max(double local) -> double = 0;
     virtual auto allreduce_sum(double local) -> double = 0;
 
-    // Command broadcast (root sends, others receive)
-    virtual void broadcast_command(command_t& cmd) = 0;
+    // String broadcast (root sends, others receive)
+    // Root provides the string; non-root ranks receive into it
+    virtual void broadcast_string(std::string& str) = 0;
 
     // Synchronization
     virtual void barrier() = 0;
@@ -54,8 +56,8 @@ struct null_communicator_t : communicator_t {
     auto allreduce_max(double local) -> double override { return local; }
     auto allreduce_sum(double local) -> double override { return local; }
 
-    void broadcast_command(command_t& /*cmd*/) override {
-        // Command already present, nothing to broadcast
+    void broadcast_string(std::string& /*str*/) override {
+        // String already present, nothing to broadcast
     }
 
     void barrier() override {
