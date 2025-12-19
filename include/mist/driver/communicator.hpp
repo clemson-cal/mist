@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdlib>
 #include <memory>
 #include <span>
 #include <string>
@@ -74,11 +75,22 @@ inline auto make_null_communicator() -> std::unique_ptr<communicator_t> {
 }
 
 #ifdef MIST_HAS_MPI
-// Forward declaration - implementation in mpi_communicator.hpp
+// Forward declaration - implementation in mpi_communicator.cpp
 auto make_mpi_communicator(int* argc, char*** argv) -> std::unique_ptr<communicator_t>;
 
+// Check if we're actually running under mpirun/mpiexec
+inline auto is_mpi_environment() -> bool {
+    // Open MPI, MPICH, and Intel MPI set these environment variables
+    return std::getenv("OMPI_COMM_WORLD_SIZE") != nullptr
+        || std::getenv("PMI_SIZE") != nullptr
+        || std::getenv("MPI_LOCALNRANKS") != nullptr;
+}
+
 inline auto make_communicator(int* argc, char*** argv) -> std::unique_ptr<communicator_t> {
-    return make_mpi_communicator(argc, argv);
+    if (is_mpi_environment()) {
+        return make_mpi_communicator(argc, argv);
+    }
+    return make_null_communicator();
 }
 #else
 inline auto make_communicator(int* /*argc*/, char*** /*argv*/) -> std::unique_ptr<communicator_t> {
