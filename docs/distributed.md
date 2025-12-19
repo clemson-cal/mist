@@ -366,3 +366,31 @@ This is simple and sufficient for interactive use. For large-scale visualization
 | `distributed_session_t` | command broadcast, response reduce | all three |
 | `engine_t` | execute commands locally | local patches only |
 | physics module | define physics | none of these |
+
+## Implementation Status
+
+**Files created:**
+- `include/mist/driver/communicator.hpp` — abstract interface + `null_communicator_t`
+- `include/mist/driver/distributed_session.hpp` — distributed session header
+- `src/driver/distributed_session.cpp` — implementation
+
+**Communicator interface (current):**
+```cpp
+struct communicator_t {
+    virtual int rank() const = 0;
+    virtual int size() const = 0;
+    bool is_root() const;
+
+    virtual void sendrecv(int peer, span<const byte> send, span<byte> recv) = 0;
+    virtual double allreduce_min(double) = 0;
+    virtual double allreduce_max(double) = 0;
+    virtual double allreduce_sum(double) = 0;
+    virtual void broadcast_string(std::string&) = 0;
+    virtual void barrier() = 0;
+};
+```
+
+**Next steps for MPI support:**
+1. Create `mpi_communicator_t` in `src/driver/mpi_communicator.cpp`
+2. Add CMake option `MIST_USE_MPI` with conditional compilation
+3. Test with `mpirun -n 4 ./advect1d`
