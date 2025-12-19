@@ -855,6 +855,5 @@ int main()
     auto state = mist::driver::state_t{};
     auto engine = mist::driver::engine_t{state, *physics};
     auto repl = mist::driver::repl_session_t{engine};
-    repl.run();
-    return 0;
+    return repl.run();
 }

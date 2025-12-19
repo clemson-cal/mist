@@ -32,6 +32,7 @@ find_path(READLINE_INCLUDE_DIR readline/readline.h
 
 # Driver library (compiled)
 add_library(mist_driver STATIC
+    src/driver/distributed_session.cpp
     src/driver/engine.cpp
     src/driver/repl_session.cpp
     src/driver/socket_session.cpp

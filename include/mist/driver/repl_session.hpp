@@ -34,7 +34,7 @@ public:
     repl_session_t(engine_t& engine, std::ostream& out = std::cout, std::ostream& err = std::cerr);
     ~repl_session_t();
 
-    void run();
+    int run();
 
 private:
     engine_t& engine_;

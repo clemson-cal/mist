@@ -79,7 +79,7 @@ int main() {
     auto state = mist::driver::state_t{};
     auto engine = mist::driver::engine_t{state, *physics};
     auto session = mist::driver::repl_session_t{engine};
-    session.run();
+    return session.run();
 }
 ```
 

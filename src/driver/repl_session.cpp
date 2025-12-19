@@ -258,7 +258,7 @@ repl_session_t::~repl_session_t() {
     }
 }
 
-void repl_session_t::run() {
+int repl_session_t::run() {
     while (true) {
         auto input_opt = get_next_command();
         if (!input_opt) {
@@ -284,6 +284,7 @@ void repl_session_t::run() {
             break;
         }
     }
+    return 0;
 }
 
 void repl_session_t::setup_readline() {

@@ -478,10 +478,9 @@ int main(int argc, char* argv[])
 
     if (use_socket) {
         auto session = mist::driver::socket_session_t{engine};
-        session.run();
+        return session.run();
     } else {
         auto session = mist::driver::repl_session_t{engine};
-        session.run();
+        return session.run();
     }
-    return 0;
 }

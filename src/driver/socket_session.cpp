@@ -23,7 +23,7 @@ void socket_session_t::print_ports() {
     out_.flush();
 }
 
-void socket_session_t::run() {
+int socket_session_t::run() {
     print_ports();
 
     // Accept connections on command and response sockets
@@ -49,6 +49,7 @@ void socket_session_t::run() {
             break;
         }
     }
+    return 0;
 }
 
 auto socket_session_t::read_command(socket_t& client) -> std::optional<command_t> {

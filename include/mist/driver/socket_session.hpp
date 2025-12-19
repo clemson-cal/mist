@@ -14,7 +14,7 @@ class socket_session_t {
 public:
     socket_session_t(engine_t& engine, std::ostream& out = std::cout);
 
-    void run();
+    int run();
 
     auto command_port() const -> int { return command_socket_.port(); }
     auto response_port() const -> int { return response_socket_.port(); }
