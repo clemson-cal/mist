@@ -26,11 +26,18 @@ distributed_session_t::distributed_session_t(engine_t& engine, communicator_t& c
 int distributed_session_t::run() {
     auto is_tty = comm_.is_root() && isatty(STDIN_FILENO);
 
+    // Warn about interactive mode with MPI (stdin forwarding issues)
+    if (is_tty && comm_.size() > 1) {
+        err_ << err_colors_.warning << "warning: " << err_colors_.reset
+             << "interactive mode with MPI may hang; use piped input or --socket\n";
+    }
+
     while (true) {
         auto input = std::string{};
 
         // Root reads command
         if (comm_.is_root()) {
+            std::cout.flush();  // Ensure prompt is displayed
             auto* line = readline(is_tty ? "> " : "");
             if (!line) {
                 input = "stop";  // EOF -> stop all ranks
