@@ -113,7 +113,8 @@ struct global_dt_t {
 
 struct ghost_exchange_t {
     static constexpr const char* name = "ghost_exchange";
-    using buffer_t = array_view_t<double, 1>;
+    using value_type = double;
+    static constexpr std::size_t rank = 1;
 
     auto provides(const patch_t& p) const -> array_view_t<const double, 1> {
         return p.cons[p.interior];

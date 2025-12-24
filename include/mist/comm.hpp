@@ -1,6 +1,5 @@
 #pragma once
 
-#include <functional>
 #include <span>
 #include <vector>
 #include "ndarray.hpp"
@@ -15,27 +14,27 @@ namespace mist {
 // Exchange plan: pre-computed routing for data transfers
 // =============================================================================
 
-template<typename SrcView, typename DestView>
+template<typename T, std::size_t S>
 struct exchange_plan_t {
-    static_assert(SrcView::rank == DestView::rank, "View ranks must match");
-    static constexpr std::size_t rank = SrcView::rank;
+    using src_view_t = array_view_t<const T, S>;
+    using dest_view_t = array_view_t<T, S>;
 
     struct local_copy_t {
-        SrcView src;
-        DestView dest;
-        index_space_t<rank> overlap;
+        src_view_t src;
+        dest_view_t dest;
+        index_space_t<S> overlap;
     };
 
     struct send_t {
         int dest_rank;
-        SrcView src;
-        index_space_t<rank> overlap;
+        src_view_t src;
+        index_space_t<S> overlap;
     };
 
     struct recv_t {
         int src_rank;
-        DestView dest;
-        index_space_t<rank> overlap;
+        dest_view_t dest;
+        index_space_t<S> overlap;
     };
 
     std::vector<local_copy_t> local_copies;
@@ -67,14 +66,14 @@ struct comm_t {
 
     // --- Exchange ---
 
-    template<typename SrcView, typename DestView>
+    template<typename T, std::size_t S>
     auto build_plan(
-        std::span<SrcView> publications,
-        std::span<DestView> requests
-    ) -> exchange_plan_t<SrcView, DestView>;
+        std::span<array_view_t<const T, S>> publications,
+        std::span<array_view_t<T, S>> requests
+    ) -> exchange_plan_t<T, S>;
 
-    template<typename SrcView, typename DestView>
-    void exchange(const exchange_plan_t<SrcView, DestView>& plan);
+    template<typename T, std::size_t S>
+    void exchange(const exchange_plan_t<T, S>& plan);
 
     // --- Reduce ---
 
@@ -136,16 +135,15 @@ struct mpi_type_traits<vec_t<T, N>> {
 };
 
 // Create MPI subarray datatype for a view
-template<typename View>
-auto make_mpi_subarray(const View& view, const index_space_t<View::rank>& overlap) -> MPI_Datatype {
-    constexpr auto S = View::rank;
-    using T = std::remove_const_t<typename View::value_type>;
+template<typename T, std::size_t S>
+auto make_mpi_subarray(const array_view_t<T, S>& view, const index_space_t<S>& overlap) -> MPI_Datatype {
+    using value_type = std::remove_const_t<T>;
 
-    static_assert(mpi_type_traits<T>::is_supported, "Unsupported MPI element type");
+    static_assert(mpi_type_traits<value_type>::is_supported, "Unsupported MPI element type");
 
     // Get MPI type for element
-    MPI_Datatype base_type = mpi_type_traits<T>::type();
-    constexpr std::size_t elem_count = mpi_type_traits<T>::count;
+    MPI_Datatype base_type = mpi_type_traits<value_type>::type();
+    constexpr std::size_t elem_count = mpi_type_traits<value_type>::count;
 
     // Create contiguous type for the element (handles vec_t)
     MPI_Datatype element_type;
@@ -217,13 +215,12 @@ inline auto comm_t::from_mpi(MPI_Comm comm) -> comm_t {
 // Implementation
 // =============================================================================
 
-template<typename SrcView, typename DestView>
+template<typename T, std::size_t S>
 auto comm_t::build_plan(
-    std::span<SrcView> publications,
-    std::span<DestView> requests
-) -> exchange_plan_t<SrcView, DestView> {
-    auto plan = exchange_plan_t<SrcView, DestView>{};
-    constexpr auto S = SrcView::rank;
+    std::span<array_view_t<const T, S>> publications,
+    std::span<array_view_t<T, S>> requests
+) -> exchange_plan_t<T, S> {
+    auto plan = exchange_plan_t<T, S>{};
 
 #ifdef MIST_WITH_MPI
     if (mpi_comm_ != MPI_COMM_NULL && size_ > 1) {
@@ -242,14 +239,16 @@ auto comm_t::build_plan(
 
         // Serialize local publication metadata
         using meta_t = detail::publication_meta_t<S>;
-        auto local_meta = std::vector<meta_t>(publications.size());
-        for (std::size_t i = 0; i < publications.size(); ++i) {
-            auto& pub = publications[i];
-            local_meta[i].rank = rank_;
-            local_meta[i].start = start(space(pub));
-            local_meta[i].shape = shape(space(pub));
-            local_meta[i].parent_start = start(parent(pub));
-            local_meta[i].parent_shape = shape(parent(pub));
+        auto local_meta = std::vector<meta_t>{};
+        local_meta.reserve(local_pub_count);
+        for (const auto& pub : publications) {
+            local_meta.push_back({
+                .rank = rank_,
+                .start = start(space(pub)),
+                .shape = shape(space(pub)),
+                .parent_start = start(parent(pub)),
+                .parent_shape = shape(parent(pub))
+            });
         }
 
         // Allgather publication metadata
@@ -398,8 +397,8 @@ auto comm_t::build_plan(
     return plan;
 }
 
-template<typename SrcView, typename DestView>
-void comm_t::exchange(const exchange_plan_t<SrcView, DestView>& plan) {
+template<typename T, std::size_t S>
+void comm_t::exchange(const exchange_plan_t<T, S>& plan) {
     // Execute local copies
     for (const auto& copy : plan.local_copies) {
         for (auto idx : copy.overlap) {
@@ -439,7 +438,7 @@ void comm_t::exchange(const exchange_plan_t<SrcView, DestView>& plan) {
             MPI_Request req;
             int tag = detail::make_tag(send.overlap);
             MPI_Isend(
-                const_cast<typename SrcView::value_type*>(data(send.src)),
+                const_cast<T*>(data(send.src)),
                 1,
                 dtype,
                 send.dest_rank,

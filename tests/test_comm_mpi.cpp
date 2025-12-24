@@ -94,10 +94,7 @@ void test_exchange_1d() {
     }
 
     // Build and execute exchange
-    auto plan = comm.build_plan<
-        array_view_t<const double, 1>,
-        array_view_t<double, 1>
-    >(pubs, reqs);
+    auto plan = comm.build_plan<double, 1>(pubs, reqs);
     comm.exchange(plan);
 
     // Verify ghost cells have correct values

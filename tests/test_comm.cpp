@@ -26,10 +26,7 @@ void test_build_plan_local_overlap() {
     auto pubs = std::vector{pub_view};
     auto reqs = std::vector{req_view};
 
-    auto plan = comm.build_plan<
-        array_view_t<const double, 1>,
-        array_view_t<double, 1>
-    >(pubs, reqs);
+    auto plan = comm.build_plan<double, 1>(pubs, reqs);
 
     assert(plan.local_copies.size() == 1);
     assert(size(plan.local_copies[0].overlap) == 5);  // [5, 10) overlap
