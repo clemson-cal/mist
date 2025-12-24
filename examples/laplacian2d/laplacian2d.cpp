@@ -1,0 +1,308 @@
+// 2D Laplacian with distributed domain decomposition
+// Demonstrates exchange-compute pipeline without the driver framework
+
+#include <cassert>
+#include <cmath>
+#include <iostream>
+#include <limits>
+#include <vector>
+#include "mist/comm.hpp"
+#include "mist/ndarray.hpp"
+#include "mist/pipeline.hpp"
+#include "mist/profiler.hpp"
+#include "mist/scheduler.hpp"
+
+#ifdef MIST_WITH_MPI
+#include <mpi.h>
+#endif
+
+using namespace mist;
+
+// =============================================================================
+// Configuration
+// =============================================================================
+
+struct config_t {
+    int global_nx = 64;          // Global grid size in x
+    int global_ny = 64;          // Global grid size in y
+    int patches_x = 2;           // Number of patches in x
+    int patches_y = 2;           // Number of patches in y
+    int num_ghosts = 1;          // Ghost zone width
+    double domain_x = 1.0;       // Domain size in x
+    double domain_y = 1.0;       // Domain size in y
+};
+
+// =============================================================================
+// Patch: owns a portion of the domain
+// =============================================================================
+
+struct patch_t {
+    index_space_t<2> interior;   // Interior cells (no ghosts)
+    array_t<double, 2> u;        // Field values (with ghosts)
+    array_t<double, 2> lap;      // Laplacian output (interior only)
+    double dx;
+    double dy;
+};
+
+// =============================================================================
+// Initial condition: u(x,y) = sin(2*pi*x) * sin(2*pi*y)
+// Laplacian: -8*pi^2 * sin(2*pi*x) * sin(2*pi*y)
+// =============================================================================
+
+auto initial_condition(double x, double y) -> double {
+    return std::sin(2.0 * M_PI * x) * std::sin(2.0 * M_PI * y);
+}
+
+auto exact_laplacian(double x, double y) -> double {
+    return -8.0 * M_PI * M_PI * std::sin(2.0 * M_PI * x) * std::sin(2.0 * M_PI * y);
+}
+
+// =============================================================================
+// Create patches for this rank
+// =============================================================================
+
+auto create_patches(const config_t& cfg, int rank, int size) -> std::vector<patch_t> {
+    // Distribute patches across ranks
+    int total_patches = cfg.patches_x * cfg.patches_y;
+    int patches_per_rank = total_patches / size;
+    int extra = total_patches % size;
+
+    int my_start = rank * patches_per_rank + std::min(rank, extra);
+    int my_count = patches_per_rank + (rank < extra ? 1 : 0);
+
+    auto patches = std::vector<patch_t>{};
+
+    int patch_nx = cfg.global_nx / cfg.patches_x;
+    int patch_ny = cfg.global_ny / cfg.patches_y;
+    double dx = cfg.domain_x / cfg.global_nx;
+    double dy = cfg.domain_y / cfg.global_ny;
+
+    for (int p = my_start; p < my_start + my_count; ++p) {
+        int px = p % cfg.patches_x;
+        int py = p / cfg.patches_x;
+
+        int i0 = px * patch_nx;
+        int j0 = py * patch_ny;
+
+        auto interior = index_space(ivec(i0, j0), uvec(patch_nx, patch_ny));
+        auto with_ghosts = expand(interior, cfg.num_ghosts);
+
+        auto patch = patch_t{};
+        patch.interior = interior;
+        patch.u = array_t<double, 2>(with_ghosts);
+        patch.lap = array_t<double, 2>(interior);
+        patch.dx = dx;
+        patch.dy = dy;
+
+        // Initialize field with initial condition
+        for (auto idx : with_ghosts) {
+            double x = (idx[0] + 0.5) * dx;
+            double y = (idx[1] + 0.5) * dy;
+            patch.u(idx) = initial_condition(x, y);
+        }
+
+        patches.push_back(std::move(patch));
+    }
+
+    return patches;
+}
+
+// =============================================================================
+// Exchange stage: share ghost zones between patches
+// =============================================================================
+
+struct ghost_exchange_t {
+    static constexpr const char* name = "ghost_exchange";
+    using value_type = double;
+    static constexpr std::size_t rank = 2;
+
+    int num_ghosts;
+    int global_nx;
+    int global_ny;
+
+    auto provides(const patch_t& p) const -> array_view_t<const double, 2> {
+        return p.u[p.interior];
+    }
+
+    void need(patch_t& p, auto request) const {
+        auto lo = start(p.interior);
+        auto hi = upper(p.interior);
+        auto sh = shape(p.interior);
+
+        // Left ghost region (if not at left boundary)
+        if (lo[0] > 0) {
+            auto region = index_space(ivec(lo[0] - num_ghosts, lo[1]), uvec(num_ghosts, sh[1]));
+            request(p.u[region]);
+        }
+        // Right ghost region (if not at right boundary)
+        if (hi[0] < global_nx) {
+            auto region = index_space(ivec(hi[0], lo[1]), uvec(num_ghosts, sh[1]));
+            request(p.u[region]);
+        }
+        // Bottom ghost region (if not at bottom boundary)
+        if (lo[1] > 0) {
+            auto region = index_space(ivec(lo[0], lo[1] - num_ghosts), uvec(sh[0], num_ghosts));
+            request(p.u[region]);
+        }
+        // Top ghost region (if not at top boundary)
+        if (hi[1] < global_ny) {
+            auto region = index_space(ivec(lo[0], hi[1]), uvec(sh[0], num_ghosts));
+            request(p.u[region]);
+        }
+    }
+};
+
+// =============================================================================
+// Compute stage: compute 5-point Laplacian stencil
+// =============================================================================
+
+struct compute_laplacian_t {
+    static constexpr const char* name = "compute_laplacian";
+
+    auto value(patch_t p) const -> patch_t {
+        double dx2 = p.dx * p.dx;
+        double dy2 = p.dy * p.dy;
+
+        for (auto idx : p.interior) {
+            int i = idx[0];
+            int j = idx[1];
+
+            double u_c = p.u(ivec(i, j));
+            double u_l = p.u(ivec(i - 1, j));
+            double u_r = p.u(ivec(i + 1, j));
+            double u_b = p.u(ivec(i, j - 1));
+            double u_t = p.u(ivec(i, j + 1));
+
+            p.lap(idx) = (u_l - 2.0 * u_c + u_r) / dx2
+                       + (u_b - 2.0 * u_c + u_t) / dy2;
+        }
+        return p;
+    }
+};
+
+// =============================================================================
+// Reduce stage: compute global dt from CFL condition
+// =============================================================================
+
+struct compute_dt_t {
+    static constexpr const char* name = "compute_dt";
+    using value_type = double;
+
+    static auto init() -> double { return std::numeric_limits<double>::max(); }
+    static auto combine(double a, double b) -> double { return std::min(a, b); }
+
+    auto extract(const patch_t& p) const -> double {
+        // CFL condition for diffusion: dt < 0.25 * dx^2 / nu
+        // For Laplacian demo, just return a reasonable dt based on grid spacing
+        return 0.25 * p.dx * p.dx;
+    }
+
+    void finalize(double global_dt, patch_t& p) const {
+        (void)global_dt;
+        (void)p;
+    }
+};
+
+// =============================================================================
+// Compute L2 error using map_reduce
+// =============================================================================
+
+auto compute_l2_error(const std::vector<patch_t>& patches, double dx, double dy, int num_cells) -> double {
+    double local_sum_sq = 0.0;
+    for (const auto& p : patches) {
+        local_sum_sq += map_reduce(p.interior, 0.0,
+            [&p, dx, dy](ivec_t<2> idx) {
+                double x = (idx[0] + 0.5) * dx;
+                double y = (idx[1] + 0.5) * dy;
+                double exact = exact_laplacian(x, y);
+                double err = p.lap(idx) - exact;
+                return err * err;
+            },
+            [](double a, double b) { return a + b; });
+    }
+    return local_sum_sq;
+}
+
+// =============================================================================
+// Main
+// =============================================================================
+
+int main(int argc, char** argv) {
+#ifdef MIST_WITH_MPI
+    MPI_Init(&argc, &argv);
+    auto comm = comm_t::from_mpi(MPI_COMM_WORLD);
+#else
+    (void)argc;
+    (void)argv;
+    auto comm = comm_t{};
+#endif
+
+    auto cfg = config_t{};
+
+    // Adjust patches to match number of ranks
+    if (comm.size() == 1) {
+        cfg.patches_x = 2;
+        cfg.patches_y = 2;
+    } else if (comm.size() == 4) {
+        cfg.patches_x = 2;
+        cfg.patches_y = 2;
+    }
+
+    // Create patches for this rank
+    auto patches = create_patches(cfg, comm.rank(), comm.size());
+
+    if (comm.rank() == 0) {
+        std::cout << "Laplacian 2D example\n";
+        std::cout << "  Grid: " << cfg.global_nx << " x " << cfg.global_ny << "\n";
+        std::cout << "  Patches: " << cfg.patches_x << " x " << cfg.patches_y << "\n";
+        std::cout << "  Ranks: " << comm.size() << "\n";
+        std::cout << "  Patches per rank: " << patches.size() << "\n";
+    }
+
+    // Create pipeline stages
+    auto exchange = ghost_exchange_t{
+        .num_ghosts = cfg.num_ghosts,
+        .global_nx = cfg.global_nx,
+        .global_ny = cfg.global_ny
+    };
+    auto compute = compute_laplacian_t{};
+    auto reduce_dt = compute_dt_t{};
+
+    // Create pipeline: exchange -> compute -> reduce
+    auto pipe = parallel::pipeline(exchange, compute, reduce_dt);
+
+    // Execution infrastructure
+    auto sched = parallel::scheduler_t{};
+    auto profiler = perf::null_profiler_t{};
+
+    // Execute pipeline
+    parallel::execute(pipe, patches, comm, sched, profiler);
+
+    // Compute L2 error using distributed reduction
+    double dx = cfg.domain_x / cfg.global_nx;
+    double dy = cfg.domain_y / cfg.global_ny;
+    int num_cells = cfg.global_nx * cfg.global_ny;
+
+    double local_sum_sq = compute_l2_error(patches, dx, dy, num_cells);
+    double global_sum_sq = comm.combine(local_sum_sq, [](double a, double b) { return a + b; });
+    double l2_error = std::sqrt(global_sum_sq / num_cells);
+
+    if (comm.rank() == 0) {
+        std::cout << "  L2 error: " << l2_error << "\n";
+
+        // For sin(2*pi*x)*sin(2*pi*y), the 4th derivative is O((2*pi)^4) ~ 1558
+        // Second-order Laplacian error is O(h^2 * f''''/ 12) ~ 0.032 for h=1/64
+        double expected_error = dx * dx * std::pow(2.0 * M_PI, 4) / 12.0;
+
+        if (l2_error < 2.0 * expected_error) {
+            std::cout << "  PASSED (error within expected bounds)\n";
+        } else {
+            std::cout << "  FAILED (error larger than expected)\n";
+        }
+    }
+
+#ifdef MIST_WITH_MPI
+    MPI_Finalize();
+#endif
+    return 0;
+}

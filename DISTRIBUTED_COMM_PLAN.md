@@ -6,9 +6,10 @@
    - Enables MPI_Type_create_subarray construction
    - Added `parent()` free function
 
-2. **ExchangeStage::provides() returns array_view_t**
-   - Removed redundant `data()` method and `space_t` typedef
-   - Simpler concept
+2. **ExchangeStage concept with value_type and rank**
+   - Stage defines `value_type` (element type) and `rank` (dimensionality)
+   - View types derived as `array_view_t<const T, S>` and `array_view_t<T, S>`
+   - Removed `buffer_t` typedef in favor of explicit types
 
 3. **ReduceStage with extract/combine/finalize**
    - `init()`, `combine()` are static (value operations)
@@ -16,7 +17,7 @@
    - `combine` works on two values - enables distributed reduction
 
 4. **comm_t integrated with pipeline.hpp**
-   - `exchange_plan_t<SrcView, DestView>` supports separate types
+   - `exchange_plan_t<T, S>` templated on value type and rank
    - `execute_exchange()` uses `comm.build_plan()` + `comm.exchange()`
    - `execute_reduce()` uses `comm.combine()` for global reduction
    - Backwards-compatible overloads with local-only communicator
@@ -30,7 +31,7 @@
    - Tags generated from hash of overlap region
 
 6. **MPI Datatype Construction**
-   - `detail::make_mpi_subarray()` creates MPI subarray types from views
+   - `detail::make_mpi_subarray<T, S>()` creates MPI subarray types
    - Uses parent space for proper strided access
    - Supports `double`, `float`, `int`, and `vec_t<T, N>` element types
    - `detail::mpi_type_traits<T>` for type mapping
@@ -47,16 +48,22 @@
      - `exchange()` for 1D ghost cell communication
    - Runs with `mpirun -np 4` in CTest
 
+9. **Simplified pipeline.hpp**
+   - Removed unused includes (`<algorithm>`, `<atomic>`, `<functional>`)
+   - Removed unused `pipeline_t::get()` method
+   - Merged detail namespace blocks
+   - Simplified context type using `pipeline_t<...>::context_t`
+
 ## Next Steps
 
 ### 1. Plan Caching in ExchangeStage
 
 ```cpp
 struct some_exchange_stage {
-    mutable std::optional<exchange_plan_t<SrcView, DestView>> cached_plan_;
+    mutable std::optional<exchange_plan_t<T, S>> cached_plan_;
     mutable std::size_t topology_version_ = 0;
 
-    auto plan(contexts, comm) -> const exchange_plan_t<...>&;
+    auto plan(contexts, comm) -> const exchange_plan_t<T, S>&;
 };
 ```
 
