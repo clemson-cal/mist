@@ -251,57 +251,40 @@ struct array_view_t {
     static constexpr std::size_t rank = S;
 
     index_space_t<S> _space;   // The subspace this view represents
-    T* _data;                   // Pointer to element at _space.start in parent
-    uvec_t<S> _strides;         // Parent's strides for offset calculation
+    index_space_t<S> _parent;  // The parent allocation's index space
+    T* _data;                  // Pointer to first element of parent
 
-    // Constructor for contiguous view (strides derived from space)
+    // Constructor for contiguous view (parent equals space)
     array_view_t(const index_space_t<S>& space, T* data)
-        : _space(space), _data(data), _strides(compute_strides(shape(space))) {}
+        : _space(space), _parent(space), _data(data) {}
 
-    // Constructor for strided view (subspace of parent)
-    array_view_t(const index_space_t<S>& space, T* data, const uvec_t<S>& strides)
-        : _space(space), _data(data), _strides(strides) {}
+    // Constructor for subspace view
+    array_view_t(const index_space_t<S>& space, const index_space_t<S>& parent, T* data)
+        : _space(space), _parent(parent), _data(data) {}
 
     // Converting constructor: array_view_t<U> -> array_view_t<const U>
     template<typename U>
         requires std::is_same_v<T, const U>
     array_view_t(const array_view_t<U, S>& other)
-        : _space(other._space), _data(other._data), _strides(other._strides) {}
+        : _space(other._space), _parent(other._parent), _data(other._data) {}
 
     // Element access - constness is encoded in T, not in the view
     // Use array_view_t<const T, S> for read-only access
     MIST_HD T& operator()(const ivec_t<S>& idx) const {
-        return _data[strided_offset(idx)];
+        return _data[ndoffset(_parent, idx)];
     }
 
     // Convenience for 1D arrays: accept integer index
     MIST_HD T& operator[](int i) const requires (S == 1) {
-        return _data[strided_offset(ivec(i))];
-    }
-
-private:
-    // Compute strides from shape (row-major)
-    static constexpr uvec_t<S> compute_strides(const uvec_t<S>& shape) {
-        uvec_t<S> strides{};
-        strides._data[S - 1] = 1;
-        for (std::size_t i = S - 1; i > 0; --i) {
-            strides._data[i - 1] = strides._data[i] * shape._data[i];
-        }
-        return strides;
-    }
-
-    // Compute offset using stored strides
-    MIST_HD constexpr std::size_t strided_offset(const ivec_t<S>& idx) const {
-        std::size_t offset = 0;
-        for (std::size_t i = 0; i < S; ++i) {
-            offset += static_cast<std::size_t>(idx._data[i] - _space._start._data[i]) * _strides._data[i];
-        }
-        return offset;
+        return _data[ndoffset(_parent, ivec(i))];
     }
 };
 
 template<typename T, std::size_t S>
 const index_space_t<S>& space(const array_view_t<T, S>& a) { return a._space; }
+
+template<typename T, std::size_t S>
+const index_space_t<S>& parent(const array_view_t<T, S>& a) { return a._parent; }
 
 template<typename T, std::size_t S>
 T* data(const array_view_t<T, S>& a) { return a._data; }
@@ -321,29 +304,15 @@ auto view(const array_t<T, S>& a) -> array_view_t<const T, S> {
     return array_view_t<const T, S>(a._space, a._data);
 }
 
-// View of subspace (strided access into parent)
+// View of subspace (parent space enables MPI subarray datatypes)
 template<typename T, std::size_t S>
 auto view(array_t<T, S>& a, const index_space_t<S>& subspace) -> array_view_t<T, S> {
-    // Compute strides from parent's shape
-    uvec_t<S> strides{};
-    strides._data[S - 1] = 1;
-    for (std::size_t i = S - 1; i > 0; --i) {
-        strides._data[i - 1] = strides._data[i] * a._space._shape._data[i];
-    }
-    // Compute pointer to first element of subspace
-    T* ptr = a._data + ndoffset(a._space, start(subspace));
-    return array_view_t<T, S>(subspace, ptr, strides);
+    return array_view_t<T, S>(subspace, a._space, a._data);
 }
 
 template<typename T, std::size_t S>
 auto view(const array_t<T, S>& a, const index_space_t<S>& subspace) -> array_view_t<const T, S> {
-    uvec_t<S> strides{};
-    strides._data[S - 1] = 1;
-    for (std::size_t i = S - 1; i > 0; --i) {
-        strides._data[i - 1] = strides._data[i] * a._space._shape._data[i];
-    }
-    const T* ptr = a._data + ndoffset(a._space, start(subspace));
-    return array_view_t<const T, S>(subspace, ptr, strides);
+    return array_view_t<const T, S>(subspace, a._space, a._data);
 }
 
 // -----------------------------------------------------------------------------

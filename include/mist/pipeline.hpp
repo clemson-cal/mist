@@ -6,6 +6,7 @@
 #include <functional>
 #include <tuple>
 #include <vector>
+#include "comm.hpp"
 #include "profiler.hpp"
 #include "queue.hpp"
 #include "scheduler.hpp"
@@ -35,17 +36,23 @@ template<typename S>
 concept ComputeStage = requires { &S::value; };
 
 // Exchange stage: peers request/provide data (barrier required)
+// provides() returns buffer_t directly (contains both space and data)
 template<typename S>
 concept ExchangeStage = requires {
-    typename S::space_t;
     typename S::buffer_t;
     &S::provides;
-    &S::data;
 };
 
 // Reduce stage: fold across peers then broadcast result (barrier required)
+// init() and combine() are static; extract() and finalize() are instance methods
 template<typename S>
-concept ReduceStage = requires { typename S::value_type; &S::init; &S::reduce; &S::finalize; };
+concept ReduceStage = requires {
+    typename S::value_type;
+    &S::init;
+    &S::combine;
+    &S::extract;
+    &S::finalize;
+};
 
 // Type trait to extract Context type from a stage
 namespace detail {
@@ -59,7 +66,7 @@ namespace detail {
     C extract_context_from_value(C(S::*)(C) const);
 
     template<typename V, typename S, typename C>
-    C extract_context_from_reduce(V(S::*)(V, const C&) const);
+    C extract_context_from_extract(V(S::*)(const C&) const);
 }
 
 template<typename S>
@@ -72,7 +79,7 @@ struct stage_context<S> {
 
 template<ReduceStage S>
 struct stage_context<S> {
-    using type = decltype(detail::extract_context_from_reduce(&S::reduce));
+    using type = decltype(detail::extract_context_from_extract(&S::extract));
 };
 
 template<ComputeStage S>
@@ -145,33 +152,32 @@ auto compose(Stages... stages) -> composed_t<Stages...> {
 namespace detail {
 
 // Execute a single Exchange stage across all contexts
-template<ExchangeStage Stage, typename Context>
+template<ExchangeStage Stage, typename Context, typename Comm>
 void execute_exchange(
     const Stage& stage,
-    std::vector<Context>& contexts
+    std::vector<Context>& contexts,
+    Comm& comm
 ) {
-    struct request_t {
-        std::size_t requester;
-        typename Stage::buffer_t buffer;
-        typename Stage::space_t requested_space;
-    };
+    using dest_view_t = typename Stage::buffer_t;
+    using src_view_t = decltype(stage.provides(std::declval<const Context&>()));
 
-    // Collect all requests
-    auto requests = std::vector<request_t>{};
-    for (std::size_t i = 0; i < contexts.size(); ++i) {
-        stage.need(contexts[i], [&](auto buf) {
-            requests.push_back({i, buf, space(buf)});
+    // Collect publications from all local contexts
+    auto publications = std::vector<src_view_t>{};
+    for (const auto& ctx : contexts) {
+        publications.push_back(stage.provides(ctx));
+    }
+
+    // Collect requests from all local contexts
+    auto requests = std::vector<dest_view_t>{};
+    for (auto& ctx : contexts) {
+        stage.need(ctx, [&](auto buf) {
+            requests.push_back(buf);
         });
     }
 
-    // Route requests to providers
-    for (auto& req : requests) {
-        for (std::size_t j = 0; j < contexts.size(); ++j) {
-            if (overlaps(req.requested_space, stage.provides(contexts[j]))) {
-                copy_overlapping(req.buffer, stage.data(contexts[j]));
-            }
-        }
-    }
+    // Build and execute the exchange plan
+    auto plan = comm.template build_plan<src_view_t, dest_view_t>(publications, requests);
+    comm.exchange(plan);
 }
 
 // Execute a single Compute stage across all contexts (parallel)
@@ -197,15 +203,22 @@ void execute_compute(
 }
 
 // Execute a single Reduce stage: fold then broadcast
-template<ReduceStage Stage, typename Context>
+template<ReduceStage Stage, typename Context, typename Comm>
 void execute_reduce(
     const Stage& stage,
-    std::vector<Context>& contexts
+    std::vector<Context>& contexts,
+    Comm& comm
 ) {
+    // Local fold
     auto acc = Stage::init();
     for (const auto& ctx : contexts) {
-        acc = stage.reduce(acc, ctx);
+        acc = Stage::combine(acc, stage.extract(ctx));
     }
+
+    // Global combine across all ranks
+    acc = comm.combine(acc, Stage::combine);
+
+    // Broadcast result to all local contexts
     for (auto& ctx : contexts) {
         stage.finalize(acc, ctx);
     }
@@ -220,16 +233,17 @@ void execute_reduce(
 namespace detail {
 
 // Dispatch a stage by type
-template<typename Stage, typename Context, Scheduler Sched>
+template<typename Stage, typename Context, typename Comm, Scheduler Sched>
 void execute_stage(
     const Stage& stage,
     std::vector<Context>& contexts,
+    Comm& comm,
     Sched& sched
 ) {
     if constexpr (ExchangeStage<Stage>) {
-        execute_exchange(stage, contexts);
+        execute_exchange(stage, contexts, comm);
     } else if constexpr (ReduceStage<Stage>) {
-        execute_reduce(stage, contexts);
+        execute_reduce(stage, contexts, comm);
     } else {
         execute_compute(stage, contexts, sched);
     }
@@ -237,7 +251,24 @@ void execute_stage(
 
 } // namespace detail
 
-// Execute pipeline with profiler
+// Execute pipeline with profiler and communicator
+template<typename... Stages, typename Comm, Scheduler Sched, perf::Profiler Prof>
+void execute(
+    const pipeline_t<Stages...>& pipe,
+    std::vector<stage_context_t<std::tuple_element_t<0, std::tuple<Stages...>>>>& contexts,
+    Comm& comm,
+    Sched& sched,
+    Prof& profiler
+) {
+    std::size_t stage_index = 0;
+    std::apply([&](const Stages&... stages) {
+        ((profiler.start(),
+          detail::execute_stage(stages, contexts, comm, sched),
+          profiler.record(stage_name<Stages>(stage_index++))), ...);
+    }, pipe.stages);
+}
+
+// Convenience: execute with local-only communicator
 template<typename... Stages, Scheduler Sched, perf::Profiler Prof>
 void execute(
     const pipeline_t<Stages...>& pipe,
@@ -245,15 +276,26 @@ void execute(
     Sched& sched,
     Prof& profiler
 ) {
-    std::size_t stage_index = 0;
-    std::apply([&](const Stages&... stages) {
-        ((profiler.start(),
-          detail::execute_stage(stages, contexts, sched),
-          profiler.record(stage_name<Stages>(stage_index++))), ...);
-    }, pipe.stages);
+    auto comm = comm_t{};
+    execute(pipe, contexts, comm, sched, profiler);
 }
 
 // Convenience overload: execute a single stage without wrapping in pipeline
+template<typename Stage, typename Context, typename Comm, Scheduler Sched, perf::Profiler Prof>
+    requires (!Pipeline<Stage>)
+void execute(
+    const Stage& stage,
+    std::vector<Context>& contexts,
+    Comm& comm,
+    Sched& sched,
+    Prof& profiler
+) {
+    profiler.start();
+    detail::execute_stage(stage, contexts, comm, sched);
+    profiler.record(stage_name<Stage>(0));
+}
+
+// Convenience: execute single stage with local-only communicator
 template<typename Stage, typename Context, Scheduler Sched, perf::Profiler Prof>
     requires (!Pipeline<Stage>)
 void execute(
@@ -262,8 +304,9 @@ void execute(
     Sched& sched,
     Prof& profiler
 ) {
+    auto comm = comm_t{};
     profiler.start();
-    detail::execute_stage(stage, contexts, sched);
+    detail::execute_stage(stage, contexts, comm, sched);
     profiler.record(stage_name<Stage>(0));
 }
 

@@ -17,15 +17,19 @@ void test_build_plan_local_overlap() {
         arr1(idx) = static_cast<double>(idx[0]);
     }
 
-    auto view1 = view(arr1);
-    auto view2 = view(arr2);
+    // Publications are const views, requests are mutable views
+    auto pub_view = view(static_cast<const array_t<double, 1>&>(arr1));
+    auto req_view = view(arr2);
 
-    // Build plan: view1 publishes, view2 requests
+    // Build plan: arr1 publishes, arr2 requests
     auto comm = comm_t{};
-    auto pubs = std::vector{view1};
-    auto reqs = std::vector{view2};
+    auto pubs = std::vector{pub_view};
+    auto reqs = std::vector{req_view};
 
-    auto plan = comm.build_plan<array_view_t<double, 1>>(pubs, reqs);
+    auto plan = comm.build_plan<
+        array_view_t<const double, 1>,
+        array_view_t<double, 1>
+    >(pubs, reqs);
 
     assert(plan.local_copies.size() == 1);
     assert(size(plan.local_copies[0].overlap) == 5);  // [5, 10) overlap

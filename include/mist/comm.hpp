@@ -11,23 +11,32 @@ namespace mist {
 // Exchange plan: pre-computed routing for data transfers
 // =============================================================================
 
-template<typename View>
+template<typename SrcView, typename DestView>
 struct exchange_plan_t {
+    static_assert(SrcView::rank == DestView::rank, "View ranks must match");
+    static constexpr std::size_t rank = SrcView::rank;
+
     struct local_copy_t {
-        View src;
-        View dest;
-        index_space_t<View::rank> overlap;
+        SrcView src;
+        DestView dest;
+        index_space_t<rank> overlap;
     };
 
-    struct remote_transfer_t {
-        int remote_rank;
-        View local_view;
-        index_space_t<View::rank> overlap;
+    struct send_t {
+        int dest_rank;
+        SrcView src;
+        index_space_t<rank> overlap;
+    };
+
+    struct recv_t {
+        int src_rank;
+        DestView dest;
+        index_space_t<rank> overlap;
     };
 
     std::vector<local_copy_t> local_copies;
-    std::vector<remote_transfer_t> sends;
-    std::vector<remote_transfer_t> recvs;
+    std::vector<send_t> sends;
+    std::vector<recv_t> recvs;
 };
 
 // =============================================================================
@@ -45,14 +54,14 @@ struct comm_t {
 
     // --- Exchange ---
 
-    template<typename View>
+    template<typename SrcView, typename DestView>
     auto build_plan(
-        std::span<const View> publications,
-        std::span<const View> requests
-    ) -> exchange_plan_t<View>;
+        std::span<SrcView> publications,
+        std::span<DestView> requests
+    ) -> exchange_plan_t<SrcView, DestView>;
 
-    template<typename View>
-    void exchange(const exchange_plan_t<View>& plan);
+    template<typename SrcView, typename DestView>
+    void exchange(const exchange_plan_t<SrcView, DestView>& plan);
 
     // --- Reduce ---
 
@@ -64,12 +73,12 @@ struct comm_t {
 // Implementation
 // =============================================================================
 
-template<typename View>
+template<typename SrcView, typename DestView>
 auto comm_t::build_plan(
-    std::span<const View> publications,
-    std::span<const View> requests
-) -> exchange_plan_t<View> {
-    auto plan = exchange_plan_t<View>{};
+    std::span<SrcView> publications,
+    std::span<DestView> requests
+) -> exchange_plan_t<SrcView, DestView> {
+    auto plan = exchange_plan_t<SrcView, DestView>{};
 
     // For each request, find overlapping publications
     for (const auto& req : requests) {
@@ -93,8 +102,8 @@ auto comm_t::build_plan(
     return plan;
 }
 
-template<typename View>
-void comm_t::exchange(const exchange_plan_t<View>& plan) {
+template<typename SrcView, typename DestView>
+void comm_t::exchange(const exchange_plan_t<SrcView, DestView>& plan) {
     // Execute local copies
     for (const auto& copy : plan.local_copies) {
         for (auto idx : copy.overlap) {

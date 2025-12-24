@@ -94,12 +94,16 @@ struct global_dt_t {
     static constexpr const char* name = "global_dt";
     using value_type = double;
 
-    static double init() {
+    static auto init() -> double {
         return std::numeric_limits<double>::max();
     }
 
-    double reduce(double acc, const patch_t& p) const {
-        return std::min(acc, p.dt);
+    static auto combine(double a, double b) -> double {
+        return std::min(a, b);
+    }
+
+    auto extract(const patch_t& p) const -> double {
+        return p.dt;
     }
 
     void finalize(double dt, patch_t& p) const {
@@ -109,11 +113,10 @@ struct global_dt_t {
 
 struct ghost_exchange_t {
     static constexpr const char* name = "ghost_exchange";
-    using space_t = index_space_t<1>;
     using buffer_t = array_view_t<double, 1>;
 
-    auto provides(const patch_t& p) const -> space_t {
-        return p.interior;
+    auto provides(const patch_t& p) const -> array_view_t<const double, 1> {
+        return p.cons[p.interior];
     }
 
     void need(patch_t& p, auto request) const {
@@ -123,10 +126,6 @@ struct ghost_exchange_t {
         auto r_guard = index_space(hi - ivec(0), uvec(1));
         request(p.cons[l_guard]);
         request(p.cons[r_guard]);
-    }
-
-    auto data(const patch_t& p) const -> array_view_t<const double, 1> {
-        return p.cons[p.interior];
     }
 };
 
