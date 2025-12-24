@@ -54,6 +54,36 @@
    - Merged detail namespace blocks
    - Simplified context type using `pipeline_t<...>::context_t`
 
+10. **laplacian2d Example with Distributed Domain Decomposition**
+    - Exchange-compute-reduce pipeline without driver framework
+    - Ghost zone exchange between 2D patches using `ghost_exchange_t` stage
+    - 5-point Laplacian stencil computation via `compute_laplacian_t`
+    - L2 error reduction using `error_reduce_t` ReduceStage pattern
+    - Uses `subspace()` and `ndindex()` for domain decomposition
+    - Demonstrates multi-patch per rank distributed execution
+
+11. **core.hpp Cleanup and Refactoring**
+    - Consolidated `ndindex()` with single C-ordering (last index fastest)
+    - Removed `unravel()` function (use `ndindex(offset, shape)` instead)
+    - Added `to_signed()` helper for uvec_t → ivec_t conversion
+    - Added unary minus operator for vec_t
+    - Added vec_t static methods: `constant()`, `zeros()`, `ones()`
+    - Replaced `static_cast<T>(x)` with functional casts `T(x)` throughout
+    - Used `[]` accessor instead of `._data[]` in index_space functions
+    - Shortened variable names: `space→s`, `index→i/idx`, `offset→off`, `shape→sh`, etc.
+    - Used `auto` declarations for function return types and obvious types
+    - Removed underscore prefix from member variables: `_data→data`, `_start→start`, `_shape→shape`
+
+12. **Header File Member Variable Cleanup**
+    - Removed underscore prefix from all member variables across headers
+    - vec_t: `_data → data`
+    - index_space_t: `_start → start`, `_shape → shape`
+    - index_space_iterator: `_space → space`, `_offset → offset`
+    - array_t: `_space → space`, `_data → data`, `_location → location`
+    - lazy_t: `_space → space`, `_func → func`
+    - array_view_t: `_parent → parent`
+    - Fixed typo: `indexspace_t → index_space_t`, `indexspace() → index_space()`
+
 ## Next Steps
 
 ### 1. Plan Caching in ExchangeStage
