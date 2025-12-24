@@ -45,16 +45,16 @@ concept UnaryFunction = requires(F f, T t) {
 template<Arithmetic T, std::size_t S>
     requires (S > 0)
 struct vec_t {
-    T _data[S];
+    T data[S];
 
-    MIST_HD constexpr T& operator[](std::size_t i) { return _data[i]; }
-    MIST_HD constexpr const T& operator[](std::size_t i) const { return _data[i]; }
+    MIST_HD constexpr T& operator[](std::size_t i) { return data[i]; }
+    MIST_HD constexpr const T& operator[](std::size_t i) const { return data[i]; }
 
     MIST_HD constexpr std::size_t size() const { return S; }
 
     MIST_HD static constexpr vec_t constant(T v) {
         vec_t r{};
-        for (std::size_t i = 0; i < S; ++i) r._data[i] = v;
+        for (std::size_t i = 0; i < S; ++i) r.data[i] = v;
         return r;
     }
     MIST_HD static constexpr vec_t zeros() { return constant(T(0)); }
@@ -76,12 +76,12 @@ template<std::size_t S> using uvec_t = vec_t<unsigned int, S>;
 // Get element at index (free function version)
 template<Arithmetic T, std::size_t S>
 MIST_HD constexpr T& at(vec_t<T, S>& v, std::size_t i) {
-    return v._data[i];
+    return v.data[i];
 }
 
 template<Arithmetic T, std::size_t S>
 MIST_HD constexpr const T& at(const vec_t<T, S>& v, std::size_t i) {
-    return v._data[i];
+    return v.data[i];
 }
 
 // Get size (free function version)
@@ -93,33 +93,33 @@ MIST_HD constexpr std::size_t size(const vec_t<T, S>&) {
 // Get pointer to data
 template<Arithmetic T, std::size_t S>
 MIST_HD constexpr T* data(vec_t<T, S>& v) {
-    return v._data;
+    return v.data;
 }
 
 template<Arithmetic T, std::size_t S>
 MIST_HD constexpr const T* data(const vec_t<T, S>& v) {
-    return v._data;
+    return v.data;
 }
 
 // Begin/end iterators for range-based for loops
 template<Arithmetic T, std::size_t S>
 MIST_HD constexpr T* begin(vec_t<T, S>& v) {
-    return v._data;
+    return v.data;
 }
 
 template<Arithmetic T, std::size_t S>
 MIST_HD constexpr const T* begin(const vec_t<T, S>& v) {
-    return v._data;
+    return v.data;
 }
 
 template<Arithmetic T, std::size_t S>
 MIST_HD constexpr T* end(vec_t<T, S>& v) {
-    return v._data + S;
+    return v.data + S;
 }
 
 template<Arithmetic T, std::size_t S>
 MIST_HD constexpr const T* end(const vec_t<T, S>& v) {
-    return v._data + S;
+    return v.data + S;
 }
 
 // =============================================================================
@@ -175,7 +175,7 @@ MIST_HD constexpr auto operator+(const vec_t<T, S>& a, const vec_t<U, S>& b) {
     using R = decltype(std::declval<T>() + std::declval<U>());
     vec_t<R, S> result{};
     for (std::size_t i = 0; i < S; ++i) {
-        result._data[i] = a._data[i] + b._data[i];
+        result.data[i] = a.data[i] + b.data[i];
     }
     return result;
 }
@@ -186,7 +186,7 @@ MIST_HD constexpr auto operator-(const vec_t<T, S>& a, const vec_t<U, S>& b) {
     using R = decltype(std::declval<T>() - std::declval<U>());
     vec_t<R, S> result{};
     for (std::size_t i = 0; i < S; ++i) {
-        result._data[i] = a._data[i] - b._data[i];
+        result.data[i] = a.data[i] - b.data[i];
     }
     return result;
 }
@@ -195,7 +195,7 @@ MIST_HD constexpr auto operator-(const vec_t<T, S>& a, const vec_t<U, S>& b) {
 template<Arithmetic T, std::size_t S>
 MIST_HD constexpr auto operator-(const vec_t<T, S>& v) {
     vec_t<T, S> r{};
-    for (std::size_t i = 0; i < S; ++i) r._data[i] = -v._data[i];
+    for (std::size_t i = 0; i < S; ++i) r.data[i] = -v.data[i];
     return r;
 }
 
@@ -205,7 +205,7 @@ MIST_HD constexpr auto operator*(const vec_t<T, S>& v, U scalar) {
     using R = decltype(std::declval<T>() * std::declval<U>());
     vec_t<R, S> result{};
     for (std::size_t i = 0; i < S; ++i) {
-        result._data[i] = v._data[i] * scalar;
+        result.data[i] = v.data[i] * scalar;
     }
     return result;
 }
@@ -222,7 +222,7 @@ MIST_HD constexpr auto operator/(const vec_t<T, S>& v, U scalar) {
     using R = decltype(std::declval<T>() / std::declval<U>());
     vec_t<R, S> result{};
     for (std::size_t i = 0; i < S; ++i) {
-        result._data[i] = v._data[i] / scalar;
+        result.data[i] = v.data[i] / scalar;
     }
     return result;
 }
@@ -231,7 +231,7 @@ MIST_HD constexpr auto operator/(const vec_t<T, S>& v, U scalar) {
 template<Arithmetic T, Arithmetic U, std::size_t S>
 MIST_HD constexpr auto& operator+=(vec_t<T, S>& a, const vec_t<U, S>& b) {
     for (std::size_t i = 0; i < S; ++i) {
-        a._data[i] += b._data[i];
+        a.data[i] += b.data[i];
     }
     return a;
 }
@@ -240,7 +240,7 @@ MIST_HD constexpr auto& operator+=(vec_t<T, S>& a, const vec_t<U, S>& b) {
 template<Arithmetic T, Arithmetic U, std::size_t S>
 MIST_HD constexpr auto& operator-=(vec_t<T, S>& a, const vec_t<U, S>& b) {
     for (std::size_t i = 0; i < S; ++i) {
-        a._data[i] -= b._data[i];
+        a.data[i] -= b.data[i];
     }
     return a;
 }
@@ -249,7 +249,7 @@ MIST_HD constexpr auto& operator-=(vec_t<T, S>& a, const vec_t<U, S>& b) {
 template<Arithmetic T, Arithmetic U, std::size_t S>
 MIST_HD constexpr auto& operator*=(vec_t<T, S>& v, U scalar) {
     for (std::size_t i = 0; i < S; ++i) {
-        v._data[i] *= scalar;
+        v.data[i] *= scalar;
     }
     return v;
 }
@@ -258,7 +258,7 @@ MIST_HD constexpr auto& operator*=(vec_t<T, S>& v, U scalar) {
 template<Arithmetic T, Arithmetic U, std::size_t S>
 MIST_HD constexpr auto& operator/=(vec_t<T, S>& v, U scalar) {
     for (std::size_t i = 0; i < S; ++i) {
-        v._data[i] /= scalar;
+        v.data[i] /= scalar;
     }
     return v;
 }
@@ -269,7 +269,7 @@ constexpr auto dot(const vec_t<T, S>& a, const vec_t<U, S>& b) {
     using R = decltype(std::declval<T>() * std::declval<U>());
     R result{};
     for (std::size_t i = 0; i < S; ++i) {
-        result += a._data[i] * b._data[i];
+        result += a.data[i] * b.data[i];
     }
     return result;
 }
@@ -281,7 +281,7 @@ constexpr auto map(const vec_t<T, S>& v, F&& func) {
     using R = decltype(func(std::declval<T>()));
     vec_t<R, S> result{};
     for (std::size_t i = 0; i < S; ++i) {
-        result._data[i] = func(v._data[i]);
+        result.data[i] = func(v.data[i]);
     }
     return result;
 }
@@ -291,7 +291,7 @@ template<Arithmetic T, std::size_t S>
 MIST_HD constexpr T sum(const vec_t<T, S>& v) {
     T result{};
     for (std::size_t i = 0; i < S; ++i) {
-        result += v._data[i];
+        result += v.data[i];
     }
     return result;
 }
@@ -300,7 +300,7 @@ template<Arithmetic T, std::size_t S>
 MIST_HD constexpr T product(const vec_t<T, S>& v) {
     T result = T(1);
     for (std::size_t i = 0; i < S; ++i) {
-        result *= v._data[i];
+        result *= v.data[i];
     }
     return result;
 }
@@ -308,7 +308,7 @@ MIST_HD constexpr T product(const vec_t<T, S>& v) {
 template<std::size_t S>
 MIST_HD constexpr bool any(const vec_t<bool, S>& v) {
     for (std::size_t i = 0; i < S; ++i) {
-        if (v._data[i]) return true;
+        if (v.data[i]) return true;
     }
     return false;
 }
@@ -316,7 +316,7 @@ MIST_HD constexpr bool any(const vec_t<bool, S>& v) {
 template<std::size_t S>
 MIST_HD constexpr bool all(const vec_t<bool, S>& v) {
     for (std::size_t i = 0; i < S; ++i) {
-        if (!v._data[i]) return false;
+        if (!v.data[i]) return false;
     }
     return true;
 }
@@ -335,8 +335,8 @@ MIST_HD constexpr ivec_t<S> to_signed(const uvec_t<S>& v) {
 template<std::size_t S>
     requires (S > 0)
 struct index_space_t {
-    ivec_t<S> _start;
-    uvec_t<S> _shape;
+    ivec_t<S> start;
+    uvec_t<S> shape;
 
     constexpr auto operator<=>(const index_space_t&) const = default;
 };
@@ -344,23 +344,23 @@ struct index_space_t {
 // Constructor for index_space_t
 template<std::size_t S>
 MIST_HD constexpr index_space_t<S> index_space(const ivec_t<S>& start, const uvec_t<S>& shape) {
-    return index_space_t<S>{._start = start, ._shape = shape};
+    return index_space_t<S>{.start = start, .shape = shape};
 }
 
 // Free functions for index_space_t
 template<std::size_t S>
 constexpr const ivec_t<S>& start(const index_space_t<S>& space) {
-    return space._start;
+    return space.start;
 }
 
 template<std::size_t S>
 constexpr const uvec_t<S>& shape(const index_space_t<S>& space) {
-    return space._shape;
+    return space.shape;
 }
 
 template<std::size_t S>
 constexpr ivec_t<S> upper(const index_space_t<S>& s) {
-    return s._start + to_signed(s._shape);
+    return s.start + to_signed(s.shape);
 }
 
 template<std::size_t S>
@@ -368,10 +368,10 @@ MIST_HD constexpr ivec_t<S> clamp(const ivec_t<S>& index, const index_space_t<S>
     auto result = index;
     auto u = upper(space);
     for (std::size_t i = 0; i < S; ++i) {
-        if (result._data[i] < space._start._data[i]) {
-            result._data[i] = space._start._data[i];
-        } else if (result._data[i] >= u._data[i]) {
-            result._data[i] = u._data[i] - 1;
+        if (result.data[i] < space.start.data[i]) {
+            result.data[i] = space.start.data[i];
+        } else if (result.data[i] >= u.data[i]) {
+            result.data[i] = u.data[i] - 1;
         }
     }
     return result;
@@ -381,16 +381,16 @@ template<std::size_t S>
 MIST_HD constexpr unsigned int size(const index_space_t<S>& space) {
     unsigned int total = 1;
     for (std::size_t i = 0; i < S; ++i) {
-        total *= space._shape._data[i];
+        total *= space.shape.data[i];
     }
     return total;
 }
 
 template<std::size_t S>
 MIST_HD constexpr bool contains(const index_space_t<S>& s, const ivec_t<S>& i) {
-    auto u = s._start + to_signed(s._shape);
+    auto u = s.start + to_signed(s.shape);
     for (std::size_t n = 0; n < S; ++n) {
-        if (i[n] < s._start[n] || i[n] >= u[n]) return false;
+        if (i[n] < s.start[n] || i[n] >= u[n]) return false;
     }
     return true;
 }
@@ -398,26 +398,26 @@ MIST_HD constexpr bool contains(const index_space_t<S>& s, const ivec_t<S>& i) {
 template<std::size_t S>
 constexpr bool contains(const index_space_t<S>& a, const index_space_t<S>& b) {
     if (size(b) == 0) return true;
-    return contains(a, b._start) && contains(a, upper(b) - ivec_t<S>::ones());
+    return contains(a, b.start) && contains(a, upper(b) - ivec_t<S>::ones());
 }
 
 template<std::size_t S>
 constexpr bool overlaps(const index_space_t<S>& a, const index_space_t<S>& b) {
     auto ua = upper(a), ub = upper(b);
     for (std::size_t n = 0; n < S; ++n) {
-        if (ua[n] <= b._start[n] || ub[n] <= a._start[n]) return false;
+        if (ua[n] <= b.start[n] || ub[n] <= a.start[n]) return false;
     }
     return size(a) > 0 && size(b) > 0;
 }
 
 template<std::size_t S>
 constexpr index_space_t<S> subspace(const index_space_t<S>& s, unsigned n, unsigned p, unsigned a) {
-    auto m = s._shape[a];
+    auto m = s.shape[a];
     auto dl = m / n + 1, ds = m / n, nl = m % n;
     auto pl = p < nl ? p : nl, ps = p > pl ? p - pl : 0;
     auto r = s;
-    r._start[a] = s._start[a] + int(pl * dl + ps * ds);
-    r._shape[a] = p < nl ? dl : ds;
+    r.start[a] = s.start[a] + int(pl * dl + ps * ds);
+    r.shape[a] = p < nl ? dl : ds;
     return r;
 }
 
@@ -431,7 +431,7 @@ constexpr index_space_t<S> subspace(const index_space_t<S>& s, const uvec_t<S>& 
 template<std::size_t S>
 constexpr index_space_t<S> shift(const index_space_t<S>& s, int d, unsigned a) {
     auto r = s;
-    r._start[a] += d;
+    r.start[a] += d;
     return r;
 }
 
@@ -439,8 +439,8 @@ template<std::size_t S>
 constexpr index_space_t<S> nudge(const index_space_t<S>& s, const ivec_t<S>& lo, const ivec_t<S>& hi) {
     auto r = s;
     for (std::size_t a = 0; a < S; ++a) {
-        r._start[a] += lo[a];
-        r._shape[a] += unsigned(hi[a] - lo[a]);
+        r.start[a] += lo[a];
+        r.shape[a] += unsigned(hi[a] - lo[a]);
     }
     return r;
 }
@@ -468,22 +468,22 @@ constexpr index_space_t<S> expand(const index_space_t<S>& s, unsigned c) {
 template<std::size_t S>
 constexpr index_space_t<S> translate(const index_space_t<S>& s, const ivec_t<S>& st) {
     auto r = s;
-    r._start = st;
+    r.start = st;
     return r;
 }
 
 template<std::size_t S>
 constexpr index_space_t<S> upper(const index_space_t<S>& s, unsigned n, unsigned a) {
     auto r = s;
-    r._start[a] = s._start[a] + int(s._shape[a]) - int(n);
-    r._shape[a] = n;
+    r.start[a] = s.start[a] + int(s.shape[a]) - int(n);
+    r.shape[a] = n;
     return r;
 }
 
 template<std::size_t S>
 constexpr index_space_t<S> lower(const index_space_t<S>& s, unsigned n, unsigned a) {
     auto r = s;
-    r._shape[a] = n;
+    r.shape[a] = n;
     return r;
 }
 
@@ -493,7 +493,7 @@ constexpr index_space_t<S> intersect(const index_space_t<S>& a, const index_spac
     ivec_t<S> lo{}, hi{};
     uvec_t<S> sh{};
     for (std::size_t n = 0; n < S; ++n) {
-        lo[n] = a._start[n] > b._start[n] ? a._start[n] : b._start[n];
+        lo[n] = a.start[n] > b.start[n] ? a.start[n] : b.start[n];
         hi[n] = ua[n] < ub[n] ? ua[n] : ub[n];
         sh[n] = hi[n] > lo[n] ? unsigned(hi[n] - lo[n]) : 0;
     }
@@ -509,8 +509,8 @@ template<std::size_t S>
 MIST_HD constexpr std::size_t ndoffset(const index_space_t<S>& s, const ivec_t<S>& idx) {
     std::size_t off = 0, str = 1;
     for (std::size_t i = S; i > 0; --i) {
-        off += std::size_t(idx[i - 1] - s._start[i - 1]) * str;
-        str *= s._shape[i - 1];
+        off += std::size_t(idx[i - 1] - s.start[i - 1]) * str;
+        str *= s.shape[i - 1];
     }
     return off;
 }
@@ -520,8 +520,8 @@ template<std::size_t S>
 MIST_HD constexpr ivec_t<S> ndindex(const index_space_t<S>& s, std::size_t off) {
     ivec_t<S> idx{};
     for (std::size_t i = S; i > 0; --i) {
-        idx[i - 1] = s._start[i - 1] + int(off % s._shape[i - 1]);
-        off /= s._shape[i - 1];
+        idx[i - 1] = s.start[i - 1] + int(off % s.shape[i - 1]);
+        off /= s.shape[i - 1];
     }
     return idx;
 }
@@ -556,7 +556,7 @@ MIST_HD constexpr vec_t<T, N> ndread_soa(const T* data, const index_space_t<S>& 
     auto offset = ndoffset(space, index);
     auto stride = size(space);
     for (std::size_t i = 0; i < N; ++i) {
-        result._data[i] = data[i * stride + offset];
+        result.data[i] = data[i * stride + offset];
     }
     return result;
 }
@@ -568,7 +568,7 @@ MIST_HD constexpr void ndwrite_soa(T* data, const index_space_t<S>& space, const
     auto offset = ndoffset(space, index);
     auto stride = size(space);
     for (std::size_t i = 0; i < N; ++i) {
-        data[i * stride + offset] = value._data[i];
+        data[i * stride + offset] = value.data[i];
     }
 }
 
@@ -578,37 +578,37 @@ MIST_HD constexpr void ndwrite_soa(T* data, const index_space_t<S>& space, const
 
 template<std::size_t S>
 class index_space_iterator {
-    const index_space_t<S>* _space;
-    std::size_t _offset;
+    const index_space_t<S>* space;
+    std::size_t offset;
 
 public:
     using value_type = ivec_t<S>;
     using difference_type = std::ptrdiff_t;
 
-    constexpr index_space_iterator(const index_space_t<S>* space, std::size_t offset)
-        : _space(space), _offset(offset) {}
+    constexpr index_space_iterator(const index_space_t<S>* s, std::size_t off)
+        : space(s), offset(off) {}
 
     constexpr ivec_t<S> operator*() const {
-        return ndindex(*_space, _offset);
+        return ndindex(*space, offset);
     }
 
     constexpr index_space_iterator& operator++() {
-        ++_offset;
+        ++offset;
         return *this;
     }
 
     constexpr index_space_iterator operator++(int) {
         auto tmp = *this;
-        ++_offset;
+        ++offset;
         return tmp;
     }
 
     constexpr bool operator==(const index_space_iterator& other) const {
-        return _offset == other._offset;
+        return offset == other.offset;
     }
 
     constexpr bool operator!=(const index_space_iterator& other) const {
-        return _offset != other._offset;
+        return offset != other.offset;
     }
 };
 

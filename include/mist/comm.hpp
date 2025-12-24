@@ -161,9 +161,9 @@ auto make_mpi_subarray(const array_view_t<T, S>& view, const index_space_t<S>& o
 
     auto parent_space = parent(view);
     for (std::size_t i = 0; i < S; ++i) {
-        sizes[i] = static_cast<int>(shape(parent_space)._data[i]);
-        subsizes[i] = static_cast<int>(shape(overlap)._data[i]);
-        starts[i] = static_cast<int>(start(overlap)._data[i] - start(parent_space)._data[i]);
+        sizes[i] = static_cast<int>(shape(parent_space).data[i]);
+        subsizes[i] = static_cast<int>(shape(overlap).data[i]);
+        starts[i] = static_cast<int>(start(overlap).data[i] - start(parent_space).data[i]);
     }
 
     MPI_Datatype subarray_type;
@@ -192,8 +192,8 @@ auto make_tag(const index_space_t<S>& overlap) -> int {
     // Simple hash of start and shape
     std::size_t h = 0;
     for (std::size_t i = 0; i < S; ++i) {
-        h ^= std::hash<int>{}(start(overlap)._data[i]) + 0x9e3779b9 + (h << 6) + (h >> 2);
-        h ^= std::hash<unsigned int>{}(shape(overlap)._data[i]) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= std::hash<int>{}(start(overlap).data[i]) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= std::hash<unsigned int>{}(shape(overlap).data[i]) + 0x9e3779b9 + (h << 6) + (h >> 2);
     }
     // MPI tags must be non-negative and fit in int
     return static_cast<int>(h & 0x7FFFFFFF);

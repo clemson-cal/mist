@@ -100,17 +100,17 @@ struct lazy_t {
     using value_type = std::invoke_result_t<F, ivec_t<S>>;
     static constexpr std::size_t rank = S;
 
-    index_space_t<S> _space;
-    F _func;
+    index_space_t<S> space;
+    F func;
 
-    MIST_HD auto operator()(const ivec_t<S>& idx) const { return _func(idx); }
+    MIST_HD auto operator()(const ivec_t<S>& idx) const { return func(idx); }
 
     // Convenience for 1D arrays: accept integer index
-    MIST_HD auto operator[](int i) const requires (S == 1) { return _func(ivec(i)); }
+    MIST_HD auto operator[](int i) const requires (S == 1) { return func(ivec(i)); }
 };
 
 template<std::size_t S, typename F>
-const index_space_t<S>& space(const lazy_t<S, F>& a) { return a._space; }
+const index_space_t<S>& space(const lazy_t<S, F>& a) { return a.space; }
 
 // -----------------------------------------------------------------------------
 // lazy() constructor
@@ -130,33 +130,33 @@ struct array_t {
     using value_type = T;
     static constexpr std::size_t rank = S;
 
-    index_space_t<S> _space;
-    T* _data;
-    memory _location;
+    index_space_t<S> space;
+    T* data;
+    memory location;
 
     // Default constructor: creates empty array
     array_t()
-        : _space(index_space(ivec_t<S>{}, uvec_t<S>{})), _data(nullptr), _location(memory::host)
+        : space(index_space(ivec_t<S>{}, uvec_t<S>{})), data(nullptr), location(memory::host)
     {
     }
 
     // Constructor
     array_t(const index_space_t<S>& space, memory loc = memory::host)
-        : _space(space), _data(nullptr), _location(loc)
+        : space(space), data(nullptr), location(loc)
     {
         std::size_t n = size(space);
-        switch (_location) {
+        switch (location) {
             case memory::host:
-                _data = new T[n]();
+                data = new T[n]();
                 break;
             case memory::device:
                 #ifdef __CUDACC__
-                cudaMalloc(&_data, n * sizeof(T));
+                cudaMalloc(&data, n * sizeof(T));
                 #endif
                 break;
             case memory::managed:
                 #ifdef __CUDACC__
-                cudaMallocManaged(&_data, n * sizeof(T));
+                cudaMallocManaged(&data, n * sizeof(T));
                 #endif
                 break;
         }
@@ -164,12 +164,12 @@ struct array_t {
 
     // Destructor
     ~array_t() {
-        if (!_data) return;
-        if (_location == memory::host) {
-            delete[] _data;
+        if (!data) return;
+        if (location == memory::host) {
+            delete[] data;
         } else {
             #ifdef __CUDACC__
-            cudaFree(_data);
+            cudaFree(data);
             #endif
         }
     }
@@ -180,48 +180,48 @@ struct array_t {
 
     // Move
     array_t(array_t&& other) noexcept
-        : _space(other._space)
-        , _data(other._data)
-        , _location(other._location)
+        : space(other.space)
+        , data(other.data)
+        , location(other.location)
     {
-        other._data = nullptr;
+        other.data = nullptr;
     }
 
     array_t& operator=(array_t&& other) noexcept {
         if (this != &other) {
-            if (_data) {
-                if (_location == memory::host) {
-                    delete[] _data;
+            if (data) {
+                if (location == memory::host) {
+                    delete[] data;
                 } else {
                     #ifdef __CUDACC__
-                    cudaFree(_data);
+                    cudaFree(data);
                     #endif
                 }
             }
-            _space = other._space;
-            _data = other._data;
-            _location = other._location;
-            other._data = nullptr;
+            space = other.space;
+            data = other.data;
+            location = other.location;
+            other.data = nullptr;
         }
         return *this;
     }
 
     // Element access
     MIST_HD T& operator()(const ivec_t<S>& idx) {
-        return _data[ndoffset(_space, idx)];
+        return data[ndoffset(space, idx)];
     }
 
     MIST_HD const T& operator()(const ivec_t<S>& idx) const {
-        return _data[ndoffset(_space, idx)];
+        return data[ndoffset(space, idx)];
     }
 
     // Convenience for 1D arrays: accept integer index
     MIST_HD T& operator[](int i) requires (S == 1) {
-        return _data[ndoffset(_space, ivec(i))];
+        return data[ndoffset(space, ivec(i))];
     }
 
     MIST_HD const T& operator[](int i) const requires (S == 1) {
-        return _data[ndoffset(_space, ivec(i))];
+        return data[ndoffset(space, ivec(i))];
     }
 
     // Subspace view via operator[]
@@ -230,16 +230,16 @@ struct array_t {
 };
 
 template<typename T, std::size_t S>
-const index_space_t<S>& space(const array_t<T, S>& a) { return a._space; }
+const index_space_t<S>& space(const array_t<T, S>& a) { return a.space; }
 
 template<typename T, std::size_t S>
-T* data(array_t<T, S>& a) { return a._data; }
+T* data(array_t<T, S>& a) { return a.data; }
 
 template<typename T, std::size_t S>
-const T* data(const array_t<T, S>& a) { return a._data; }
+const T* data(const array_t<T, S>& a) { return a.data; }
 
 template<typename T, std::size_t S>
-memory location(const array_t<T, S>& a) { return a._location; }
+memory location(const array_t<T, S>& a) { return a.location; }
 
 // =============================================================================
 // array_view_t: Non-owning view into array (supports strided access)
@@ -250,44 +250,44 @@ struct array_view_t {
     using value_type = T;
     static constexpr std::size_t rank = S;
 
-    index_space_t<S> _space;   // The subspace this view represents
-    index_space_t<S> _parent;  // The parent allocation's index space
-    T* _data;                  // Pointer to first element of parent
+    index_space_t<S> space;   // The subspace this view represents
+    index_space_t<S> parent;  // The parent allocation's index space
+    T* data;                  // Pointer to first element of parent
 
     // Constructor for contiguous view (parent equals space)
     array_view_t(const index_space_t<S>& space, T* data)
-        : _space(space), _parent(space), _data(data) {}
+        : space(space), parent(space), data(data) {}
 
     // Constructor for subspace view
     array_view_t(const index_space_t<S>& space, const index_space_t<S>& parent, T* data)
-        : _space(space), _parent(parent), _data(data) {}
+        : space(space), parent(parent), data(data) {}
 
     // Converting constructor: array_view_t<U> -> array_view_t<const U>
     template<typename U>
         requires std::is_same_v<T, const U>
     array_view_t(const array_view_t<U, S>& other)
-        : _space(other._space), _parent(other._parent), _data(other._data) {}
+        : space(other.space), parent(other.parent), data(other.data) {}
 
     // Element access - constness is encoded in T, not in the view
     // Use array_view_t<const T, S> for read-only access
     MIST_HD T& operator()(const ivec_t<S>& idx) const {
-        return _data[ndoffset(_parent, idx)];
+        return data[ndoffset(parent, idx)];
     }
 
     // Convenience for 1D arrays: accept integer index
     MIST_HD T& operator[](int i) const requires (S == 1) {
-        return _data[ndoffset(_parent, ivec(i))];
+        return data[ndoffset(parent, ivec(i))];
     }
 };
 
 template<typename T, std::size_t S>
-const index_space_t<S>& space(const array_view_t<T, S>& a) { return a._space; }
+const index_space_t<S>& space(const array_view_t<T, S>& a) { return a.space; }
 
 template<typename T, std::size_t S>
-const index_space_t<S>& parent(const array_view_t<T, S>& a) { return a._parent; }
+const index_space_t<S>& parent(const array_view_t<T, S>& a) { return a.parent; }
 
 template<typename T, std::size_t S>
-T* data(const array_view_t<T, S>& a) { return a._data; }
+T* data(const array_view_t<T, S>& a) { return a.data; }
 
 // -----------------------------------------------------------------------------
 // view() - create views into arrays
@@ -296,23 +296,23 @@ T* data(const array_view_t<T, S>& a) { return a._data; }
 // View of entire array
 template<typename T, std::size_t S>
 auto view(array_t<T, S>& a) -> array_view_t<T, S> {
-    return array_view_t<T, S>(a._space, a._data);
+    return array_view_t<T, S>(a.space, a.data);
 }
 
 template<typename T, std::size_t S>
 auto view(const array_t<T, S>& a) -> array_view_t<const T, S> {
-    return array_view_t<const T, S>(a._space, a._data);
+    return array_view_t<const T, S>(a.space, a.data);
 }
 
 // View of subspace (parent space enables MPI subarray datatypes)
 template<typename T, std::size_t S>
 auto view(array_t<T, S>& a, const index_space_t<S>& subspace) -> array_view_t<T, S> {
-    return array_view_t<T, S>(subspace, a._space, a._data);
+    return array_view_t<T, S>(subspace, a.space, a.data);
 }
 
 template<typename T, std::size_t S>
 auto view(const array_t<T, S>& a, const index_space_t<S>& subspace) -> array_view_t<const T, S> {
-    return array_view_t<const T, S>(subspace, a._space, a._data);
+    return array_view_t<const T, S>(subspace, a.space, a.data);
 }
 
 // -----------------------------------------------------------------------------
@@ -335,16 +335,16 @@ auto array_t<T, S>::operator[](const index_space_t<S>& subspace) const -> array_
 
 template<typename T, std::size_t N, std::size_t S>
 struct soa_ref_t {
-    T* _data;
-    index_space_t<S> _space;
+    T* data;
+    index_space_t<S> space;
     ivec_t<S> _idx;
 
     MIST_HD operator vec_t<T, N>() const {
-        return ndread_soa<T, N>(_data, _space, _idx);
+        return ndread_soa<T, N>(data, space, _idx);
     }
 
     MIST_HD soa_ref_t& operator=(const vec_t<T, N>& value) {
-        ndwrite_soa<T, N>(_data, _space, _idx, value);
+        ndwrite_soa<T, N>(data, space, _idx, value);
         return *this;
     }
 };
@@ -359,27 +359,27 @@ struct array_vec_t {
     static constexpr std::size_t rank = S;
     static constexpr layout data_layout = L;
 
-    index_space_t<S> _space;
-    T* _data;
-    memory _location;
+    index_space_t<S> space;
+    T* data;
+    memory location;
 
     // Constructor
     array_vec_t(const index_space_t<S>& space, memory loc = memory::host)
-        : _space(space), _data(nullptr), _location(loc)
+        : space(space), data(nullptr), location(loc)
     {
         std::size_t n = size(space) * N;
-        switch (_location) {
+        switch (location) {
             case memory::host:
-                _data = new T[n]();
+                data = new T[n]();
                 break;
             case memory::device:
                 #ifdef __CUDACC__
-                cudaMalloc(&_data, n * sizeof(T));
+                cudaMalloc(&data, n * sizeof(T));
                 #endif
                 break;
             case memory::managed:
                 #ifdef __CUDACC__
-                cudaMallocManaged(&_data, n * sizeof(T));
+                cudaMallocManaged(&data, n * sizeof(T));
                 #endif
                 break;
         }
@@ -387,12 +387,12 @@ struct array_vec_t {
 
     // Destructor
     ~array_vec_t() {
-        if (!_data) return;
-        if (_location == memory::host) {
-            delete[] _data;
+        if (!data) return;
+        if (location == memory::host) {
+            delete[] data;
         } else {
             #ifdef __CUDACC__
-            cudaFree(_data);
+            cudaFree(data);
             #endif
         }
     }
@@ -403,39 +403,39 @@ struct array_vec_t {
 
     // Move
     array_vec_t(array_vec_t&& other) noexcept
-        : _space(other._space)
-        , _data(other._data)
-        , _location(other._location)
+        : space(other.space)
+        , data(other.data)
+        , location(other.location)
     {
-        other._data = nullptr;
+        other.data = nullptr;
     }
 
     array_vec_t& operator=(array_vec_t&& other) noexcept {
         if (this != &other) {
-            if (_data) {
-                if (_location == memory::host) {
-                    delete[] _data;
+            if (data) {
+                if (location == memory::host) {
+                    delete[] data;
                 } else {
                     #ifdef __CUDACC__
-                    cudaFree(_data);
+                    cudaFree(data);
                     #endif
                 }
             }
-            _space = other._space;
-            _data = other._data;
-            _location = other._location;
-            other._data = nullptr;
+            space = other.space;
+            data = other.data;
+            location = other.location;
+            other.data = nullptr;
         }
         return *this;
     }
 
     // Element access - AoS
     MIST_HD vec_t<T, N>& aos_at(const ivec_t<S>& idx) {
-        return reinterpret_cast<vec_t<T, N>*>(_data)[ndoffset(_space, idx)];
+        return reinterpret_cast<vec_t<T, N>*>(data)[ndoffset(space, idx)];
     }
 
     MIST_HD const vec_t<T, N>& aos_at(const ivec_t<S>& idx) const {
-        return reinterpret_cast<const vec_t<T, N>*>(_data)[ndoffset(_space, idx)];
+        return reinterpret_cast<const vec_t<T, N>*>(data)[ndoffset(space, idx)];
     }
 
     // Element access - dispatch by layout
@@ -443,7 +443,7 @@ struct array_vec_t {
         if constexpr (L == layout::aos) {
             return aos_at(idx);
         } else {
-            return soa_ref_t<T, N, S>{_data, _space, idx};
+            return soa_ref_t<T, N, S>{data, space, idx};
         }
     }
 
@@ -451,22 +451,22 @@ struct array_vec_t {
         if constexpr (L == layout::aos) {
             return aos_at(idx);
         } else {
-            return ndread_soa<T, N>(_data, _space, idx);
+            return ndread_soa<T, N>(data, space, idx);
         }
     }
 };
 
 template<typename T, std::size_t N, std::size_t S, layout L>
-const index_space_t<S>& space(const array_vec_t<T, N, S, L>& a) { return a._space; }
+const index_space_t<S>& space(const array_vec_t<T, N, S, L>& a) { return a.space; }
 
 template<typename T, std::size_t N, std::size_t S, layout L>
-T* data(array_vec_t<T, N, S, L>& a) { return a._data; }
+T* data(array_vec_t<T, N, S, L>& a) { return a.data; }
 
 template<typename T, std::size_t N, std::size_t S, layout L>
-const T* data(const array_vec_t<T, N, S, L>& a) { return a._data; }
+const T* data(const array_vec_t<T, N, S, L>& a) { return a.data; }
 
 template<typename T, std::size_t N, std::size_t S, layout L>
-memory location(const array_vec_t<T, N, S, L>& a) { return a._location; }
+memory location(const array_vec_t<T, N, S, L>& a) { return a.location; }
 
 // =============================================================================
 // map: Lazy element-wise transform
@@ -583,7 +583,7 @@ auto cache(const A& a, memory loc, exec e) {
 template<typename T, std::size_t S>
 auto cache(const cached_t<T, S>& a, memory loc, exec /*e*/) {
     cached_t<T, S> result(space(a), loc);
-    detail::memcpy_any(result._data, a._data, size(space(a)), loc, a._location);
+    detail::memcpy_any(result.data, a.data, size(space(a)), loc, a.location);
     return result;
 }
 
@@ -592,7 +592,7 @@ template<typename T, std::size_t S>
 auto cache(const cached_view_t<T, S>& a, memory loc, exec /*e*/) {
     cached_t<T, S> result(space(a), loc);
     memory src_loc = memory::host;  // view doesn't track location
-    detail::memcpy_any(result._data, a._data, size(space(a)), loc, src_loc);
+    detail::memcpy_any(result.data, a.data, size(space(a)), loc, src_loc);
     return result;
 }
 
@@ -631,10 +631,10 @@ auto cache(const A& a, memory loc, exec e) {
 template<typename T, std::size_t S>
 void copy(array_view_t<T, S> dst, array_view_t<const T, S> src) {
     // Spaces must match exactly
-    if (dst._space != src._space) {
+    if (dst.space != src.space) {
         throw std::runtime_error("copy: index spaces must match");
     }
-    for (auto idx : dst._space) {
+    for (auto idx : dst.space) {
         dst(idx) = src(idx);
     }
 }
@@ -642,7 +642,7 @@ void copy(array_view_t<T, S> dst, array_view_t<const T, S> src) {
 // Copy from const view to mutable view (same types)
 template<typename T, std::size_t S>
 void copy(array_view_t<T, S> dst, array_view_t<T, S> src) {
-    copy(dst, array_view_t<const T, S>(src._space, src._data, src._strides));
+    copy(dst, array_view_t<const T, S>(src.space, src.data, src._strides));
 }
 
 // Copy from cached_t to view
@@ -654,69 +654,69 @@ void copy(array_view_t<T, S> dst, const cached_t<T, S>& src) {
 // Copy from array_t to array_t (reallocates dst if needed)
 template<typename T, std::size_t S>
 void copy(array_t<T, S>& dst, const array_t<T, S>& src) {
-    if (size(dst._space) != size(src._space)) {
-        if (dst._data) {
-            if (dst._location == memory::host) {
-                delete[] dst._data;
+    if (size(dst.space) != size(src.space)) {
+        if (dst.data) {
+            if (dst.location == memory::host) {
+                delete[] dst.data;
             } else {
                 #ifdef __CUDACC__
-                cudaFree(dst._data);
+                cudaFree(dst.data);
                 #endif
             }
         }
-        std::size_t n = size(src._space);
-        switch (dst._location) {
+        std::size_t n = size(src.space);
+        switch (dst.location) {
             case memory::host:
-                dst._data = new T[n]();
+                dst.data = new T[n]();
                 break;
             case memory::device:
                 #ifdef __CUDACC__
-                cudaMalloc(&dst._data, n * sizeof(T));
+                cudaMalloc(&dst.data, n * sizeof(T));
                 #endif
                 break;
             case memory::managed:
                 #ifdef __CUDACC__
-                cudaMallocManaged(&dst._data, n * sizeof(T));
+                cudaMallocManaged(&dst.data, n * sizeof(T));
                 #endif
                 break;
         }
     }
-    dst._space = src._space;
-    detail::memcpy_any(dst._data, src._data, size(dst._space), dst._location, src._location);
+    dst.space = src.space;
+    detail::memcpy_any(dst.data, src.data, size(dst.space), dst.location, src.location);
 }
 
 // Copy from array_vec_t to array_vec_t (reallocates dst if needed)
 template<typename T, std::size_t N, std::size_t S, layout L>
 void copy(array_vec_t<T, N, S, L>& dst, const array_vec_t<T, N, S, L>& src) {
-    if (size(dst._space) != size(src._space)) {
-        if (dst._data) {
-            if (dst._location == memory::host) {
-                delete[] dst._data;
+    if (size(dst.space) != size(src.space)) {
+        if (dst.data) {
+            if (dst.location == memory::host) {
+                delete[] dst.data;
             } else {
                 #ifdef __CUDACC__
-                cudaFree(dst._data);
+                cudaFree(dst.data);
                 #endif
             }
         }
-        std::size_t n = size(src._space) * N;
-        switch (dst._location) {
+        std::size_t n = size(src.space) * N;
+        switch (dst.location) {
             case memory::host:
-                dst._data = new T[n]();
+                dst.data = new T[n]();
                 break;
             case memory::device:
                 #ifdef __CUDACC__
-                cudaMalloc(&dst._data, n * sizeof(T));
+                cudaMalloc(&dst.data, n * sizeof(T));
                 #endif
                 break;
             case memory::managed:
                 #ifdef __CUDACC__
-                cudaMallocManaged(&dst._data, n * sizeof(T));
+                cudaMallocManaged(&dst.data, n * sizeof(T));
                 #endif
                 break;
         }
     }
-    dst._space = src._space;
-    detail::memcpy_any(dst._data, src._data, size(dst._space) * N, dst._location, src._location);
+    dst.space = src.space;
+    detail::memcpy_any(dst.data, src.data, size(dst.space) * N, dst.location, src.location);
 }
 
 // =============================================================================
@@ -731,15 +731,15 @@ void copy_overlapping(array_view_t<T, S> dst, array_view_t<T, S> src) {
 
 template<typename T, std::size_t S>
 void copy_overlapping(array_view_t<T, S> dst, array_view_t<const T, S> src) {
-    auto dst_space = space(dst);
-    auto src_space = space(src);
+    auto dstspace = space(dst);
+    auto srcspace = space(src);
 
-    if (!overlaps(dst_space, src_space)) {
+    if (!overlaps(dstspace, srcspace)) {
         return;
     }
 
-    for (auto idx : dst_space) {
-        if (contains(src_space, idx)) {
+    for (auto idx : dstspace) {
+        if (contains(srcspace, idx)) {
             dst(idx) = src(idx);
         }
     }
@@ -762,9 +762,9 @@ struct safe_ref_t {
 
     operator T() const {
         T value{};
-        T* src = _array->_data + ndoffset(_array->_space, _idx);
+        T* src = _array->data + ndoffset(_array->space, _idx);
 
-        switch (_array->_location) {
+        switch (_array->location) {
             case memory::host:
                 value = *src;
                 break;
@@ -784,9 +784,9 @@ struct safe_ref_t {
     }
 
     safe_ref_t& operator=(const T& value) {
-        T* dst = _array->_data + ndoffset(_array->_space, _idx);
+        T* dst = _array->data + ndoffset(_array->space, _idx);
 
-        switch (_array->_location) {
+        switch (_array->location) {
             case memory::host:
                 *dst = value;
                 break;
@@ -814,9 +814,9 @@ safe_ref_t<T, S> safe_at(cached_t<T, S>& a, const ivec_t<S>& idx) {
 template<typename T, std::size_t S>
 T safe_at(const cached_t<T, S>& a, const ivec_t<S>& idx) {
     T value;
-    const T* src = a._data + ndoffset(a._space, idx);
+    const T* src = a.data + ndoffset(a.space, idx);
 
-    switch (a._location) {
+    switch (a.location) {
         case memory::host:
             value = *src;
             break;
@@ -890,7 +890,7 @@ auto coords(const index_space_t<S>& space, const dvec_t<S>& origin, const dvec_t
     return lazy(space, [origin, delta] MIST_HD (ivec_t<S> idx) {
         dvec_t<S> result{};
         for (std::size_t i = 0; i < S; ++i) {
-            result._data[i] = origin._data[i] + idx._data[i] * delta._data[i];
+            result.data[i] = origin.data[i] + idx.data[i] * delta.data[i];
         }
         return result;
     });
@@ -907,13 +907,13 @@ auto coords(const index_space_t<S>& space, const dvec_t<S>& origin, const dvec_t
 //         for (std::size_t n = 1; n < N; ++n) {
 //             auto s = space(*arrays[n]);
 //             for (std::size_t d = 0; d < S; ++d) {
-//                 lo._data[d] = std::min(lo._data[d], start(s)._data[d]);
-//                 hi._data[d] = std::max(hi._data[d], upper(s)._data[d]);
+//                 lo.data[d] = std::min(lo.data[d], start(s).data[d]);
+//                 hi.data[d] = std::max(hi.data[d], upper(s).data[d]);
 //             }
 //         }
 //         uvec_t<S> sh;
 //         for (std::size_t d = 0; d < S; ++d) {
-//             sh._data[d] = static_cast<unsigned int>(hi._data[d] - lo._data[d]);
+//             sh.data[d] = static_cast<unsigned int>(hi.data[d] - lo.data[d]);
 //         }
 //         return index_space(lo, sh);
 //     }
@@ -924,9 +924,9 @@ auto coords(const index_space_t<S>& space, const dvec_t<S>& origin, const dvec_t
 // auto join(const Arrays&... arrays) {
 //     constexpr std::size_t N = sizeof...(Arrays);
 //     auto ptrs = std::array<const cached_t<T, S>*, N>{&arrays...};
-//     auto combined_space = detail::bounding_box(ptrs);
+//     auto combinedspace = detail::bounding_box(ptrs);
 //
-//     return lazy(combined_space, [ptrs](ivec_t<S> idx) {
+//     return lazy(combinedspace, [ptrs](ivec_t<S> idx) {
 //         for (std::size_t n = 0; n < N; ++n) {
 //             if (contains(space(*ptrs[n]), idx)) {
 //                 return (*ptrs[n])(idx);
