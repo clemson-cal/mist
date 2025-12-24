@@ -8,6 +8,7 @@
 # Example executables
 examples/advect1d/advect1d
 examples/config-reader/config-reader
+examples/laplacian2d/laplacian2d
 examples/srhd1d/srhd1d
 
 # Output data files

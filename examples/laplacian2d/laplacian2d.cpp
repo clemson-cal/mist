@@ -3,8 +3,8 @@
 
 #include <cassert>
 #include <cmath>
+#include <functional>
 #include <iostream>
-#include <limits>
 #include <vector>
 #include "mist/comm.hpp"
 #include "mist/ndarray.hpp"
@@ -42,6 +42,7 @@ struct patch_t {
     array_t<double, 2> lap;      // Laplacian output (interior only)
     double dx;
     double dy;
+    double l2_error = 0.0;       // Populated by error_reduce_t
 };
 
 // =============================================================================
@@ -72,19 +73,14 @@ auto create_patches(const config_t& cfg, int rank, int size) -> std::vector<patc
 
     auto patches = std::vector<patch_t>{};
 
-    int patch_nx = cfg.global_nx / cfg.patches_x;
-    int patch_ny = cfg.global_ny / cfg.patches_y;
+    auto global_space = index_space(ivec(0, 0), uvec(cfg.global_nx, cfg.global_ny));
+    auto decomp = uvec(cfg.patches_x, cfg.patches_y);
     double dx = cfg.domain_x / cfg.global_nx;
     double dy = cfg.domain_y / cfg.global_ny;
 
     for (int p = my_start; p < my_start + my_count; ++p) {
-        int px = p % cfg.patches_x;
-        int py = p / cfg.patches_x;
-
-        int i0 = px * patch_nx;
-        int j0 = py * patch_ny;
-
-        auto interior = index_space(ivec(i0, j0), uvec(patch_nx, patch_ny));
+        auto coords = uvec(p % cfg.patches_x, p / cfg.patches_x);
+        auto interior = subspace(global_space, decomp, coords);
         auto with_ghosts = expand(interior, cfg.num_ghosts);
 
         auto patch = patch_t{};
@@ -181,47 +177,36 @@ struct compute_laplacian_t {
 };
 
 // =============================================================================
-// Reduce stage: compute global dt from CFL condition
+// Reduce stage: compute L2 error norm
 // =============================================================================
 
-struct compute_dt_t {
-    static constexpr const char* name = "compute_dt";
+struct error_reduce_t {
+    static constexpr const char* name = "error_reduce";
     using value_type = double;
 
-    static auto init() -> double { return std::numeric_limits<double>::max(); }
-    static auto combine(double a, double b) -> double { return std::min(a, b); }
+    double dx;
+    double dy;
+    int num_cells;
+
+    static auto init() -> double { return 0.0; }
+    static auto combine(double a, double b) -> double { return a + b; }
 
     auto extract(const patch_t& p) const -> double {
-        // CFL condition for diffusion: dt < 0.25 * dx^2 / nu
-        // For Laplacian demo, just return a reasonable dt based on grid spacing
-        return 0.25 * p.dx * p.dx;
-    }
-
-    void finalize(double global_dt, patch_t& p) const {
-        (void)global_dt;
-        (void)p;
-    }
-};
-
-// =============================================================================
-// Compute L2 error using map_reduce
-// =============================================================================
-
-auto compute_l2_error(const std::vector<patch_t>& patches, double dx, double dy, int num_cells) -> double {
-    double local_sum_sq = 0.0;
-    for (const auto& p : patches) {
-        local_sum_sq += map_reduce(p.interior, 0.0,
-            [&p, dx, dy](ivec_t<2> idx) {
+        return map_reduce(p.interior, 0.0,
+            [&p, dx=dx, dy=dy](ivec_t<2> idx) {
                 double x = (idx[0] + 0.5) * dx;
                 double y = (idx[1] + 0.5) * dy;
                 double exact = exact_laplacian(x, y);
                 double err = p.lap(idx) - exact;
                 return err * err;
             },
-            [](double a, double b) { return a + b; });
+            std::plus<>{});
     }
-    return local_sum_sq;
-}
+
+    void finalize(double global_sum_sq, patch_t& p) const {
+        p.l2_error = std::sqrt(global_sum_sq / num_cells);
+    }
+};
 
 // =============================================================================
 // Main
@@ -259,6 +244,10 @@ int main(int argc, char** argv) {
         std::cout << "  Patches per rank: " << patches.size() << "\n";
     }
 
+    double dx = cfg.domain_x / cfg.global_nx;
+    double dy = cfg.domain_y / cfg.global_ny;
+    int num_cells = cfg.global_nx * cfg.global_ny;
+
     // Create pipeline stages
     auto exchange = ghost_exchange_t{
         .num_ghosts = cfg.num_ghosts,
@@ -266,10 +255,14 @@ int main(int argc, char** argv) {
         .global_ny = cfg.global_ny
     };
     auto compute = compute_laplacian_t{};
-    auto reduce_dt = compute_dt_t{};
+    auto error = error_reduce_t{
+        .dx = dx,
+        .dy = dy,
+        .num_cells = num_cells
+    };
 
     // Create pipeline: exchange -> compute -> reduce
-    auto pipe = parallel::pipeline(exchange, compute, reduce_dt);
+    auto pipe = parallel::pipeline(exchange, compute, error);
 
     // Execution infrastructure
     auto sched = parallel::scheduler_t{};
@@ -278,14 +271,8 @@ int main(int argc, char** argv) {
     // Execute pipeline
     parallel::execute(pipe, patches, comm, sched, profiler);
 
-    // Compute L2 error using distributed reduction
-    double dx = cfg.domain_x / cfg.global_nx;
-    double dy = cfg.domain_y / cfg.global_ny;
-    int num_cells = cfg.global_nx * cfg.global_ny;
-
-    double local_sum_sq = compute_l2_error(patches, dx, dy, num_cells);
-    double global_sum_sq = comm.combine(local_sum_sq, [](double a, double b) { return a + b; });
-    double l2_error = std::sqrt(global_sum_sq / num_cells);
+    // Get L2 error (stored on each patch by finalize)
+    double l2_error = patches[0].l2_error;
 
     if (comm.rank() == 0) {
         std::cout << "  L2 error: " << l2_error << "\n";
