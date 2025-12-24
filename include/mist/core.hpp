@@ -553,8 +553,8 @@ template<typename T, std::size_t N, std::size_t S>
     requires Arithmetic<T>
 MIST_HD constexpr vec_t<T, N> ndread_soa(const T* data, const index_space_t<S>& space, const ivec_t<S>& index) {
     vec_t<T, N> result{};
-    std::size_t offset = ndoffset(space, index);
-    std::size_t stride = size(space);
+    auto offset = ndoffset(space, index);
+    auto stride = size(space);
     for (std::size_t i = 0; i < N; ++i) {
         result._data[i] = data[i * stride + offset];
     }
@@ -565,8 +565,8 @@ MIST_HD constexpr vec_t<T, N> ndread_soa(const T* data, const index_space_t<S>& 
 template<typename T, std::size_t N, std::size_t S>
     requires Arithmetic<T>
 MIST_HD constexpr void ndwrite_soa(T* data, const index_space_t<S>& space, const ivec_t<S>& index, const vec_t<T, N>& value) {
-    std::size_t offset = ndoffset(space, index);
-    std::size_t stride = size(space);
+    auto offset = ndoffset(space, index);
+    auto stride = size(space);
     for (std::size_t i = 0; i < N; ++i) {
         data[i * stride + offset] = value._data[i];
     }
@@ -677,8 +677,8 @@ void for_each(const index_space_t<S>& space, F&& func, exec e) {
         }
         case exec::gpu: {
             #ifdef __CUDACC__
-            int blockSize = 256;
-            int numBlocks = (size(space) + blockSize - 1) / blockSize;
+            auto blockSize = 256;
+            auto numBlocks = (size(space) + blockSize - 1) / blockSize;
             for_each_kernel<<<numBlocks, blockSize>>>(space, func);
             #else
             throw std::runtime_error("unsupported exec::gpu");
@@ -735,13 +735,13 @@ T map_reduce(const index_space_t<S>& space, T init, MapF&& map, ReduceF&& reduce
         case exec::gpu: {
             #ifdef __CUDACC__
             // Step 1: Map indices to values in device memory
-            std::size_t n = size(space);
+            auto n = size(space);
             T* d_mapped;
             cudaMalloc(&d_mapped, n * sizeof(T));
 
             // Launch map kernel
-            int blockSize = 256;
-            int numBlocks = (n + blockSize - 1) / blockSize;
+            auto blockSize = 256;
+            auto numBlocks = (n + blockSize - 1) / blockSize;
             map_kernel<<<numBlocks, blockSize>>>(space, map, d_mapped);
             cudaDeviceSynchronize();
 
@@ -750,7 +750,7 @@ T map_reduce(const index_space_t<S>& space, T init, MapF&& map, ReduceF&& reduce
             cudaMalloc(&d_result, sizeof(T));
 
             void* d_temp_storage = nullptr;
-            std::size_t temp_storage_bytes = 0;
+            auto temp_storage_bytes = std::size_t(0);
 
             // Determine temporary storage requirements
             cub::DeviceReduce::Reduce(
