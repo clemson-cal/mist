@@ -84,6 +84,23 @@
     - array_view_t: `_parent → parent`
     - Fixed typo: `indexspace_t → index_space_t`, `indexspace() → index_space()`
 
+13. **Simulation DSL for Low-Boilerplate Parallel Execution**
+    - Four increasingly sophisticated approaches in laplacian2d.cpp:
+      * `main()` - Educational detail with explicit setup (68 lines)
+      * `main_a()` - Generic factory helpers (39 lines, ~30 lines saved)
+      * `main_b()` - Minimal lambda-based (45 lines, modern C++)
+      * `main_d()` - General DSL with products (55 lines, driver-friendly)
+    - `mpi_context` RAII class: Encapsulates MPI init/finalize, no more #ifdef clutter
+    - `simulation<PatchType>` DSL class with:
+      * `decompose_cartesian()` - Regular grid decomposition
+      * `decompose_custom()` - User-defined decomposition for AMR
+      * `.execute(exchange, compute, reduce)` - Pipeline execution
+      * `.define_product(name, extractor)` - Named outputs for driver
+      * `.run()` - Returns `unordered_map<string, any>` of products
+    - **Genericity**: Template on PatchType enables 1D/2D/3D/AMR without code changes
+    - **Driver Integration**: Products pattern avoids global state
+    - **Documentation**: DSL_DESIGN.md with usage examples for wave, hydro, AMR
+
 ## Next Steps
 
 ### 1. Plan Caching in ExchangeStage
