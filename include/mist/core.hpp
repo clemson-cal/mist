@@ -504,6 +504,31 @@ constexpr index_space_t<S> lower(const index_space_t<S>& space, unsigned int amo
     return result;
 }
 
+template<std::size_t S>
+constexpr index_space_t<S> intersect(const index_space_t<S>& a, const index_space_t<S>& b) {
+    ivec_t<S> lo{};
+    ivec_t<S> hi{};
+
+    for (std::size_t i = 0; i < S; ++i) {
+        int a_lo = a._start._data[i];
+        int a_hi = a_lo + static_cast<int>(a._shape._data[i]);
+        int b_lo = b._start._data[i];
+        int b_hi = b_lo + static_cast<int>(b._shape._data[i]);
+
+        lo._data[i] = a_lo > b_lo ? a_lo : b_lo;
+        hi._data[i] = a_hi < b_hi ? a_hi : b_hi;
+    }
+
+    uvec_t<S> shape{};
+    for (std::size_t i = 0; i < S; ++i) {
+        shape._data[i] = hi._data[i] > lo._data[i]
+            ? static_cast<unsigned int>(hi._data[i] - lo._data[i])
+            : 0;
+    }
+
+    return index_space(lo, shape);
+}
+
 // =============================================================================
 // Multi-dimensional indexing
 // =============================================================================

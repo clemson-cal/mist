@@ -268,20 +268,14 @@ struct array_view_t {
     array_view_t(const array_view_t<U, S>& other)
         : _space(other._space), _data(other._data), _strides(other._strides) {}
 
-    MIST_HD T& operator()(const ivec_t<S>& idx) {
-        return _data[strided_offset(idx)];
-    }
-
-    MIST_HD const T& operator()(const ivec_t<S>& idx) const {
+    // Element access - constness is encoded in T, not in the view
+    // Use array_view_t<const T, S> for read-only access
+    MIST_HD T& operator()(const ivec_t<S>& idx) const {
         return _data[strided_offset(idx)];
     }
 
     // Convenience for 1D arrays: accept integer index
-    MIST_HD T& operator[](int i) requires (S == 1) {
-        return _data[strided_offset(ivec(i))];
-    }
-
-    MIST_HD const T& operator[](int i) const requires (S == 1) {
+    MIST_HD T& operator[](int i) const requires (S == 1) {
         return _data[strided_offset(ivec(i))];
     }
 
@@ -310,10 +304,7 @@ template<typename T, std::size_t S>
 const index_space_t<S>& space(const array_view_t<T, S>& a) { return a._space; }
 
 template<typename T, std::size_t S>
-T* data(array_view_t<T, S>& a) { return a._data; }
-
-template<typename T, std::size_t S>
-const T* data(const array_view_t<T, S>& a) { return a._data; }
+T* data(const array_view_t<T, S>& a) { return a._data; }
 
 // -----------------------------------------------------------------------------
 // view() - create views into arrays

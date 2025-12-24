@@ -8,6 +8,11 @@ target_link_libraries(test_ndarray PRIVATE mist)
 target_compile_options(test_ndarray PRIVATE -O2)
 add_test(NAME ndarray COMMAND test_ndarray)
 
+add_executable(test_comm test_comm.cpp)
+target_link_libraries(test_comm PRIVATE mist)
+target_compile_options(test_comm PRIVATE -O2)
+add_test(NAME comm COMMAND test_comm)
+
 add_executable(write_test_binaries write_test_binaries.cpp)
 target_link_libraries(write_test_binaries PRIVATE mist)
 
