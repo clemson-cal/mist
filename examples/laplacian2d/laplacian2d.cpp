@@ -63,24 +63,16 @@ auto exact_laplacian(double x, double y) -> double {
 // =============================================================================
 
 auto create_patches(const config_t& cfg, int rank, int size) -> std::vector<patch_t> {
-    // Distribute patches across ranks
-    int total_patches = cfg.patches_x * cfg.patches_y;
-    int patches_per_rank = total_patches / size;
-    int extra = total_patches % size;
-
-    int my_start = rank * patches_per_rank + std::min(rank, extra);
-    int my_count = patches_per_rank + (rank < extra ? 1 : 0);
-
     auto patches = std::vector<patch_t>{};
 
     auto global_space = index_space(ivec(0, 0), uvec(cfg.global_nx, cfg.global_ny));
     auto decomp = uvec(cfg.patches_x, cfg.patches_y);
+    auto patch_range = subspace(index_space(ivec(0), uvec(product(decomp))), size, rank, 0);
     double dx = cfg.domain_x / cfg.global_nx;
     double dy = cfg.domain_y / cfg.global_ny;
 
-    for (int p = my_start; p < my_start + my_count; ++p) {
-        auto coords = uvec(p % cfg.patches_x, p / cfg.patches_x);
-        auto interior = subspace(global_space, decomp, coords);
+    for (auto pi : patch_range) {
+        auto interior = subspace(global_space, decomp, ndindex(pi[0], decomp));
         auto with_ghosts = expand(interior, cfg.num_ghosts);
 
         auto patch = patch_t{};

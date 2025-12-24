@@ -401,14 +401,14 @@ constexpr bool overlaps(const index_space_t<S>& a, const index_space_t<S>& b) {
 }
 
 template<std::size_t S>
-constexpr index_space_t<S> subspace(const index_space_t<S>& space, unsigned int num_partitions, unsigned int which_partition, unsigned int axis) {
-    auto large_partition_size = space._shape._data[axis] / num_partitions + 1;
-    auto small_partition_size = space._shape._data[axis] / num_partitions;
-    auto num_large_partitions = space._shape._data[axis] % num_partitions;
-    auto n_large = which_partition < num_large_partitions ? which_partition : num_large_partitions;
-    auto n_small = which_partition > n_large ? which_partition - n_large : 0;
-    auto i0 = n_large * large_partition_size + n_small * small_partition_size;
-    auto di = which_partition < num_large_partitions ? large_partition_size : small_partition_size;
+constexpr index_space_t<S> subspace(const index_space_t<S>& space, unsigned int n, unsigned int p, unsigned int axis) {
+    auto dl = space._shape._data[axis] / n + 1;
+    auto ds = space._shape._data[axis] / n;
+    auto nl = space._shape._data[axis] % n;
+    auto pl = p < nl ? p : nl;
+    auto ps = p > pl ? p - pl : 0;
+    auto i0 = pl * dl + ps * ds;
+    auto di = p < nl ? dl : ds;
 
     auto result = space;
     result._start._data[axis] = static_cast<int>(i0) + space._start._data[axis];
@@ -545,13 +545,23 @@ MIST_HD constexpr std::size_t ndoffset(const index_space_t<S>& space, const ivec
     return offset;
 }
 
-// Convert flat offset to multi-dimensional index (row-major ordering)
+// Convert flat offset to multi-dimensional index (C-ordering: last index fastest)
 template<std::size_t S>
 MIST_HD constexpr ivec_t<S> ndindex(const index_space_t<S>& space, std::size_t offset) {
     ivec_t<S> index{};
     for (std::size_t i = S; i > 0; --i) {
         index._data[i - 1] = space._start._data[i - 1] + static_cast<int>(offset % space._shape._data[i - 1]);
         offset /= space._shape._data[i - 1];
+    }
+    return index;
+}
+
+template<std::size_t S>
+MIST_HD constexpr uvec_t<S> ndindex(std::size_t offset, const uvec_t<S>& shape) {
+    uvec_t<S> index{};
+    for (std::size_t i = S; i > 0; --i) {
+        index._data[i - 1] = offset % shape._data[i - 1];
+        offset /= shape._data[i - 1];
     }
     return index;
 }
