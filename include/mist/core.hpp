@@ -52,6 +52,14 @@ struct vec_t {
 
     MIST_HD constexpr std::size_t size() const { return S; }
 
+    MIST_HD static constexpr vec_t constant(T v) {
+        vec_t r{};
+        for (std::size_t i = 0; i < S; ++i) r._data[i] = v;
+        return r;
+    }
+    MIST_HD static constexpr vec_t zeros() { return constant(T(0)); }
+    MIST_HD static constexpr vec_t ones() { return constant(T(1)); }
+
     // Spaceship operator for comparisons
     MIST_HD constexpr auto operator<=>(const vec_t&) const = default;
 };
@@ -123,33 +131,31 @@ template<typename... Args>
     requires (sizeof...(Args) > 0) && (std::is_arithmetic_v<Args> && ...)
 MIST_HD constexpr auto vec(Args... args) {
     using T = std::common_type_t<Args...>;
-    return vec_t<T, sizeof...(Args)>{static_cast<T>(args)...};
+    return vec_t<T, sizeof...(Args)>{T(args)...};
 }
 
-// Typed constructors
 template<typename... Args>
     requires (sizeof...(Args) > 0)
 MIST_HD constexpr auto dvec(Args... args) {
-    return vec_t<double, sizeof...(Args)>{static_cast<double>(args)...};
+    return vec_t<double, sizeof...(Args)>{double(args)...};
 }
 
 template<typename... Args>
     requires (sizeof...(Args) > 0)
 MIST_HD constexpr auto ivec(Args... args) {
-    return vec_t<int, sizeof...(Args)>{static_cast<int>(args)...};
+    return vec_t<int, sizeof...(Args)>{int(args)...};
 }
 
 template<typename... Args>
     requires (sizeof...(Args) > 0)
 MIST_HD constexpr auto uvec(Args... args) {
-    return vec_t<unsigned int, sizeof...(Args)>{static_cast<unsigned int>(args)...};
+    return vec_t<unsigned, sizeof...(Args)>{unsigned(args)...};
 }
 
-// Range constructor: generates [0, 1, 2, ..., S-1]
 namespace detail {
     template<std::size_t S, std::size_t... Is>
     MIST_HD constexpr uvec_t<S> range_impl(std::index_sequence<Is...>) {
-        return uvec_t<S>{static_cast<unsigned int>(Is)...};
+        return uvec_t<S>{unsigned(Is)...};
     }
 }
 
@@ -183,6 +189,14 @@ MIST_HD constexpr auto operator-(const vec_t<T, S>& a, const vec_t<U, S>& b) {
         result._data[i] = a._data[i] - b._data[i];
     }
     return result;
+}
+
+// Unary minus: -vec
+template<Arithmetic T, std::size_t S>
+MIST_HD constexpr auto operator-(const vec_t<T, S>& v) {
+    vec_t<T, S> r{};
+    for (std::size_t i = 0; i < S; ++i) r._data[i] = -v._data[i];
+    return r;
 }
 
 // Multiplication: vec * scalar
@@ -307,6 +321,13 @@ MIST_HD constexpr bool all(const vec_t<bool, S>& v) {
     return true;
 }
 
+template<std::size_t S>
+MIST_HD constexpr ivec_t<S> to_signed(const uvec_t<S>& v) {
+    ivec_t<S> r;
+    for (std::size_t i = 0; i < S; ++i) r[i] = int(v[i]);
+    return r;
+}
+
 // =============================================================================
 // index_space_t: Multi-dimensional index space
 // =============================================================================
@@ -338,8 +359,8 @@ constexpr const uvec_t<S>& shape(const index_space_t<S>& space) {
 }
 
 template<std::size_t S>
-constexpr ivec_t<S> upper(const index_space_t<S>& space) {
-    return space._start + map(space._shape, [](unsigned int v) { return static_cast<int>(v); });
+constexpr ivec_t<S> upper(const index_space_t<S>& s) {
+    return s._start + to_signed(s._shape);
 }
 
 template<std::size_t S>
@@ -366,204 +387,153 @@ MIST_HD constexpr unsigned int size(const index_space_t<S>& space) {
 }
 
 template<std::size_t S>
-MIST_HD constexpr bool contains(const index_space_t<S>& space, const ivec_t<S>& index) {
-    for (std::size_t i = 0; i < S; ++i) {
-        if (index._data[i] < space._start._data[i] ||
-            index._data[i] >= space._start._data[i] + static_cast<int>(space._shape._data[i])) {
-            return false;
-        }
+MIST_HD constexpr bool contains(const index_space_t<S>& s, const ivec_t<S>& i) {
+    auto u = s._start + to_signed(s._shape);
+    for (std::size_t n = 0; n < S; ++n) {
+        if (i[n] < s._start[n] || i[n] >= u[n]) return false;
     }
     return true;
 }
 
 template<std::size_t S>
-constexpr bool contains(const index_space_t<S>& space, const index_space_t<S>& other) {
-    if (size(other) == 0) {
-        return true;
-    }
-    ivec_t<S> other_front = other._start;
-    ivec_t<S> other_back = other._start + map(other._shape, [](unsigned int v) { return static_cast<int>(v) - 1; });
-    return contains(space, other_front) && contains(space, other_back);
+constexpr bool contains(const index_space_t<S>& a, const index_space_t<S>& b) {
+    if (size(b) == 0) return true;
+    return contains(a, b._start) && contains(a, upper(b) - ivec_t<S>::ones());
 }
 
 template<std::size_t S>
 constexpr bool overlaps(const index_space_t<S>& a, const index_space_t<S>& b) {
-    for (std::size_t i = 0; i < S; ++i) {
-        auto a_start = a._start._data[i];
-        auto a_end = a_start + static_cast<int>(a._shape._data[i]);
-        auto b_start = b._start._data[i];
-        auto b_end = b_start + static_cast<int>(b._shape._data[i]);
-        if (a_end <= b_start || b_end <= a_start) {
-            return false;
-        }
+    auto ua = upper(a), ub = upper(b);
+    for (std::size_t n = 0; n < S; ++n) {
+        if (ua[n] <= b._start[n] || ub[n] <= a._start[n]) return false;
     }
     return size(a) > 0 && size(b) > 0;
 }
 
 template<std::size_t S>
-constexpr index_space_t<S> subspace(const index_space_t<S>& space, unsigned int n, unsigned int p, unsigned int axis) {
-    auto dl = space._shape._data[axis] / n + 1;
-    auto ds = space._shape._data[axis] / n;
-    auto nl = space._shape._data[axis] % n;
-    auto pl = p < nl ? p : nl;
-    auto ps = p > pl ? p - pl : 0;
-    auto i0 = pl * dl + ps * ds;
-    auto di = p < nl ? dl : ds;
-
-    auto result = space;
-    result._start._data[axis] = static_cast<int>(i0) + space._start._data[axis];
-    result._shape._data[axis] = di;
-    return result;
+constexpr index_space_t<S> subspace(const index_space_t<S>& s, unsigned n, unsigned p, unsigned a) {
+    auto m = s._shape[a];
+    auto dl = m / n + 1, ds = m / n, nl = m % n;
+    auto pl = p < nl ? p : nl, ps = p > pl ? p - pl : 0;
+    auto r = s;
+    r._start[a] = s._start[a] + int(pl * dl + ps * ds);
+    r._shape[a] = p < nl ? dl : ds;
+    return r;
 }
 
 template<std::size_t S>
-constexpr index_space_t<S> subspace(const index_space_t<S>& space, const uvec_t<S>& shape, const uvec_t<S>& coords) {
-    auto result = space;
-    for (std::size_t axis = 0; axis < S; ++axis) {
-        result = subspace(result, shape._data[axis], coords._data[axis], axis);
+constexpr index_space_t<S> subspace(const index_space_t<S>& s, const uvec_t<S>& sh, const uvec_t<S>& c) {
+    auto r = s;
+    for (std::size_t a = 0; a < S; ++a) r = subspace(r, sh[a], c[a], a);
+    return r;
+}
+
+template<std::size_t S>
+constexpr index_space_t<S> shift(const index_space_t<S>& s, int d, unsigned a) {
+    auto r = s;
+    r._start[a] += d;
+    return r;
+}
+
+template<std::size_t S>
+constexpr index_space_t<S> nudge(const index_space_t<S>& s, const ivec_t<S>& lo, const ivec_t<S>& hi) {
+    auto r = s;
+    for (std::size_t a = 0; a < S; ++a) {
+        r._start[a] += lo[a];
+        r._shape[a] += unsigned(hi[a] - lo[a]);
     }
-    return result;
+    return r;
 }
 
 template<std::size_t S>
-constexpr index_space_t<S> shift(const index_space_t<S>& space, int amount, unsigned int axis) {
-    auto result = space;
-    result._start._data[axis] += amount;
-    return result;
+constexpr index_space_t<S> contract(const index_space_t<S>& s, const uvec_t<S>& c) {
+    return nudge(s, to_signed(c), -to_signed(c));
 }
 
 template<std::size_t S>
-constexpr index_space_t<S> nudge(const index_space_t<S>& space, const ivec_t<S>& lower, const ivec_t<S>& upper) {
-    auto result = space;
-    for (std::size_t axis = 0; axis < S; ++axis) {
-        result._start._data[axis] += lower._data[axis];
-        result._shape._data[axis] += static_cast<unsigned int>(upper._data[axis] - lower._data[axis]);
-    }
-    return result;
+constexpr index_space_t<S> contract(const index_space_t<S>& s, unsigned c) {
+    return contract(s, uvec_t<S>::constant(c));
 }
 
 template<std::size_t S>
-constexpr index_space_t<S> contract(const index_space_t<S>& space, const uvec_t<S>& count) {
-    ivec_t<S> lower{};
-    ivec_t<S> upper{};
-    for (std::size_t i = 0; i < S; ++i) {
-        lower._data[i] = +static_cast<int>(count._data[i]);
-        upper._data[i] = -static_cast<int>(count._data[i]);
-    }
-    return nudge(space, lower, upper);
+constexpr index_space_t<S> expand(const index_space_t<S>& s, const uvec_t<S>& c) {
+    return nudge(s, -to_signed(c), to_signed(c));
 }
 
 template<std::size_t S>
-constexpr index_space_t<S> contract(const index_space_t<S>& space, unsigned int count) {
-    uvec_t<S> count_vec{};
-    for (std::size_t i = 0; i < S; ++i) {
-        count_vec._data[i] = count;
-    }
-    return contract(space, count_vec);
+constexpr index_space_t<S> expand(const index_space_t<S>& s, unsigned c) {
+    return expand(s, uvec_t<S>::constant(c));
 }
 
 template<std::size_t S>
-constexpr index_space_t<S> expand(const index_space_t<S>& space, const uvec_t<S>& count) {
-    ivec_t<S> lower{};
-    ivec_t<S> upper{};
-    for (std::size_t i = 0; i < S; ++i) {
-        lower._data[i] = -static_cast<int>(count._data[i]);
-        upper._data[i] = +static_cast<int>(count._data[i]);
-    }
-    return nudge(space, lower, upper);
+constexpr index_space_t<S> translate(const index_space_t<S>& s, const ivec_t<S>& st) {
+    auto r = s;
+    r._start = st;
+    return r;
 }
 
 template<std::size_t S>
-constexpr index_space_t<S> expand(const index_space_t<S>& space, unsigned int count) {
-    uvec_t<S> count_vec{};
-    for (std::size_t i = 0; i < S; ++i) {
-        count_vec._data[i] = count;
-    }
-    return expand(space, count_vec);
+constexpr index_space_t<S> upper(const index_space_t<S>& s, unsigned n, unsigned a) {
+    auto r = s;
+    r._start[a] = s._start[a] + int(s._shape[a]) - int(n);
+    r._shape[a] = n;
+    return r;
 }
 
 template<std::size_t S>
-constexpr index_space_t<S> translate(const index_space_t<S>& space, const ivec_t<S>& new_start) {
-    auto result = space;
-    result._start = new_start;
-    return result;
-}
-
-template<std::size_t S>
-constexpr index_space_t<S> upper(const index_space_t<S>& space, unsigned int amount, unsigned int axis) {
-    auto result = space;
-    result._start._data[axis] = space._start._data[axis] + static_cast<int>(space._shape._data[axis]) - static_cast<int>(amount);
-    result._shape._data[axis] = amount;
-    return result;
-}
-
-template<std::size_t S>
-constexpr index_space_t<S> lower(const index_space_t<S>& space, unsigned int amount, unsigned int axis) {
-    auto result = space;
-    result._shape._data[axis] = amount;
-    return result;
+constexpr index_space_t<S> lower(const index_space_t<S>& s, unsigned n, unsigned a) {
+    auto r = s;
+    r._shape[a] = n;
+    return r;
 }
 
 template<std::size_t S>
 constexpr index_space_t<S> intersect(const index_space_t<S>& a, const index_space_t<S>& b) {
-    ivec_t<S> lo{};
-    ivec_t<S> hi{};
-
-    for (std::size_t i = 0; i < S; ++i) {
-        int a_lo = a._start._data[i];
-        int a_hi = a_lo + static_cast<int>(a._shape._data[i]);
-        int b_lo = b._start._data[i];
-        int b_hi = b_lo + static_cast<int>(b._shape._data[i]);
-
-        lo._data[i] = a_lo > b_lo ? a_lo : b_lo;
-        hi._data[i] = a_hi < b_hi ? a_hi : b_hi;
+    auto ua = upper(a), ub = upper(b);
+    ivec_t<S> lo{}, hi{};
+    uvec_t<S> sh{};
+    for (std::size_t n = 0; n < S; ++n) {
+        lo[n] = a._start[n] > b._start[n] ? a._start[n] : b._start[n];
+        hi[n] = ua[n] < ub[n] ? ua[n] : ub[n];
+        sh[n] = hi[n] > lo[n] ? unsigned(hi[n] - lo[n]) : 0;
     }
-
-    uvec_t<S> shape{};
-    for (std::size_t i = 0; i < S; ++i) {
-        shape._data[i] = hi._data[i] > lo._data[i]
-            ? static_cast<unsigned int>(hi._data[i] - lo._data[i])
-            : 0;
-    }
-
-    return index_space(lo, shape);
+    return index_space(lo, sh);
 }
 
 // =============================================================================
 // Multi-dimensional indexing
 // =============================================================================
 
-// Convert multi-dimensional index to flat offset (row-major ordering)
+// Convert multi-dimensional index to flat offset (C-ordering: last index fastest)
 template<std::size_t S>
-MIST_HD constexpr std::size_t ndoffset(const index_space_t<S>& space, const ivec_t<S>& index) {
-    std::size_t offset = 0;
-    std::size_t stride = 1;
+MIST_HD constexpr std::size_t ndoffset(const index_space_t<S>& s, const ivec_t<S>& idx) {
+    std::size_t off = 0, str = 1;
     for (std::size_t i = S; i > 0; --i) {
-        offset += static_cast<std::size_t>(index._data[i - 1] - space._start._data[i - 1]) * stride;
-        stride *= space._shape._data[i - 1];
+        off += std::size_t(idx[i - 1] - s._start[i - 1]) * str;
+        str *= s._shape[i - 1];
     }
-    return offset;
+    return off;
 }
 
 // Convert flat offset to multi-dimensional index (C-ordering: last index fastest)
 template<std::size_t S>
-MIST_HD constexpr ivec_t<S> ndindex(const index_space_t<S>& space, std::size_t offset) {
-    ivec_t<S> index{};
+MIST_HD constexpr ivec_t<S> ndindex(const index_space_t<S>& s, std::size_t off) {
+    ivec_t<S> idx{};
     for (std::size_t i = S; i > 0; --i) {
-        index._data[i - 1] = space._start._data[i - 1] + static_cast<int>(offset % space._shape._data[i - 1]);
-        offset /= space._shape._data[i - 1];
+        idx[i - 1] = s._start[i - 1] + int(off % s._shape[i - 1]);
+        off /= s._shape[i - 1];
     }
-    return index;
+    return idx;
 }
 
 template<std::size_t S>
-MIST_HD constexpr uvec_t<S> ndindex(std::size_t offset, const uvec_t<S>& shape) {
-    uvec_t<S> index{};
+MIST_HD constexpr uvec_t<S> ndindex(std::size_t off, const uvec_t<S>& sh) {
+    uvec_t<S> idx{};
     for (std::size_t i = S; i > 0; --i) {
-        index._data[i - 1] = offset % shape._data[i - 1];
-        offset /= shape._data[i - 1];
+        idx[i - 1] = off % sh[i - 1];
+        off /= sh[i - 1];
     }
-    return index;
+    return idx;
 }
 
 // Read scalar from buffer
