@@ -56,3 +56,4 @@ compile_commands.json
 tests/test_*
 !tests/test_*.cpp
 !tests/test_*.py
+tests/write_test_binaries
