@@ -21,36 +21,35 @@
    - `execute_reduce()` uses `comm.combine()` for global reduction
    - Backwards-compatible overloads with local-only communicator
 
+5. **MPI Backend for comm_t**
+   - Factory method: `comm_t::from_mpi(MPI_Comm)`
+   - Stores `MPI_Comm` when `MIST_WITH_MPI` is defined
+   - `build_plan()` uses MPI_Allgatherv to exchange publication/request metadata
+   - `exchange()` uses MPI_Isend/MPI_Irecv/MPI_Waitall for non-blocking transfers
+   - `combine()` uses MPI_Allgather + local reduction with custom binary op
+   - Tags generated from hash of overlap region
+
+6. **MPI Datatype Construction**
+   - `detail::make_mpi_subarray()` creates MPI subarray types from views
+   - Uses parent space for proper strided access
+   - Supports `double`, `float`, `int`, and `vec_t<T, N>` element types
+   - `detail::mpi_type_traits<T>` for type mapping
+
+7. **CMake Integration**
+   - `MIST_WITH_MPI` option enables MPI support
+   - Automatically finds MPI and links `MPI::MPI_CXX`
+   - Defines `MIST_WITH_MPI` preprocessor macro
+
+8. **MPI Tests**
+   - `test_comm_mpi.cpp` with tests for:
+     - `comm_t::from_mpi()` factory
+     - `combine()` with sum and min operations
+     - `exchange()` for 1D ghost cell communication
+   - Runs with `mpirun -np 4` in CTest
+
 ## Next Steps
 
-### 1. MPI Backend for comm_t
-
-```cpp
-struct comm_t {
-    void* mpi_comm_ = nullptr;  // MPI_Comm when MPI enabled
-
-    // Factory
-    static auto from_mpi(MPI_Comm comm) -> comm_t;
-};
-```
-
-**build_plan with MPI:**
-- Allgather publication metadata (spaces only) across ranks
-- For each local request, find remote providers
-- Populate `sends` and `recvs` vectors in the plan
-
-**exchange with MPI:**
-- Build MPI subarray datatypes from views (using parent space)
-- Post MPI_Irecv for each recv
-- Post MPI_Isend for each send
-- MPI_Waitall
-- Tag generation: hash of (src_rank, dest_rank, overlap)
-
-**combine with MPI:**
-- MPI_Allreduce with the provided binary op
-- May need to register custom MPI_Op or use predefined ops
-
-### 2. Plan Caching in ExchangeStage
+### 1. Plan Caching in ExchangeStage
 
 ```cpp
 struct some_exchange_stage {
@@ -64,32 +63,13 @@ struct some_exchange_stage {
 - Cache invalidation when topology changes (AMR, load balancing)
 - Could use version counter or hash of index spaces
 
-### 3. MPI Datatype Construction
+### 2. Integration Testing
 
-```cpp
-// From a view, build MPI subarray type:
-auto make_mpi_type(const View& view) -> MPI_Datatype {
-    MPI_Type_create_subarray(
-        ndims,
-        parent(view).shape(),           // size of parent array
-        space(view).shape(),            // size of subregion
-        space(view).start() - parent(view).start(),  // offset
-        MPI_ORDER_C,
-        element_mpi_type<View::value_type>(),
-        &subarray_type
-    );
-    MPI_Type_commit(&subarray_type);
-    return subarray_type;
-}
-```
-
-### 4. Testing
-
-- Multi-rank MPI tests (need MPI environment)
-- Integration tests with pipelines across ranks
+- Multi-rank pipeline execution with actual simulation codes
 - Verify ghost exchange correctness with multiple patches per rank
+- Test with advect1d and srhd1d examples using MPI
 
-### 5. Optional Enhancements
+### 3. Optional Enhancements
 
 - **Persistent communication**: reuse MPI requests across iterations
 - **Overlapping communication with computation**: for async pipelines

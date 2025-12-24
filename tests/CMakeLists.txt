@@ -13,6 +13,13 @@ target_link_libraries(test_comm PRIVATE mist)
 target_compile_options(test_comm PRIVATE -O2)
 add_test(NAME comm COMMAND test_comm)
 
+if(MIST_WITH_MPI)
+    add_executable(test_comm_mpi test_comm_mpi.cpp)
+    target_link_libraries(test_comm_mpi PRIVATE mist)
+    target_compile_options(test_comm_mpi PRIVATE -O2)
+    add_test(NAME comm_mpi COMMAND ${MPIEXEC_EXECUTABLE} ${MPIEXEC_NUMPROC_FLAG} 4 $<TARGET_FILE:test_comm_mpi>)
+endif()
+
 add_executable(write_test_binaries write_test_binaries.cpp)
 target_link_libraries(write_test_binaries PRIVATE mist)
 

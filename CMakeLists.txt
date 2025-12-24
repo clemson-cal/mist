@@ -6,12 +6,22 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Optional MPI support
+option(MIST_WITH_MPI "Enable MPI support for distributed communication" OFF)
+if(MIST_WITH_MPI)
+    find_package(MPI REQUIRED)
+endif()
+
 # Header-only core library
 add_library(mist INTERFACE)
 target_include_directories(mist INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
+if(MIST_WITH_MPI)
+    target_link_libraries(mist INTERFACE MPI::MPI_CXX)
+    target_compile_definitions(mist INTERFACE MIST_WITH_MPI)
+endif()
 
 # Collect all headers for dependency tracking
 file(GLOB_RECURSE MIST_HEADERS
