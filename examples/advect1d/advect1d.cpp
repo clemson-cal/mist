@@ -1,6 +1,7 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -63,6 +64,7 @@ struct patch_t {
 
 struct initial_state_t {
     static constexpr const char* name = "initial_state";
+    using context_type = patch_t;
     double dx;
     double L;
 
@@ -77,6 +79,7 @@ struct initial_state_t {
 
 struct compute_local_dt_t {
     static constexpr const char* name = "compute_local_dt";
+    using context_type = patch_t;
     double cfl;
     double v;
     double dx;
@@ -92,6 +95,7 @@ struct compute_local_dt_t {
 
 struct global_dt_t {
     static constexpr const char* name = "global_dt";
+    using context_type = patch_t;
     using value_type = double;
 
     static auto init() -> double {
@@ -113,6 +117,7 @@ struct global_dt_t {
 
 struct ghost_exchange_t {
     static constexpr const char* name = "ghost_exchange";
+    using context_type = patch_t;
     using value_type = double;
     static constexpr std::size_t rank = 1;
 
@@ -120,7 +125,7 @@ struct ghost_exchange_t {
         return p.cons[p.interior];
     }
 
-    void need(patch_t& p, auto request) const {
+    void need(patch_t& p, std::function<void(array_view_t<value_type, rank>)> request) const {
         auto lo = start(p.interior);
         auto hi = upper(p.interior);
         auto l_guard = index_space(lo - ivec(1), uvec(1));
@@ -133,6 +138,7 @@ struct ghost_exchange_t {
 // Unfused stages (for comparison)
 struct compute_flux_t {
     static constexpr const char* name = "compute_flux";
+    using context_type = patch_t;
     auto value(patch_t p) const -> patch_t {
         auto v = p.v;
         auto& u = p.cons;
@@ -153,6 +159,7 @@ struct compute_flux_t {
 
 struct update_conserved_t {
     static constexpr const char* name = "update_conserved";
+    using context_type = patch_t;
     auto value(patch_t p) const -> patch_t {
         auto dtdx = p.dt / p.dx;
         auto& u = p.cons;
@@ -168,6 +175,7 @@ struct update_conserved_t {
 // Fused flux + update stage (better cache utilization)
 struct flux_and_update_t {
     static constexpr const char* name = "flux_and_update";
+    using context_type = patch_t;
     auto value(patch_t p) const -> patch_t {
         auto v = p.v;
         auto dtdx = p.dt / p.dx;

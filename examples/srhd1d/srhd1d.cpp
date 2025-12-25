@@ -24,6 +24,7 @@ SOFTWARE.
 
 #include <cmath>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -345,6 +346,7 @@ struct patch_t {
 
 struct initial_state_t {
     static constexpr const char* name = "initial_state";
+    using context_type = patch_t;
     double dx;
     double L;
     initial_condition ic;
@@ -361,6 +363,7 @@ struct initial_state_t {
 
 struct compute_local_dt_t {
     static constexpr const char* name = "compute_local_dt";
+    using context_type = patch_t;
     double cfl;
     double dx;
     double plm_theta;
@@ -380,6 +383,7 @@ struct compute_local_dt_t {
 
 struct cache_rk_t {
     static constexpr const char* name = "cache_rk";
+    using context_type = patch_t;
     auto value(patch_t p) const -> patch_t {
         p.time_rk = p.time;
         copy(p.cons_rk, p.cons);
@@ -389,6 +393,7 @@ struct cache_rk_t {
 
 struct cons_to_prim_t {
     static constexpr const char* name = "cons_to_prim";
+    using context_type = patch_t;
     auto value(patch_t p) const -> patch_t {
         for_each(space(p.prim), [&](ivec_t<1> idx) {
             auto i = idx[0];
@@ -400,6 +405,7 @@ struct cons_to_prim_t {
 
 struct global_dt_t {
     static constexpr const char* name = "global_dt";
+    using context_type = patch_t;
     using value_type = double;
 
     static auto init() -> double {
@@ -421,6 +427,7 @@ struct global_dt_t {
 
 struct ghost_exchange_t {
     static constexpr const char* name = "ghost_exchange";
+    using context_type = patch_t;
     using value_type = cons_t;
     static constexpr std::size_t rank = 1;
 
@@ -428,7 +435,7 @@ struct ghost_exchange_t {
         return p.cons[p.interior];
     }
 
-    void need(patch_t& p, auto request) const {
+    void need(patch_t& p, std::function<void(array_view_t<value_type, rank>)> request) const {
         auto lo = start(p.interior);
         auto hi = upper(p.interior);
         auto l_guard = index_space(lo - ivec(2), uvec(2));
@@ -440,6 +447,7 @@ struct ghost_exchange_t {
 
 struct apply_boundary_conditions_t {
     static constexpr const char* name = "apply_bc";
+    using context_type = patch_t;
     boundary_condition bc_lo;
     boundary_condition bc_hi;
     unsigned num_zones;  // global domain size
@@ -493,6 +501,7 @@ struct apply_boundary_conditions_t {
 
 struct compute_gradients_t {
     static constexpr const char* name = "compute_gradients";
+    using context_type = patch_t;
     auto value(patch_t p) const -> patch_t {
         auto plm_theta = p.plm_theta;
 
@@ -506,6 +515,7 @@ struct compute_gradients_t {
 
 struct compute_fluxes_t {
     static constexpr const char* name = "compute_fluxes";
+    using context_type = patch_t;
     auto value(patch_t p) const -> patch_t {
         for_each(space(p.fhat), [&](ivec_t<1> idx) {
             auto i = idx[0];
@@ -522,6 +532,7 @@ struct compute_fluxes_t {
 
 struct update_conserved_t {
     static constexpr const char* name = "update_conserved";
+    using context_type = patch_t;
     auto value(patch_t p) const -> patch_t {
         auto dtdx = p.dt / p.dx;
 
@@ -536,6 +547,7 @@ struct update_conserved_t {
 
 struct rk_average_t {
     static constexpr const char* name = "rk_average";
+    using context_type = patch_t;
     double alpha;  // state = (1-alpha) * cached + alpha * current
 
     auto value(patch_t p) const -> patch_t {

@@ -36,6 +36,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <functional>
 #include <string>
 #include <vector>
 #include "helpers.hpp"
@@ -110,6 +111,7 @@ auto create_patch(const config_t& cfg, const index_space_t<2>& space) -> patch_t
 
 struct ghost_exchange_t {
     static constexpr const char* name = "ghost_exchange";
+    using context_type = patch_t;
     using value_type = double;
     static constexpr std::size_t rank = 2;
 
@@ -119,7 +121,7 @@ struct ghost_exchange_t {
         return p.u[p.interior];
     }
 
-    void need(patch_t& p, auto request) const {
+    void need(patch_t& p, std::function<void(array_view_t<value_type, rank>)> request) const {
         auto lo = start(p.interior);
         auto hi = upper(p.interior);
 
@@ -136,6 +138,7 @@ struct ghost_exchange_t {
 
 struct compute_laplacian_t {
     static constexpr const char* name = "compute_laplacian";
+    using context_type = patch_t;
 
     auto value(patch_t p) const -> patch_t {
         double dx2 = p.dx * p.dx;
@@ -164,6 +167,7 @@ struct compute_laplacian_t {
 
 struct error_reduce_t {
     static constexpr const char* name = "error_reduce";
+    using context_type = patch_t;
     using value_type = double;
 
     double dx, dy;

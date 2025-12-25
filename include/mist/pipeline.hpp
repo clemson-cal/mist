@@ -30,21 +30,31 @@ auto stage_name(std::size_t index) -> std::string {
 
 // Compute stage: per-peer transform (fully parallel)
 template<typename S>
-concept ComputeStage = requires { &S::value; };
+concept ComputeStage = requires {
+    typename S::context_type;
+    &S::value;
+};
 
 // Exchange stage: peers request/provide data (barrier required)
-// Stage defines value_type and rank; view types are derived automatically
+// Stage defines context_type, value_type and rank; view types are derived automatically
+// Required:
+//   - provides(const Context&) -> array_view: returns data available to peers
+//   - need(Context&, std::function<void(array_view_t<value_type, rank>)>):
+//     requests ghost data from neighbors
 template<typename S>
 concept ExchangeStage = requires {
+    typename S::context_type;
     typename S::value_type;
     { S::rank } -> std::convertible_to<std::size_t>;
     &S::provides;
+    &S::need;
 };
 
 // Reduce stage: fold across peers then broadcast result (barrier required)
 // init() and combine() are static; extract() and finalize() are instance methods
 template<typename S>
 concept ReduceStage = requires {
+    typename S::context_type;
     typename S::value_type;
     &S::init;
     &S::combine;
@@ -52,41 +62,8 @@ concept ReduceStage = requires {
     &S::finalize;
 };
 
-// Type trait to extract Context type from a stage
-namespace detail {
-    template<typename R, typename S, typename C>
-    C extract_context_from_provides(R(S::*)(const C&) const);
-
-    template<typename R, typename S, typename C>
-    C extract_context_from_provides(R(S::*)(C) const);
-
-    template<typename C, typename S>
-    C extract_context_from_value(C(S::*)(C) const);
-
-    template<typename V, typename S, typename C>
-    C extract_context_from_extract(V(S::*)(const C&) const);
-}
-
 template<typename S>
-struct stage_context;
-
-template<ExchangeStage S>
-struct stage_context<S> {
-    using type = decltype(detail::extract_context_from_provides(&S::provides));
-};
-
-template<ReduceStage S>
-struct stage_context<S> {
-    using type = decltype(detail::extract_context_from_extract(&S::extract));
-};
-
-template<ComputeStage S>
-struct stage_context<S> {
-    using type = decltype(detail::extract_context_from_value(&S::value));
-};
-
-template<typename S>
-using stage_context_t = typename stage_context<S>::type;
+using stage_context_t = typename S::context_type;
 
 // =============================================================================
 // Pipeline: stores stage instances
@@ -162,7 +139,8 @@ void execute_exchange(
 
     auto requests = std::vector<array_view_t<T, S>>{};
     for (auto& ctx : contexts) {
-        stage.need(ctx, [&](auto buf) { requests.push_back(buf); });
+        auto request_fn = [&](array_view_t<T, S> buf) { requests.push_back(buf); };
+        stage.need(ctx, request_fn);
     }
 
     auto plan = comm.template build_plan<T, S>(publications, requests);
