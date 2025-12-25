@@ -90,26 +90,47 @@ struct ghost_exchange_t {
         return p.u[p.interior];
     }
 
-    void need(patch_t& p, auto request) const {
+    auto left_ghost(const patch_t& p) const -> index_space_t<2> {
+        auto lo = start(p.interior);
+        auto sh = shape(p.interior);
+        return index_space(ivec(lo[0] - num_ghosts, lo[0]), uvec(num_ghosts, sh[1]));
+    }
+
+    auto right_ghost(const patch_t& p) const -> index_space_t<2> {
         auto lo = start(p.interior);
         auto hi = upper(p.interior);
         auto sh = shape(p.interior);
+        return index_space(ivec(hi[0], lo[1]), uvec(num_ghosts, sh[1]));
+    }
+
+    auto bottom_ghost(const patch_t& p) const -> index_space_t<2> {
+        auto lo = start(p.interior);
+        auto sh = shape(p.interior);
+        return index_space(ivec(lo[0], lo[1] - num_ghosts), uvec(sh[0], num_ghosts));
+    }
+
+    auto top_ghost(const patch_t& p) const -> index_space_t<2> {
+        auto lo = start(p.interior);
+        auto hi = upper(p.interior);
+        auto sh = shape(p.interior);
+        return index_space(ivec(lo[0], hi[1]), uvec(sh[0], num_ghosts));
+    }
+
+    void need(patch_t& p, auto request) const {
+        auto lo = start(p.interior);
+        auto hi = upper(p.interior);
 
         if (lo[0] > 0) {
-            auto region = index_space(ivec(lo[0] - num_ghosts, lo[1]), uvec(num_ghosts, sh[1]));
-            request(p.u[region]);
+            request(p.u[left_ghost(p)]);
         }
         if (hi[0] < global_nx) {
-            auto region = index_space(ivec(hi[0], lo[1]), uvec(num_ghosts, sh[1]));
-            request(p.u[region]);
+            request(p.u[right_ghost(p)]);
         }
         if (lo[1] > 0) {
-            auto region = index_space(ivec(lo[0], lo[1] - num_ghosts), uvec(sh[0], num_ghosts));
-            request(p.u[region]);
+            request(p.u[bottom_ghost(p)]);
         }
         if (hi[1] < global_ny) {
-            auto region = index_space(ivec(lo[0], hi[1]), uvec(sh[0], num_ghosts));
-            request(p.u[region]);
+            request(p.u[top_ghost(p)]);
         }
     }
 };
@@ -183,8 +204,10 @@ int main(int argc, char** argv) {
     auto cfg = config_t{};
 
     // Decompose domain and create patches
-    auto patches = grid(index_space(ivec(0, 0), uvec(cfg.global_nx, cfg.global_ny)))
-        .decompose(uvec(cfg.patches_x, cfg.patches_y))
+    auto global_space = index_space(ivec(0, 0), uvec(cfg.global_nx, cfg.global_ny));
+    auto patch_layout = uvec(cfg.patches_x, cfg.patches_y);
+    auto patches = grid(global_space)
+        .decompose(patch_layout)
         .distribute(comm)
         .map([&cfg](const auto& space) { return create_patch(cfg, space); });
 
