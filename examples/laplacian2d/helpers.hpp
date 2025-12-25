@@ -127,7 +127,7 @@ auto ghost(const index_space_t<2>& space, region reg, axis ax, int num_guard) ->
 
     if (ax == axis::i) {
         if (reg == region::lo) {
-            return index_space(ivec(lo[0] - num_guard, lo[0]), uvec(num_guard, sh[1]));
+            return index_space(ivec(lo[0] - num_guard, lo[1]), uvec(num_guard, sh[1]));
         } else {
             return index_space(ivec(hi[0], lo[1]), uvec(num_guard, sh[1]));
         }
