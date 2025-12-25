@@ -13,13 +13,10 @@ using namespace mist;
 // =============================================================================
 
 struct config_t {
-    int global_nx = 64;
-    int global_ny = 64;
-    int patches_x = 2;
-    int patches_y = 2;
-    int num_ghosts = 1;
-    double domain_x = 1.0;
-    double domain_y = 1.0;
+    int nx = 64, ny = 64;
+    int px = 2, py = 2;
+    int ng = 1;
+    double lx = 1.0, ly = 1.0;
 };
 
 // =============================================================================
@@ -53,9 +50,9 @@ auto exact_laplacian(double x, double y) -> double {
 // =============================================================================
 
 auto create_patch(const config_t& cfg, const index_space_t<2>& space) -> patch_t {
-    double dx = cfg.domain_x / cfg.global_nx;
-    double dy = cfg.domain_y / cfg.global_ny;
-    auto with_ghosts = expand(space, cfg.num_ghosts);
+    double dx = cfg.lx / cfg.nx;
+    double dy = cfg.ly / cfg.ny;
+    auto with_ghosts = expand(space, cfg.ng);
 
     auto patch = patch_t{};
     patch.interior = space;
@@ -82,48 +79,20 @@ struct ghost_exchange_t {
     using value_type = double;
     static constexpr std::size_t rank = 2;
 
-    int num_ghosts;
-    int global_nx;
-    int global_ny;
+    int ng, nx, ny;
 
     auto provides(const patch_t& p) const -> array_view_t<const double, 2> {
         return p.u[p.interior];
-    }
-
-    auto i_lo(const patch_t& p) const -> index_space_t<2> {
-        auto lo = start(p.interior);
-        auto sh = shape(p.interior);
-        return index_space(ivec(lo[0] - num_ghosts, lo[0]), uvec(num_ghosts, sh[1]));
-    }
-
-    auto i_hi(const patch_t& p) const -> index_space_t<2> {
-        auto lo = start(p.interior);
-        auto hi = upper(p.interior);
-        auto sh = shape(p.interior);
-        return index_space(ivec(hi[0], lo[1]), uvec(num_ghosts, sh[1]));
-    }
-
-    auto j_lo(const patch_t& p) const -> index_space_t<2> {
-        auto lo = start(p.interior);
-        auto sh = shape(p.interior);
-        return index_space(ivec(lo[0], lo[1] - num_ghosts), uvec(sh[0], num_ghosts));
-    }
-
-    auto j_hi(const patch_t& p) const -> index_space_t<2> {
-        auto lo = start(p.interior);
-        auto hi = upper(p.interior);
-        auto sh = shape(p.interior);
-        return index_space(ivec(lo[0], hi[1]), uvec(sh[0], num_ghosts));
     }
 
     void need(patch_t& p, auto request) const {
         auto lo = start(p.interior);
         auto hi = upper(p.interior);
 
-        if (lo[0] > 0)         request(p.u[i_lo(p)]);
-        if (hi[0] < global_nx) request(p.u[i_hi(p)]);
-        if (lo[1] > 0)         request(p.u[j_lo(p)]);
-        if (hi[1] < global_ny) request(p.u[j_hi(p)]);
+        if (lo[0] > 0)   request(p.u[ghost(p.interior, region::lo, axis::i, ng)]);
+        if (hi[0] < nx)  request(p.u[ghost(p.interior, region::hi, axis::i, ng)]);
+        if (lo[1] > 0)   request(p.u[ghost(p.interior, region::lo, axis::j, ng)]);
+        if (hi[1] < ny)  request(p.u[ghost(p.interior, region::hi, axis::j, ng)]);
     }
 };
 
@@ -187,6 +156,26 @@ struct error_reduce_t {
 };
 
 // =============================================================================
+// Output Helper
+// =============================================================================
+
+auto print_results(const comm_t& comm, const config_t& cfg,
+                   const std::vector<patch_t>& patches, double dx) -> void {
+    if (comm.rank() != 0) return;
+
+    std::cout << "Laplacian 2D example\n";
+    std::cout << "  Grid: " << cfg.nx << " x " << cfg.ny << "\n";
+    std::cout << "  Patches: " << cfg.px << " x " << cfg.py << "\n";
+    std::cout << "  Ranks: " << comm.size() << "\n";
+    std::cout << "  Patches per rank: " << patches.size() << "\n";
+    std::cout << "  L2 error: " << patches[0].l2_error << "\n";
+
+    double expected_error = dx * dx * std::pow(2.0 * M_PI, 4) / 12.0;
+    auto status = patches[0].l2_error < 2.0 * expected_error ? "PASSED" : "FAILED";
+    std::cout << "  " << status << " (error within expected bounds)\n";
+}
+
+// =============================================================================
 // Main Entry Point
 // =============================================================================
 
@@ -196,43 +185,28 @@ int main(int argc, char** argv) {
     auto cfg = config_t{};
 
     // Decompose domain and create patches
-    auto global_space = index_space(ivec(0, 0), uvec(cfg.global_nx, cfg.global_ny));
-    auto patch_layout = uvec(cfg.patches_x, cfg.patches_y);
-    auto patches = grid(global_space)
-        .decompose(patch_layout)
+    auto gs = index_space(ivec(0, 0), uvec(cfg.nx, cfg.ny));
+    auto patches = grid(gs)
+        .decompose(uvec(cfg.px, cfg.py))
         .distribute(comm)
         .map([&cfg](const auto& space) { return create_patch(cfg, space); });
 
     // Define computation pipeline
-    double dx = cfg.domain_x / cfg.global_nx;
-    double dy = cfg.domain_y / cfg.global_ny;
+    double dx = cfg.lx / cfg.nx;
+    double dy = cfg.ly / cfg.ny;
 
     auto calc = transformation<patch_t>()
-        .exchange(ghost_exchange_t{cfg.num_ghosts, cfg.global_nx, cfg.global_ny})
+        .exchange(ghost_exchange_t{cfg.ng, cfg.nx, cfg.ny})
         .compute(compute_laplacian_t{})
         .reduce(error_reduce_t{dx, dy});
 
     // Execute pipeline
-    auto sched = parallel::scheduler_t{};
-    auto profiler = perf::null_profiler_t{};
-    calc.execute(patches, comm, sched, profiler);
+    auto s = parallel::scheduler_t{};
+    auto p = perf::null_profiler_t{};
+    calc.execute(patches, comm, s, p);
 
     // Display results
-    if (comm.rank() == 0) {
-        std::cout << "Laplacian 2D example\n";
-        std::cout << "  Grid: " << cfg.global_nx << " x " << cfg.global_ny << "\n";
-        std::cout << "  Patches: " << cfg.patches_x << " x " << cfg.patches_y << "\n";
-        std::cout << "  Ranks: " << comm.size() << "\n";
-        std::cout << "  Patches per rank: " << patches.size() << "\n";
-        std::cout << "  L2 error: " << patches[0].l2_error << "\n";
-
-        double expected_error = dx * dx * std::pow(2.0 * M_PI, 4) / 12.0;
-        if (patches[0].l2_error < 2.0 * expected_error) {
-            std::cout << "  PASSED (error within expected bounds)\n";
-        } else {
-            std::cout << "  FAILED (error larger than expected)\n";
-        }
-    }
+    print_results(comm, cfg, patches, dx);
 
     return 0;
 }

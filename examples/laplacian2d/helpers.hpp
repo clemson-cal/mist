@@ -1,5 +1,4 @@
-#ifndef LAPLACIAN2D_HELPERS_HPP
-#define LAPLACIAN2D_HELPERS_HPP
+#pragma once
 
 #include <tuple>
 #include <utility>
@@ -115,42 +114,67 @@ public:
 };
 
 // =============================================================================
+// Ghost Region Helpers
+// =============================================================================
+
+enum class axis { i, j };
+enum class region { lo, hi };
+
+auto ghost(const index_space_t<2>& space, region reg, axis ax, int num_guard) -> index_space_t<2> {
+    auto lo = start(space);
+    auto hi = upper(space);
+    auto sh = shape(space);
+
+    if (ax == axis::i) {
+        if (reg == region::lo) {
+            return index_space(ivec(lo[0] - num_guard, lo[0]), uvec(num_guard, sh[1]));
+        } else {
+            return index_space(ivec(hi[0], lo[1]), uvec(num_guard, sh[1]));
+        }
+    } else {
+        if (reg == region::lo) {
+            return index_space(ivec(lo[0], lo[1] - num_guard), uvec(sh[0], num_guard));
+        } else {
+            return index_space(ivec(lo[0], hi[1]), uvec(sh[0], num_guard));
+        }
+    }
+}
+
+// =============================================================================
 // Transformation: Fluent Pipeline Builder
 // =============================================================================
 
 template<typename PatchType, typename... Stages>
 class transformation {
-    std::tuple<Stages...> stages_;
+    std::tuple<Stages...> stages;
 
 public:
-    transformation(const std::tuple<Stages...>& s = {}) : stages_(s) {}
+    transformation(const std::tuple<Stages...>& s = {}) : stages(s) {}
 
-    template<typename Stage>
-    auto exchange(Stage&& stage) -> transformation<PatchType, Stages..., Stage> {
-        auto new_tuple = std::tuple_cat(stages_, std::make_tuple(std::forward<Stage>(stage)));
-        return transformation<PatchType, Stages..., Stage>(new_tuple);
+    template<parallel::ExchangeStage S>
+    auto exchange(S&& stage) -> transformation<PatchType, Stages..., S> {
+        auto new_tuple = std::tuple_cat(stages, std::make_tuple(std::forward<S>(stage)));
+        return transformation<PatchType, Stages..., S>(new_tuple);
     }
 
-    template<typename Stage>
-    auto compute(Stage&& stage) -> transformation<PatchType, Stages..., Stage> {
-        auto new_tuple = std::tuple_cat(stages_, std::make_tuple(std::forward<Stage>(stage)));
-        return transformation<PatchType, Stages..., Stage>(new_tuple);
+    template<parallel::ComputeStage S>
+    auto compute(S&& stage) -> transformation<PatchType, Stages..., S> {
+        auto new_tuple = std::tuple_cat(stages, std::make_tuple(std::forward<S>(stage)));
+        return transformation<PatchType, Stages..., S>(new_tuple);
     }
 
-    template<typename Stage>
-    auto reduce(Stage&& stage) -> transformation<PatchType, Stages..., Stage> {
-        auto new_tuple = std::tuple_cat(stages_, std::make_tuple(std::forward<Stage>(stage)));
-        return transformation<PatchType, Stages..., Stage>(new_tuple);
+    template<parallel::ReduceStage S>
+    auto reduce(S&& stage) -> transformation<PatchType, Stages..., S> {
+        auto new_tuple = std::tuple_cat(stages, std::make_tuple(std::forward<S>(stage)));
+        return transformation<PatchType, Stages..., S>(new_tuple);
     }
 
     template<typename Scheduler, typename Profiler>
     auto execute(std::vector<PatchType>& patches, comm_t& comm,
                  Scheduler& sched, Profiler& prof) -> void {
-        std::apply([&](auto&&... stages) {
-            auto pipe = parallel::pipeline(stages...);
+        std::apply([&](auto&&... stg) {
+            auto pipe = parallel::pipeline(stg...);
             parallel::execute(pipe, patches, comm, sched, prof);
-        }, stages_);
+        }, stages);
     }
 };
-
-#endif
