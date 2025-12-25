@@ -5,8 +5,9 @@
 // This example demonstrates a fluent DSL for defining parallel computation
 // pipelines with minimal boilerplate. The computation pipeline consists of:
 //
-// 1. Grid Decomposition: Split a 64x64 domain into 2x2 patches, each
-//    owned by a rank in the MPI communicator
+// 1. Grid Decomposition: Split a 64x64 domain into px×py patches, each
+//    owned by a rank in the MPI communicator. The patch layout can be
+//    specified at runtime via --patches=px,py (default: 2x2)
 //
 // 2. Ghost Exchange: Share boundary data between neighboring patches before
 //    computation. Each patch requests ghost cells from its neighbors using
@@ -27,9 +28,15 @@
 //       .compute(compute_laplacian_t{})
 //       .reduce(error_reduce_t{...})
 //       .execute(patches, comm, scheduler, profiler)
+//
+// Usage:
+//   ./laplacian2d                 # 2x2 patches (default)
+//   ./laplacian2d --patches=4,8   # 4x8 patches
 
 #include <cmath>
+#include <cstdlib>
 #include <iostream>
+#include <string>
 #include <vector>
 #include "helpers.hpp"
 
@@ -183,14 +190,24 @@ struct error_reduce_t {
 };
 
 // =============================================================================
-// Output Helper
+// Output Helpers
 // =============================================================================
+
+auto print_patch_distribution(const comm_t& comm, const std::vector<patch_t>& patches) -> void {
+    std::cout << "Rank " << comm.rank() << " owns " << patches.size() << " patch(es):\n";
+    for (int i = 0; i < patches.size(); ++i) {
+        auto lo = start(patches[i].interior);
+        auto hi = upper(patches[i].interior);
+        std::cout << "  Patch " << i << ": [" << lo[0] << "," << lo[1] << ") to ["
+                  << hi[0] << "," << hi[1] << ")\n";
+    }
+}
 
 auto print_results(const comm_t& comm, const config_t& cfg,
                    const std::vector<patch_t>& patches, double dx) -> void {
     if (comm.rank() != 0) return;
 
-    std::cout << "Laplacian 2D example\n";
+    std::cout << "\nLaplacian 2D example\n";
     std::cout << "  Grid: " << cfg.nx << " x " << cfg.ny << "\n";
     std::cout << "  Patches: " << cfg.px << " x " << cfg.py << "\n";
     std::cout << "  Ranks: " << comm.size() << "\n";
@@ -203,6 +220,36 @@ auto print_results(const comm_t& comm, const config_t& cfg,
 }
 
 // =============================================================================
+// Command-Line Parsing
+// =============================================================================
+
+auto parse_patches(int argc, char** argv) -> std::pair<int, int> {
+    int px = 2, py = 2;
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg.substr(0, 10) == "--patches=") {
+            auto spec = arg.substr(10);
+            size_t comma = spec.find(',');
+            if (comma != std::string::npos) {
+                try {
+                    px = std::stoi(spec.substr(0, comma));
+                    py = std::stoi(spec.substr(comma + 1));
+                } catch (...) {
+                    std::cerr << "Invalid --patches argument: " << arg << "\n";
+                    std::cerr << "Expected format: --patches=px,py (e.g., --patches=4,6)\n";
+                    std::exit(1);
+                }
+            } else {
+                std::cerr << "Invalid --patches argument: " << arg << "\n";
+                std::cerr << "Expected format: --patches=px,py (e.g., --patches=4,6)\n";
+                std::exit(1);
+            }
+        }
+    }
+    return {px, py};
+}
+
+// =============================================================================
 // Main Entry Point
 // =============================================================================
 
@@ -210,6 +257,9 @@ int main(int argc, char** argv) {
     auto mpi = mpi_context(argc, argv);
     auto comm = mpi.get_communicator();
     auto cfg = config_t{};
+    auto [px, py] = parse_patches(argc, argv);
+    cfg.px = px;
+    cfg.py = py;
 
     // Decompose domain and create patches
     auto gs = index_space(ivec(0, 0), uvec(cfg.nx, cfg.ny));
@@ -217,6 +267,9 @@ int main(int argc, char** argv) {
         .decompose(uvec(cfg.px, cfg.py))
         .distribute(comm)
         .map([&cfg](const auto& space) { return create_patch(cfg, space); });
+
+    // Print patch distribution
+    print_patch_distribution(comm, patches);
 
     // Define computation pipeline
     double dx = cfg.lx / cfg.nx;
