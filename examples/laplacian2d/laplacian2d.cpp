@@ -1,5 +1,32 @@
-// 2D Laplacian with distributed domain decomposition
-// Demonstrates fluent DSL for compact pipeline definition
+// =============================================================================
+// 2D Laplacian with Distributed Domain Decomposition
+// =============================================================================
+//
+// This example demonstrates a fluent DSL for defining parallel computation
+// pipelines with minimal boilerplate. The computation pipeline consists of:
+//
+// 1. Grid Decomposition: Split a 64x64 domain into 2x2 patches, each
+//    owned by a rank in the MPI communicator
+//
+// 2. Ghost Exchange: Share boundary data between neighboring patches before
+//    computation. Each patch requests ghost cells from its neighbors using
+//    the exchange() stage.
+//
+// 3. Laplacian Computation: Apply a 5-point stencil to compute the discrete
+//    Laplacian of u(x,y) = sin(2πx) sin(2πy). Results are compared against
+//    the exact Laplacian for error analysis.
+//
+// 4. L2 Error Reduction: Combine local error contributions across all ranks
+//    using a global reduce operation. The result is the RMS error of the
+//    computed Laplacian.
+//
+// The fluent pipeline syntax allows composing these stages naturally:
+//
+//   transformation<patch_t>()
+//       .exchange(ghost_exchange_t{...})
+//       .compute(compute_laplacian_t{})
+//       .reduce(error_reduce_t{...})
+//       .execute(patches, comm, scheduler, profiler)
 
 #include <cmath>
 #include <iostream>
