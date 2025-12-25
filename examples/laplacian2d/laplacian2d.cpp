@@ -132,8 +132,8 @@ struct error_reduce_t {
     static constexpr const char* name = "error_reduce";
     using value_type = double;
 
-    double dx;
-    double dy;
+    double dx, dy;
+    int nc;
 
     static auto init() -> double { return 0.0; }
     static auto combine(double a, double b) -> double { return a + b; }
@@ -151,7 +151,7 @@ struct error_reduce_t {
     }
 
     void finalize(double global_sum_sq, patch_t& p) const {
-        p.l2_error = std::sqrt(global_sum_sq * dx * dy);
+        p.l2_error = std::sqrt(global_sum_sq / nc);
     }
 };
 
@@ -194,11 +194,12 @@ int main(int argc, char** argv) {
     // Define computation pipeline
     double dx = cfg.lx / cfg.nx;
     double dy = cfg.ly / cfg.ny;
+    int nc = cfg.nx * cfg.ny;
 
     auto calc = transformation<patch_t>()
         .exchange(ghost_exchange_t{cfg.ng, cfg.nx, cfg.ny})
         .compute(compute_laplacian_t{})
-        .reduce(error_reduce_t{dx, dy});
+        .reduce(error_reduce_t{dx, dy, nc});
 
     // Execute pipeline
     auto s = parallel::scheduler_t{};
