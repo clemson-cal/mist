@@ -150,27 +150,101 @@ void signal::interrupt_guard_t::clear() {
 // engine_t implementation
 // =============================================================================
 
-engine_t::engine_t(state_t& state, physics_interface_t& physics)
+engine_t::engine_t(state_t& state, physics_interface_t& physics, comm_t comm)
     : state_(state)
     , physics_(physics)
+    , comm_(std::move(comm))
     , command_start_wall_time_(get_wall_time())
     , command_start_iteration_(state.iteration)
 {
     data_socket_.listen(0); // port 0 = any available port
+    physics_.set_comm(comm_);
 }
 
 engine_t::~engine_t() = default;
 
-void engine_t::execute(const command_t& cmd, emit_fn emit) {
+void engine_t::broadcast_command(command_t& cmd) {
+    if (comm_.size() <= 1) {
+        return;
+    }
+
+    auto buffer = std::vector<char>{};
+
+    // Rank 0 serializes the command
+    if (comm_.rank() == 0) {
+        auto oss = std::ostringstream{};
+        auto writer = binary_writer{oss};
+        serialize(writer, cmd);
+        auto str = oss.str();
+        buffer.assign(str.begin(), str.end());
+    }
+
+    // Broadcast size and data
+    comm_.broadcast(buffer);
+
+    // Non-root ranks deserialize
+    if (comm_.rank() != 0) {
+        auto iss = std::istringstream{std::string{buffer.begin(), buffer.end()}};
+        auto reader = binary_reader{iss};
+        deserialize(reader, cmd);
+    }
+}
+
+void engine_t::log(const std::string& message) {
+    if (log_stream_) {
+        *log_stream_ << message << "\n";
+        log_stream_->flush();
+    }
+}
+
+void engine_t::set_log_prefix(const std::string& prefix) {
+    auto filename = prefix + "_rank" + std::to_string(comm_.rank()) + ".log";
+    log_stream_.emplace(filename);
+}
+
+void engine_t::run_as_follower() {
+    while (true) {
+        // Wait for broadcast command from rank 0
+        auto cmd = command_t{};
+        broadcast_command(cmd);
+
+        // Execute locally without re-broadcasting, discard responses
+        execute_local(cmd, [](const response_t&) {});
+
+        // Exit on stop command
+        if (std::holds_alternative<cmd::stop>(cmd)) {
+            break;
+        }
+    }
+}
+
+void engine_t::execute_local(const command_t& cmd, emit_fn emit) {
     command_start_wall_time_ = get_wall_time();
     command_start_iteration_ = state_.iteration;
+
+    // Log command execution
+    log("execute command index " + std::to_string(cmd.index()));
+
     try {
         std::visit([this, &emit](const auto& c) { handle(c, emit); }, cmd);
+        log("  completed");
     } catch (const std::exception& e) {
+        log(std::string("  error: ") + e.what());
         emit(resp::error{e.what()});
     } catch (...) {
+        log("  error: unknown");
         emit(resp::error{"unknown error"});
     }
+}
+
+void engine_t::execute(const command_t& cmd, emit_fn emit) {
+    auto broadcast_cmd = cmd;
+
+    // In distributed mode, broadcast command from rank 0
+    broadcast_command(broadcast_cmd);
+
+    // Execute locally
+    execute_local(broadcast_cmd, emit);
 }
 
 void engine_t::execute(const cmd::repeat_add& cmd, emit_fn emit) {

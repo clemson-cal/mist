@@ -162,6 +162,13 @@ public:
         }
     }
 
+    void set_comm(const comm_t& comm) override {
+        if constexpr (requires { exec_context_->set_comm(comm); }) {
+            exec_context_->set_comm(comm);
+        }
+        // silently ignore if physics doesn't support distributed mode
+    }
+
     // -------------------------------------------------------------------------
     // I/O - write operations
     // -------------------------------------------------------------------------

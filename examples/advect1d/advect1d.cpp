@@ -7,6 +7,7 @@
 #include <memory>
 #include <numeric>
 #include <ranges>
+#include "mist/comm.hpp"
 #include "mist/core.hpp"
 #include "mist/driver/physics_impl.hpp"
 #include "mist/driver/repl_session.hpp"
@@ -15,7 +16,41 @@
 #include "mist/pipeline.hpp"
 #include "mist/serialize.hpp"
 
+#ifdef MIST_WITH_MPI
+#include <mpi.h>
+#endif
+
 using namespace mist;
+
+// =============================================================================
+// MPI Initialization
+// =============================================================================
+
+class mpi_context {
+public:
+    mpi_context(int argc, char** argv) {
+#ifdef MIST_WITH_MPI
+        MPI_Init(&argc, &argv);
+#else
+        (void)argc;
+        (void)argv;
+#endif
+    }
+
+    ~mpi_context() {
+#ifdef MIST_WITH_MPI
+        MPI_Finalize();
+#endif
+    }
+
+    auto create_communicator() -> comm_t {
+#ifdef MIST_WITH_MPI
+        return comm_t::from_mpi(MPI_COMM_WORLD);
+#else
+        return comm_t{};
+#endif
+    }
+};
 
 template<std::ranges::range R>
 auto to_vector(R&& r) {
@@ -303,6 +338,7 @@ struct advection {
     struct exec_context_t {
         const config_t& config;
         const initial_t& initial;
+        const comm_t* comm = nullptr;
         mutable parallel::scheduler_t scheduler;
         mutable perf::profiler_t profiler;
 
@@ -313,9 +349,17 @@ struct advection {
             scheduler.set_num_threads(n);
         }
 
+        void set_comm(const comm_t& c) {
+            comm = &c;
+        }
+
         template<parallel::Pipeline P>
         void execute(P pipeline, std::vector<patch_t>& patches) const {
-            parallel::execute(pipeline, patches, scheduler, profiler);
+            if (comm) {
+                parallel::execute(pipeline, patches, *comm, scheduler, profiler);
+            } else {
+                parallel::execute(pipeline, patches, scheduler, profiler);
+            }
         }
     };
 };
@@ -473,23 +517,37 @@ auto get_profiler_data(const advection::exec_context_t& ctx)
 
 int main(int argc, char* argv[])
 {
+    auto mpi = mpi_context{argc, argv};
+    auto comm = mpi.create_communicator();
+
     auto use_socket = false;
+    const char* log_prefix = nullptr;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--socket") == 0 || std::strcmp(argv[i], "-s") == 0) {
             use_socket = true;
+        } else if (std::strcmp(argv[i], "--log") == 0 && i + 1 < argc) {
+            log_prefix = argv[++i];
         }
     }
 
     auto physics = mist::driver::make_physics<advection>();
     auto state = mist::driver::state_t{};
-    auto engine = mist::driver::engine_t{state, *physics};
+    auto engine = mist::driver::engine_t{state, *physics, std::move(comm)};
 
-    if (use_socket) {
-        auto session = mist::driver::socket_session_t{engine};
-        session.run();
+    if (log_prefix) {
+        engine.set_log_prefix(log_prefix);
+    }
+
+    if (engine.comm().rank() == 0) {
+        if (use_socket) {
+            auto session = mist::driver::socket_session_t{engine};
+            session.run();
+        } else {
+            auto session = mist::driver::repl_session_t{engine};
+            session.run();
+        }
     } else {
-        auto session = mist::driver::repl_session_t{engine};
-        session.run();
+        engine.run_as_follower();
     }
     return 0;
 }

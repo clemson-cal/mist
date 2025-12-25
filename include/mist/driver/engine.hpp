@@ -5,6 +5,7 @@
 #include <fstream>
 #include <functional>
 #include <iomanip>
+#include <optional>
 #include <sstream>
 #include <unistd.h>
 #include "command.hpp"
@@ -15,6 +16,7 @@
 #include "../ascii_writer.hpp"
 #include "../binary_reader.hpp"
 #include "../binary_writer.hpp"
+#include "../comm.hpp"
 #include "../socket.hpp"
 
 namespace mist::driver {
@@ -60,7 +62,7 @@ class engine_t {
 public:
     using emit_fn = std::function<void(const response_t&)>;
 
-    engine_t(state_t& state, physics_interface_t& physics);
+    engine_t(state_t& state, physics_interface_t& physics, comm_t comm = comm_t{});
     ~engine_t();
 
     // Non-copyable, non-movable (owns socket)
@@ -72,8 +74,15 @@ public:
     void execute(const command_t& cmd, emit_fn emit);
     void execute(const cmd::repeat_add& cmd, emit_fn emit);
 
+    // Distributed mode: non-root ranks run this loop
+    void run_as_follower();
+
     auto state() const -> const state_t& { return state_; }
     auto state() -> state_t& { return state_; }
+    auto comm() const -> const comm_t& { return comm_; }
+
+    // Per-rank logging for distributed debugging
+    void set_log_prefix(const std::string& prefix);
 
     // Data socket for write commands
     auto data_socket_port() const -> int { return data_socket_.port(); }
@@ -96,11 +105,17 @@ public:
 private:
     state_t& state_;
     physics_interface_t& physics_;
+    comm_t comm_;
     double command_start_wall_time_;
     int command_start_iteration_;
     double last_dt_ = 0.0;
     double last_zps_ = 0.0;
     socket_t data_socket_;
+    std::optional<std::ofstream> log_stream_;
+
+    void broadcast_command(command_t& cmd);
+    void execute_local(const command_t& cmd, emit_fn emit);
+    void log(const std::string& message);
 
     auto make_iteration_info() const -> resp::iteration_info;
     auto time_to_next_task() const -> double;

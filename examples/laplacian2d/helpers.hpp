@@ -52,25 +52,17 @@ public:
 
 template<std::size_t Rank>
 class distributed_grid {
-    index_space_t<Rank> space_;
-    uvec_t<Rank> layout_;
-    comm_t comm_;
     std::vector<index_space_t<Rank>> local_patches_;
 
-    void compute_local_patches() {
-        auto total_patches = product(layout_);
-        auto patch_range = subspace(index_space(ivec(0), uvec(total_patches)), comm_.size(), comm_.rank(), 0);
+public:
+    distributed_grid(const index_space_t<Rank>& space, const uvec_t<Rank>& layout, const comm_t& comm) {
+        auto total_patches = product(layout);
+        auto patch_range = subspace(index_space(ivec(0), uvec(total_patches)), comm.size(), comm.rank(), 0);
 
         for (auto pi : patch_range) {
-            auto patch_space = subspace(space_, layout_, ndindex(pi[0], layout_));
+            auto patch_space = subspace(space, layout, ndindex(pi[0], layout));
             local_patches_.push_back(patch_space);
         }
-    }
-
-public:
-    distributed_grid(const index_space_t<Rank>& space, const uvec_t<Rank>& layout, const comm_t& comm)
-        : space_(space), layout_(layout), comm_(comm) {
-        compute_local_patches();
     }
 
     template<typename F>
@@ -104,7 +96,7 @@ public:
 #endif
     }
 
-    auto get_communicator() -> comm_t {
+    auto create_communicator() -> comm_t {
 #ifdef MIST_WITH_MPI
         return comm_t::from_mpi(MPI_COMM_WORLD);
 #else

@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include "state.hpp"
+#include "../comm.hpp"
 #include "../profiler.hpp"
 
 namespace mist::driver {
@@ -45,6 +46,7 @@ struct physics_interface_t {
     virtual void set_physics(const std::string& key, const std::string& value) = 0;
     virtual void set_initial(const std::string& key, const std::string& value) = 0;
     virtual void set_exec(const std::string& key, const std::string& value) = 0;
+    virtual void set_comm(const comm_t& comm) = 0;
 
     // -------------------------------------------------------------------------
     // I/O - write operations

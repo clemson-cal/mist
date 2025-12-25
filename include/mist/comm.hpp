@@ -53,9 +53,57 @@ struct comm_t {
     MPI_Comm mpi_comm_ = MPI_COMM_NULL;
 #endif
 
+    // --- Constructors / Destructor ---
+
+    comm_t() = default;
+
+    ~comm_t() {
+#ifdef MIST_WITH_MPI
+        if (mpi_comm_ != MPI_COMM_NULL) {
+            MPI_Comm_free(&mpi_comm_);
+        }
+#endif
+    }
+
+    // Move-only (owns the MPI_Comm handle)
+    comm_t(comm_t&& other) noexcept
+        : rank_(other.rank_)
+        , size_(other.size_)
+#ifdef MIST_WITH_MPI
+        , mpi_comm_(other.mpi_comm_)
+#endif
+    {
+        other.rank_ = 0;
+        other.size_ = 1;
+#ifdef MIST_WITH_MPI
+        other.mpi_comm_ = MPI_COMM_NULL;
+#endif
+    }
+
+    auto operator=(comm_t&& other) noexcept -> comm_t& {
+        if (this != &other) {
+#ifdef MIST_WITH_MPI
+            if (mpi_comm_ != MPI_COMM_NULL) {
+                MPI_Comm_free(&mpi_comm_);
+            }
+            mpi_comm_ = other.mpi_comm_;
+            other.mpi_comm_ = MPI_COMM_NULL;
+#endif
+            rank_ = other.rank_;
+            size_ = other.size_;
+            other.rank_ = 0;
+            other.size_ = 1;
+        }
+        return *this;
+    }
+
+    comm_t(const comm_t&) = delete;
+    auto operator=(const comm_t&) -> comm_t& = delete;
+
     // --- Factory ---
 
 #ifdef MIST_WITH_MPI
+    // Creates a duplicate of the given communicator (caller retains original)
     static auto from_mpi(MPI_Comm comm) -> comm_t;
 #endif
 
@@ -70,15 +118,19 @@ struct comm_t {
     auto build_plan(
         std::span<array_view_t<const T, S>> publications,
         std::span<array_view_t<T, S>> requests
-    ) -> exchange_plan_t<T, S>;
+    ) const -> exchange_plan_t<T, S>;
 
     template<typename T, std::size_t S>
-    void exchange(const exchange_plan_t<T, S>& plan);
+    void exchange(const exchange_plan_t<T, S>& plan) const;
 
     // --- Reduce ---
 
     template<typename T, typename BinaryOp>
-    auto combine(T local_value, BinaryOp op) -> T;
+    auto combine(T local_value, BinaryOp op) const -> T;
+
+    // --- Broadcast ---
+
+    void broadcast(std::vector<char>& buffer, int root = 0) const;
 };
 
 // =============================================================================
@@ -205,7 +257,7 @@ inline auto comm_t::from_mpi(MPI_Comm comm) -> comm_t {
     auto result = comm_t{};
     MPI_Comm_rank(comm, &result.rank_);
     MPI_Comm_size(comm, &result.size_);
-    result.mpi_comm_ = comm;
+    MPI_Comm_dup(comm, &result.mpi_comm_);
     return result;
 }
 
@@ -219,7 +271,7 @@ template<typename T, std::size_t S>
 auto comm_t::build_plan(
     std::span<array_view_t<const T, S>> publications,
     std::span<array_view_t<T, S>> requests
-) -> exchange_plan_t<T, S> {
+) const -> exchange_plan_t<T, S> {
     auto plan = exchange_plan_t<T, S>{};
 
 #ifdef MIST_WITH_MPI
@@ -398,7 +450,7 @@ auto comm_t::build_plan(
 }
 
 template<typename T, std::size_t S>
-void comm_t::exchange(const exchange_plan_t<T, S>& plan) {
+void comm_t::exchange(const exchange_plan_t<T, S>& plan) const {
     // Execute local copies
     for (const auto& copy : plan.local_copies) {
         for (auto idx : copy.overlap) {
@@ -463,7 +515,7 @@ void comm_t::exchange(const exchange_plan_t<T, S>& plan) {
 }
 
 template<typename T, typename BinaryOp>
-auto comm_t::combine(T local_value, BinaryOp op) -> T {
+auto comm_t::combine(T local_value, BinaryOp op) const -> T {
 #ifdef MIST_WITH_MPI
     if (mpi_comm_ != MPI_COMM_NULL && size_ > 1) {
         // Gather all values to all ranks
@@ -482,6 +534,29 @@ auto comm_t::combine(T local_value, BinaryOp op) -> T {
     (void)op;
 #endif
     return local_value;
+}
+
+inline void comm_t::broadcast(std::vector<char>& buffer, int root) const {
+#ifdef MIST_WITH_MPI
+    if (mpi_comm_ != MPI_COMM_NULL && size_ > 1) {
+        // Broadcast buffer size first
+        auto size = static_cast<uint64_t>(buffer.size());
+        MPI_Bcast(&size, 1, MPI_UINT64_T, root, mpi_comm_);
+
+        // Resize buffer on non-root ranks
+        if (rank_ != root) {
+            buffer.resize(size);
+        }
+
+        // Broadcast buffer contents
+        if (size > 0) {
+            MPI_Bcast(buffer.data(), static_cast<int>(size), MPI_CHAR, root, mpi_comm_);
+        }
+    }
+#else
+    (void)buffer;
+    (void)root;
+#endif
 }
 
 } // namespace mist

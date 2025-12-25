@@ -259,7 +259,7 @@ auto parse_patches(int argc, char** argv) -> std::pair<int, int> {
 
 int main(int argc, char** argv) {
     auto mpi = mpi_context(argc, argv);
-    auto comm = mpi.get_communicator();
+    auto comm = mpi.create_communicator();
     auto cfg = config_t{};
     auto [px, py] = parse_patches(argc, argv);
     cfg.px = px;
