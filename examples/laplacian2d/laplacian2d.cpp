@@ -90,26 +90,26 @@ struct ghost_exchange_t {
         return p.u[p.interior];
     }
 
-    auto left_ghost(const patch_t& p) const -> index_space_t<2> {
+    auto i_lo(const patch_t& p) const -> index_space_t<2> {
         auto lo = start(p.interior);
         auto sh = shape(p.interior);
         return index_space(ivec(lo[0] - num_ghosts, lo[0]), uvec(num_ghosts, sh[1]));
     }
 
-    auto right_ghost(const patch_t& p) const -> index_space_t<2> {
+    auto i_hi(const patch_t& p) const -> index_space_t<2> {
         auto lo = start(p.interior);
         auto hi = upper(p.interior);
         auto sh = shape(p.interior);
         return index_space(ivec(hi[0], lo[1]), uvec(num_ghosts, sh[1]));
     }
 
-    auto bottom_ghost(const patch_t& p) const -> index_space_t<2> {
+    auto j_lo(const patch_t& p) const -> index_space_t<2> {
         auto lo = start(p.interior);
         auto sh = shape(p.interior);
         return index_space(ivec(lo[0], lo[1] - num_ghosts), uvec(sh[0], num_ghosts));
     }
 
-    auto top_ghost(const patch_t& p) const -> index_space_t<2> {
+    auto j_hi(const patch_t& p) const -> index_space_t<2> {
         auto lo = start(p.interior);
         auto hi = upper(p.interior);
         auto sh = shape(p.interior);
@@ -120,18 +120,10 @@ struct ghost_exchange_t {
         auto lo = start(p.interior);
         auto hi = upper(p.interior);
 
-        if (lo[0] > 0) {
-            request(p.u[left_ghost(p)]);
-        }
-        if (hi[0] < global_nx) {
-            request(p.u[right_ghost(p)]);
-        }
-        if (lo[1] > 0) {
-            request(p.u[bottom_ghost(p)]);
-        }
-        if (hi[1] < global_ny) {
-            request(p.u[top_ghost(p)]);
-        }
+        if (lo[0] > 0)         request(p.u[i_lo(p)]);
+        if (hi[0] < global_nx) request(p.u[i_hi(p)]);
+        if (lo[1] > 0)         request(p.u[j_lo(p)]);
+        if (hi[1] < global_ny) request(p.u[j_hi(p)]);
     }
 };
 
