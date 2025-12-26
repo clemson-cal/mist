@@ -72,33 +72,6 @@ public:
 };
 
 // =============================================================================
-// Ghost Region Helpers
-// =============================================================================
-
-enum class axis { i, j };
-enum class region { lo, hi };
-
-auto ghost(const index_space_t<2>& space, region reg, axis ax, int num_guard) -> index_space_t<2> {
-    auto lo = start(space);
-    auto hi = upper(space);
-    auto sh = shape(space);
-
-    if (ax == axis::i) {
-        if (reg == region::lo) {
-            return index_space(ivec(lo[0] - num_guard, lo[1]), uvec(num_guard, sh[1]));
-        } else {
-            return index_space(ivec(hi[0], lo[1]), uvec(num_guard, sh[1]));
-        }
-    } else {
-        if (reg == region::lo) {
-            return index_space(ivec(lo[0], lo[1] - num_guard), uvec(sh[0], num_guard));
-        } else {
-            return index_space(ivec(lo[0], hi[1]), uvec(sh[0], num_guard));
-        }
-    }
-}
-
-// =============================================================================
 // Transformation: Fluent Pipeline Builder
 // =============================================================================
 

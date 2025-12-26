@@ -500,6 +500,21 @@ constexpr index_space_t<S> intersect(const index_space_t<S>& a, const index_spac
     return index_space(lo, sh);
 }
 
+template<std::size_t S>
+constexpr index_space_t<S> ghost_region(const index_space_t<S>& interior, const ivec_t<S>& spec) {
+    auto r = interior;
+    for (std::size_t a = 0; a < S; ++a) {
+        if (spec[a] < 0) {
+            r.start[a] = interior.start[a] + spec[a];
+            r.shape[a] = unsigned(-spec[a]);
+        } else if (spec[a] > 0) {
+            r.start[a] = interior.start[a] + int(interior.shape[a]);
+            r.shape[a] = unsigned(spec[a]);
+        }
+    }
+    return r;
+}
+
 // =============================================================================
 // Multi-dimensional indexing
 // =============================================================================

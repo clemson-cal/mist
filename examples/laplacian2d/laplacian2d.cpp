@@ -125,10 +125,10 @@ struct ghost_exchange_t {
         auto lo = start(p.interior);
         auto hi = upper(p.interior);
 
-        if (lo[0] > 0)   request(p.u[ghost(p.interior, region::lo, axis::i, ng)]);
-        if (hi[0] < nx)  request(p.u[ghost(p.interior, region::hi, axis::i, ng)]);
-        if (lo[1] > 0)   request(p.u[ghost(p.interior, region::lo, axis::j, ng)]);
-        if (hi[1] < ny)  request(p.u[ghost(p.interior, region::hi, axis::j, ng)]);
+        if (lo[0] > 0)   request(p.u[ghost_region(p.interior, ivec(-ng, 0))]);
+        if (hi[0] < nx)  request(p.u[ghost_region(p.interior, ivec( ng, 0))]);
+        if (lo[1] > 0)   request(p.u[ghost_region(p.interior, ivec(0, -ng))]);
+        if (hi[1] < ny)  request(p.u[ghost_region(p.interior, ivec(0,  ng))]);
     }
 };
 
