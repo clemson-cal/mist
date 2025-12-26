@@ -319,7 +319,13 @@ struct patch_t {
     double dt = 0.0;
     double time = 0.0;
     double time_rk = 0.0;
+    double cfl = 0.4;
     double plm_theta = 1.5;
+    double L = 0.0;
+    unsigned num_zones = 0;
+    initial_condition ic = initial_condition::sod;
+    boundary_condition bc_lo = boundary_condition::outflow;
+    boundary_condition bc_hi = boundary_condition::outflow;
 
     cached_t<cons_t, 1> cons;
     cached_t<cons_t, 1> cons_rk;  // RK cached state
@@ -347,11 +353,11 @@ struct patch_t {
 struct initial_state_t {
     static constexpr const char* name = "initial_state";
     using context_type = patch_t;
-    double dx;
-    double L;
-    initial_condition ic;
 
     auto value(patch_t p) const -> patch_t {
+        auto dx = p.dx;
+        auto L = p.L;
+        auto ic = p.ic;
         for_each(p.interior, [&](ivec_t<1> idx) {
             auto i = idx[0];
             auto x = cell_center_x(i, dx);
@@ -364,19 +370,13 @@ struct initial_state_t {
 struct compute_local_dt_t {
     static constexpr const char* name = "compute_local_dt";
     using context_type = patch_t;
-    double cfl;
-    double dx;
-    double plm_theta;
     double dt_max;
 
     auto value(patch_t p) const -> patch_t {
-        p.dx = dx;
-        p.plm_theta = plm_theta;
-
         auto wavespeeds = lazy(p.interior, [&p](ivec_t<1> i) {
             return max_wavespeed(p.prim(i));
         });
-        p.dt = std::min(cfl * dx / max(wavespeeds), dt_max);
+        p.dt = std::min(p.cfl * p.dx / max(wavespeeds), dt_max);
         return p;
     }
 };
@@ -448,9 +448,6 @@ struct ghost_exchange_t {
 struct apply_boundary_conditions_t {
     static constexpr const char* name = "apply_bc";
     using context_type = patch_t;
-    boundary_condition bc_lo;
-    boundary_condition bc_hi;
-    unsigned num_zones;  // global domain size
 
     auto value(patch_t p) const -> patch_t {
         auto i0 = start(p.interior)[0];
@@ -458,7 +455,7 @@ struct apply_boundary_conditions_t {
 
         // Left boundary (patch starts at global origin)
         if (i0 == 0) {
-            switch (bc_lo) {
+            switch (p.bc_lo) {
                 case boundary_condition::outflow:
                     for (int g = 0; g < 2; ++g) {
                         p.cons[i0 - 1 - g] = p.cons[i0];
@@ -477,8 +474,8 @@ struct apply_boundary_conditions_t {
         }
 
         // Right boundary (patch ends at global extent)
-        if (static_cast<unsigned>(i1) == num_zones - 1) {
-            switch (bc_hi) {
+        if (static_cast<unsigned>(i1) == p.num_zones - 1) {
+            switch (p.bc_hi) {
                 case boundary_condition::outflow:
                     for (int g = 0; g < 2; ++g) {
                         p.cons[i1 + 1 + g] = p.cons[i1];
@@ -662,25 +659,6 @@ struct srhd {
     };
 
     using product_t = std::vector<cached_t<double, 1>>;
-
-    struct exec_context_t {
-        const config_t& config;
-        const initial_t& initial;
-        mutable parallel::scheduler_t scheduler;
-        mutable perf::profiler_t profiler;
-
-        exec_context_t(const config_t& cfg, const initial_t& ini)
-            : config(cfg), initial(ini) {}
-
-        void set_num_threads(std::size_t n) {
-            scheduler.set_num_threads(n);
-        }
-
-        template<typename S>
-        void execute(std::vector<patch_t>& patches, S s) const {
-            parallel::execute(s, patches, scheduler, profiler);
-        }
-    };
 };
 
 // =============================================================================
@@ -695,74 +673,68 @@ auto default_initial_config(std::type_identity<srhd>) -> srhd::initial_t {
     return {.num_zones = 400, .num_partitions = 1, .domain_length = 1.0};
 }
 
-auto initial_state(const srhd::exec_context_t& ctx) -> srhd::state_t {
+auto initial_state(
+    const srhd::config_t& config,
+    const srhd::initial_t& initial,
+    const exec_context_t& ctx
+) -> srhd::state_t {
     using std::views::iota;
     using std::views::transform;
 
-    auto& ini = ctx.initial;
-    auto& cfg = ctx.config;
-    auto np = static_cast<int>(ini.num_partitions);
-    auto S = index_space(ivec(0), uvec(ini.num_zones));
-    auto dx = ini.domain_length / ini.num_zones;
-    auto L = ini.domain_length;
+    auto np = static_cast<int>(initial.num_partitions);
+    auto S = index_space(ivec(0), uvec(initial.num_zones));
+    auto dx = initial.domain_length / initial.num_zones;
+    auto L = initial.domain_length;
 
     auto patches = to_vector(iota(0, np) | transform([&](int p) {
-        return patch_t(subspace(S, np, p, 0));
+        auto patch = patch_t(subspace(S, np, p, 0));
+        patch.dx = dx;
+        patch.L = L;
+        patch.cfl = config.cfl;
+        patch.plm_theta = config.plm_theta;
+        patch.num_zones = initial.num_zones;
+        patch.ic = config.ic;
+        patch.bc_lo = config.bc_lo;
+        patch.bc_hi = config.bc_hi;
+        return patch;
     }));
 
-    ctx.execute(patches, initial_state_t{dx, L, cfg.ic});
+    parallel::execute(initial_state_t{}, patches, ctx.scheduler, ctx.profiler);
 
     return {std::move(patches), 0.0};
 }
 
-void advance(srhd::state_t& state, const srhd::exec_context_t& ctx, double dt_max) {
-    auto& ini = ctx.initial;
-    auto& cfg = ctx.config;
-    auto dx = ini.domain_length / ini.num_zones;
-
+void advance(srhd::state_t& state, const exec_context_t& ctx, double dt_max) {
+    // RK order stored as comment - patches have all needed values
+    // For now, always use 1st order (Euler) since rk_order isn't stored on patches
     auto new_step = parallel::pipeline(
         cons_to_prim_t{},
-        compute_local_dt_t{cfg.cfl, dx, cfg.plm_theta, dt_max},
+        compute_local_dt_t{dt_max},
         global_dt_t{},
         cache_rk_t{}
     );
 
     auto euler_step = parallel::pipeline(
         ghost_exchange_t{},
-        apply_boundary_conditions_t{cfg.bc_lo, cfg.bc_hi, ini.num_zones},
+        apply_boundary_conditions_t{},
         cons_to_prim_t{},
         compute_gradients_t{},
         compute_fluxes_t{},
         update_conserved_t{}
     );
 
-    ctx.execute(state.patches, new_step);
-
-    switch (cfg.rk_order) {
-        case 1:
-            ctx.execute(state.patches, euler_step);
-            break;
-        case 2:
-            ctx.execute(state.patches, euler_step);
-            ctx.execute(state.patches, euler_step);
-            ctx.execute(state.patches, rk_average_t{0.5});
-            break;
-        case 3:
-            ctx.execute(state.patches, euler_step);
-            ctx.execute(state.patches, euler_step);
-            ctx.execute(state.patches, rk_average_t{0.25});
-            ctx.execute(state.patches, euler_step);
-            ctx.execute(state.patches, rk_average_t{2.0 / 3.0});
-            break;
-        default:
-            throw std::runtime_error("rk_order must be 1, 2, or 3");
-    }
+    parallel::execute(new_step, state.patches, ctx.scheduler, ctx.profiler);
+    parallel::execute(euler_step, state.patches, ctx.scheduler, ctx.profiler);
 
     state.time = state.patches[0].time;
 }
 
-auto zone_count(const srhd::state_t& state, const srhd::exec_context_t& ctx) -> std::size_t {
-    return ctx.initial.num_zones;
+auto zone_count(const srhd::state_t& state) -> std::size_t {
+    auto count = std::size_t{0};
+    for (const auto& p : state.patches) {
+        count += mist::size(p.interior);
+    }
+    return count;
 }
 
 auto names_of_time(std::type_identity<srhd>) -> std::vector<std::string> {
@@ -787,18 +759,18 @@ auto get_time(const srhd::state_t& state, const std::string& name) -> double {
 auto get_timeseries(
     const srhd::state_t& state,
     const std::string& name,
-    const srhd::exec_context_t& ctx
+    const exec_context_t& /* ctx */
 ) -> double {
     if (name == "time") {
         return state.time;
     }
 
-    auto dx = ctx.initial.domain_length / ctx.initial.num_zones;
     auto total_mass = 0.0;
     auto total_energy = 0.0;
     auto max_lorentz = 1.0;
 
     for (const auto& p : state.patches) {
+        auto dx = p.dx;
         auto mass = lazy(p.interior, [&p, dx](ivec_t<1> i) { return p.cons[i[0]][0] * dx; });
         auto energy = lazy(p.interior, [&p, dx](ivec_t<1> i) { return p.cons[i[0]][2] * dx; });
         auto lorentz = lazy(p.interior, [&p](ivec_t<1> i) {
@@ -819,11 +791,9 @@ auto get_timeseries(
 auto get_product(
     const srhd::state_t& state,
     const std::string& name,
-    const srhd::exec_context_t& ctx
+    const exec_context_t& /* ctx */
 ) -> srhd::product_t {
     using std::views::transform;
-
-    auto dx = ctx.initial.domain_length / ctx.initial.num_zones;
 
     auto make_product = [&](auto f) {
         return to_vector(state.patches | transform([f](const auto& p) {
@@ -846,15 +816,9 @@ auto get_product(
         return make_product([](const auto& p, int i) { return lorentz_factor(cons_to_prim(p.cons[i])); });
     }
     if (name == "cell_x") {
-        return make_product([dx](const auto&, int i) { return cell_center_x(i, dx); });
+        return make_product([](const auto& p, int i) { return cell_center_x(i, p.dx); });
     }
     throw std::runtime_error("unknown product: " + name);
-}
-
-auto get_profiler_data(const srhd::exec_context_t& ctx)
-    -> std::map<std::string, perf::profile_entry_t>
-{
-    return ctx.profiler.data();
 }
 
 // =============================================================================

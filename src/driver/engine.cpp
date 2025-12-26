@@ -72,6 +72,7 @@ const char* help_text = R"(
     show timeseries                - Show timeseries columns
     show driver                    - Show driver state
     show profiler                  - Show profiler
+    show exec                      - Show execution context
     help                           - Show this help
     help schema                    - Show command/response schema
     stop | quit | q                - Exit simulation
@@ -120,6 +121,7 @@ Responses:
   timeseries_info   { available: [string], selected: [string], counts: {string: int} }
   products_info     { available: [string], selected: [string] }
   profiler_info     { entries: [{name, count, time}], total_time: double }
+  exec_info         { num_threads: int, mpi_rank: int, mpi_size: int }
   wrote_file        { filename: string, bytes: int }
 )";
 
@@ -150,28 +152,29 @@ void signal::interrupt_guard_t::clear() {
 // engine_t implementation
 // =============================================================================
 
-engine_t::engine_t(state_t& state, physics_interface_t& physics, comm_t comm)
-    : state_(state)
-    , physics_(physics)
-    , comm_(std::move(comm))
-    , command_start_wall_time_(get_wall_time())
-    , command_start_iteration_(state.iteration)
+engine_t::engine_t(state_t& state, physics_interface_t& phys, comm_t c)
+    : state_ref(state)
+    , physics(phys)
+    , comm(std::move(c))
+    , command_start_wall_time(get_wall_time())
+    , command_start_iteration(state.iteration)
 {
-    data_socket_.listen(0); // port 0 = any available port
-    physics_.set_comm(comm_);
+    data_socket.listen(0); // port 0 = any available port
+    exec_context.comm = &comm;
+    physics.set_exec_context(exec_context);
 }
 
 engine_t::~engine_t() = default;
 
 void engine_t::broadcast_command(command_t& cmd) {
-    if (comm_.size() <= 1) {
+    if (comm.size() <= 1) {
         return;
     }
 
     auto buffer = std::vector<char>{};
 
     // Rank 0 serializes the command
-    if (comm_.rank() == 0) {
+    if (comm.rank() == 0) {
         auto oss = std::ostringstream{};
         auto writer = binary_writer{oss};
         serialize(writer, cmd);
@@ -180,10 +183,10 @@ void engine_t::broadcast_command(command_t& cmd) {
     }
 
     // Broadcast size and data
-    comm_.broadcast(buffer);
+    comm.broadcast(buffer);
 
     // Non-root ranks deserialize
-    if (comm_.rank() != 0) {
+    if (comm.rank() != 0) {
         auto iss = std::istringstream{std::string{buffer.begin(), buffer.end()}};
         auto reader = binary_reader{iss};
         deserialize(reader, cmd);
@@ -191,15 +194,15 @@ void engine_t::broadcast_command(command_t& cmd) {
 }
 
 void engine_t::log(const std::string& message) {
-    if (log_stream_) {
-        *log_stream_ << message << "\n";
-        log_stream_->flush();
+    if (log_stream) {
+        *log_stream << message << "\n";
+        log_stream->flush();
     }
 }
 
 void engine_t::set_log_prefix(const std::string& prefix) {
-    auto filename = prefix + "_rank" + std::to_string(comm_.rank()) + ".log";
-    log_stream_.emplace(filename);
+    auto filename = prefix + "_rank" + std::to_string(comm.rank()) + ".log";
+    log_stream.emplace(filename);
 }
 
 void engine_t::run_as_follower() {
@@ -219,8 +222,8 @@ void engine_t::run_as_follower() {
 }
 
 void engine_t::execute_local(const command_t& cmd, emit_fn emit) {
-    command_start_wall_time_ = get_wall_time();
-    command_start_iteration_ = state_.iteration;
+    command_start_wall_time = get_wall_time();
+    command_start_iteration = state_ref.iteration;
 
     // Log command execution
     log("execute command index " + std::to_string(cmd.index()));
@@ -253,42 +256,42 @@ void engine_t::execute(const cmd::repeat_add& cmd, emit_fn emit) {
 
 auto engine_t::make_iteration_info() const -> resp::iteration_info {
     auto info = resp::iteration_info{};
-    info.n = state_.iteration;
+    info.n = state_ref.iteration;
 
-    for (const auto& name : physics_.time_names()) {
-        info.times[name] = physics_.get_time(name);
+    for (const auto& name : physics.time_names()) {
+        info.times[name] = physics.get_time(name);
     }
 
-    info.dt = last_dt_;
+    info.dt = last_dt;
 
-    auto wall_elapsed = get_wall_time() - command_start_wall_time_;
-    auto iter_elapsed = state_.iteration - command_start_iteration_;
+    auto wall_elapsed = get_wall_time() - command_start_wall_time;
+    auto iter_elapsed = state_ref.iteration - command_start_iteration;
 
     if (iter_elapsed > 0 && wall_elapsed > 0) {
-        info.zps = (iter_elapsed * physics_.zone_count()) / wall_elapsed;
+        info.zps = (iter_elapsed * physics.zone_count()) / wall_elapsed;
     } else {
-        info.zps = last_zps_;
+        info.zps = last_zps;
     }
 
     return info;
 }
 
 void engine_t::do_timestep(double dt_max) {
-    auto time_names = physics_.time_names();
-    auto t0 = physics_.get_time(time_names[0]);
-    physics_.advance(dt_max);
-    auto t1 = physics_.get_time(time_names[0]);
-    last_dt_ = t1 - t0;
-    state_.iteration++;
+    auto time_names = physics.time_names();
+    auto t0 = physics.get_time(time_names[0]);
+    physics.advance(dt_max);
+    auto t1 = physics.get_time(time_names[0]);
+    last_dt = t1 - t0;
+    state_ref.iteration++;
 }
 
 auto engine_t::time_to_next_task() const -> double {
     auto dt_max = std::numeric_limits<double>::infinity();
 
-    for (const auto& rc : state_.repeating_commands) {
+    for (const auto& rc : state_ref.repeating_commands) {
         if (rc.unit == "n") continue;
 
-        auto current = physics_.get_time(rc.unit);
+        auto current = physics.get_time(rc.unit);
         auto time_until = rc.time_until_due(current);
 
         if (time_until > 0) {
@@ -300,10 +303,10 @@ auto engine_t::time_to_next_task() const -> double {
 }
 
 void engine_t::execute_repeating_commands(emit_fn emit) {
-    for (auto& rc : state_.repeating_commands) {
+    for (auto& rc : state_ref.repeating_commands) {
         auto current = (rc.unit == "n")
-            ? static_cast<double>(state_.iteration)
-            : physics_.get_time(rc.unit);
+            ? static_cast<double>(state_ref.iteration)
+            : physics.get_time(rc.unit);
 
         if (rc.time_until_due(current) <= 0) {
             std::visit([this, &emit](const auto& c) { handle(c, emit); }, rc.sub_command);
@@ -313,7 +316,7 @@ void engine_t::execute_repeating_commands(emit_fn emit) {
 }
 
 void engine_t::advance_to_target(const std::string& var, double target, emit_fn emit) {
-    if (!physics_.has_state()) {
+    if (!physics.has_state()) {
         emit(resp::error{"physics state not initialized; use 'init' first"});
         return;
     }
@@ -325,15 +328,15 @@ void engine_t::advance_to_target(const std::string& var, double target, emit_fn 
 
     if (var == "n") {
         auto target_n = static_cast<int>(target);
-        while (state_.iteration < target_n && !guard.is_interrupted()) {
+        while (state_ref.iteration < target_n && !guard.is_interrupted()) {
             auto dt_max = time_to_next_task();
             do_timestep(dt_max);
             execute_repeating_commands(emit);
         }
     } else {
         auto eps = 1e-12 * std::abs(target);
-        while (physics_.get_time(var) < target - eps && !guard.is_interrupted()) {
-            auto time_to_target = target - physics_.get_time(var);
+        while (physics.get_time(var) < target - eps && !guard.is_interrupted()) {
+            auto time_to_target = target - physics.get_time(var);
             auto dt_max = std::min(time_to_target, time_to_next_task());
             do_timestep(dt_max);
             execute_repeating_commands(emit);
@@ -341,10 +344,10 @@ void engine_t::advance_to_target(const std::string& var, double target, emit_fn 
     }
 
     // Store zps from this advance command for later queries
-    auto wall_elapsed = get_wall_time() - command_start_wall_time_;
-    auto iter_elapsed = state_.iteration - command_start_iteration_;
+    auto wall_elapsed = get_wall_time() - command_start_wall_time;
+    auto iter_elapsed = state_ref.iteration - command_start_iteration;
     if (iter_elapsed > 0 && wall_elapsed > 0) {
-        last_zps_ = (iter_elapsed * physics_.zone_count()) / wall_elapsed;
+        last_zps = (iter_elapsed * physics.zone_count()) / wall_elapsed;
     }
 
     if (guard.is_interrupted()) {
@@ -355,10 +358,10 @@ void engine_t::advance_to_target(const std::string& var, double target, emit_fn 
 }
 
 void engine_t::write_to_socket(const std::function<void(std::ostream&)>& writer, emit_fn emit) {
-    emit(resp::socket_listening{static_cast<int>(data_socket_.port())});
+    emit(resp::socket_listening{static_cast<int>(data_socket.port())});
 
     auto guard = signal::interrupt_guard_t{};
-    auto client = data_socket_.accept_interruptible([&guard] { return guard.is_interrupted(); });
+    auto client = data_socket.accept_interruptible([&guard] { return guard.is_interrupted(); });
 
     if (!client) {
         emit(resp::socket_cancelled{});
@@ -378,25 +381,25 @@ void engine_t::write_to_socket(const std::function<void(std::ostream&)>& writer,
 // -----------------------------------------------------------------------------
 
 void engine_t::write_physics(std::ostream& os, output_format fmt) {
-    physics_.write_physics(os, fmt);
+    physics.write_physics(os, fmt);
 }
 
 void engine_t::write_initial(std::ostream& os, output_format fmt) {
-    physics_.write_initial(os, fmt);
+    physics.write_initial(os, fmt);
 }
 
 void engine_t::write_driver(std::ostream& os, output_format fmt) {
     if (fmt == output_format::binary) {
         auto writer = binary_writer{os};
-        serialize(writer, "driver_state", state_);
+        serialize(writer, "driver_state", state_ref);
     } else {
         auto writer = ascii_writer{os};
-        serialize(writer, "driver_state", state_);
+        serialize(writer, "driver_state", state_ref);
     }
 }
 
 void engine_t::write_profiler(std::ostream& os, output_format fmt) {
-    auto data = physics_.profiler_data();
+    auto data = physics.profiler_data();
     if (fmt == output_format::binary) {
         auto writer = binary_writer{os};
         serialize(writer, "profiler", data);
@@ -407,7 +410,7 @@ void engine_t::write_profiler(std::ostream& os, output_format fmt) {
 }
 
 void engine_t::write_profiler_info(std::ostream& os, const color::scheme_t& c) {
-    auto data = physics_.profiler_data();
+    auto data = physics.profiler_data();
     auto total_time = 0.0;
     auto entries = std::vector<resp::profiler_entry>{};
 
@@ -422,10 +425,10 @@ void engine_t::write_profiler_info(std::ostream& os, const color::scheme_t& c) {
 void engine_t::write_timeseries(std::ostream& os, output_format fmt) {
     if (fmt == output_format::binary) {
         auto writer = binary_writer{os};
-        serialize(writer, "timeseries", state_.timeseries);
+        serialize(writer, "timeseries", state_ref.timeseries);
     } else {
         auto writer = ascii_writer{os};
-        serialize(writer, "timeseries", state_.timeseries);
+        serialize(writer, "timeseries", state_ref.timeseries);
     }
 }
 
@@ -433,10 +436,10 @@ void engine_t::write_timeseries_info(std::ostream& os, const color::scheme_t& c)
     auto info = resp::timeseries_info{};
 
     // Get available columns from physics
-    info.available = physics_.timeseries_names();
+    info.available = physics.timeseries_names();
 
     // Selected columns are the keys in the timeseries map
-    for (const auto& [col, values] : state_.timeseries) {
+    for (const auto& [col, values] : state_ref.timeseries) {
         info.selected.push_back(col);
         info.counts[col] = values.size();
     }
@@ -447,16 +450,16 @@ void engine_t::write_timeseries_info(std::ostream& os, const color::scheme_t& c)
 void engine_t::write_checkpoint(std::ostream& os, output_format fmt) {
     if (fmt == output_format::binary) {
         auto writer = binary_writer{os};
-        serialize(writer, "driver_state", state_);
+        serialize(writer, "driver_state", state_ref);
     } else {
         auto writer = ascii_writer{os};
-        serialize(writer, "driver_state", state_);
+        serialize(writer, "driver_state", state_ref);
     }
-    physics_.write_state(os, fmt);
+    physics.write_state(os, fmt);
 }
 
 void engine_t::write_products(std::ostream& os, output_format fmt) {
-    physics_.write_products(os, fmt, state_.selected_products);
+    physics.write_products(os, fmt, state_ref.selected_products);
 }
 
 void engine_t::write_iteration(std::ostream& os, output_format fmt) {
@@ -479,16 +482,16 @@ void engine_t::write_iteration_info(std::ostream& os, const color::scheme_t& c) 
 // -----------------------------------------------------------------------------
 
 void engine_t::handle(const cmd::advance_by& c, emit_fn emit) {
-    if (!physics_.has_state()) {
+    if (!physics.has_state()) {
         emit(resp::error{"physics state not initialized; use 'init' first"});
         return;
     }
 
     if (c.var == "n") {
-        auto target = static_cast<double>(state_.iteration) + c.delta;
+        auto target = static_cast<double>(state_ref.iteration) + c.delta;
         advance_to_target("n", target, emit);
     } else {
-        auto current = physics_.get_time(c.var);
+        auto current = physics.get_time(c.var);
         advance_to_target(c.var, current + c.delta, emit);
     }
 }
@@ -498,31 +501,36 @@ void engine_t::handle(const cmd::advance_to& c, emit_fn emit) {
 }
 
 void engine_t::handle(const cmd::set_output& c, emit_fn emit) {
-    state_.format = from_string(std::type_identity<output_format>{}, c.format);
+    state_ref.format = from_string(std::type_identity<output_format>{}, c.format);
     emit(resp::ok{"output format set to " + c.format});
 }
 
 void engine_t::handle(const cmd::set_physics& c, emit_fn emit) {
-    physics_.set_physics(c.key, c.value);
+    physics.set_physics(c.key, c.value);
     emit(resp::ok{"physics " + c.key + " set to " + c.value});
 }
 
 void engine_t::handle(const cmd::set_initial& c, emit_fn emit) {
-    if (physics_.has_state()) {
+    if (physics.has_state()) {
         emit(resp::error{"cannot modify initial config when state exists; use 'reset' first"});
         return;
     }
-    physics_.set_initial(c.key, c.value);
+    physics.set_initial(c.key, c.value);
     emit(resp::ok{"initial " + c.key + " set to " + c.value});
 }
 
 void engine_t::handle(const cmd::set_exec& c, emit_fn emit) {
-    physics_.set_exec(c.key, c.value);
-    emit(resp::ok{"exec " + c.key + " set to " + c.value});
+    if (c.key == "num_threads") {
+        auto n = std::stoul(c.value);
+        exec_context.set_num_threads(n);
+        emit(resp::ok{"exec " + c.key + " set to " + c.value});
+    } else {
+        emit(resp::error{"unknown exec parameter: " + c.key});
+    }
 }
 
 void engine_t::handle(const cmd::select_timeseries& c, emit_fn emit) {
-    auto available = physics_.timeseries_names();
+    auto available = physics.timeseries_names();
     auto cols = c.cols.empty() ? available : c.cols;
 
     for (const auto& col : cols) {
@@ -532,16 +540,16 @@ void engine_t::handle(const cmd::select_timeseries& c, emit_fn emit) {
         }
     }
 
-    state_.timeseries.clear();
+    state_ref.timeseries.clear();
     for (const auto& col : cols) {
-        state_.timeseries[col] = {};
+        state_ref.timeseries[col] = {};
     }
 
     emit(resp::ok{"selected " + std::to_string(cols.size()) + " timeseries columns"});
 }
 
 void engine_t::handle(const cmd::select_products& c, emit_fn emit) {
-    auto available = physics_.product_names();
+    auto available = physics.product_names();
     auto prods = c.prods.empty() ? available : c.prods;
 
     for (const auto& prod : prods) {
@@ -551,23 +559,23 @@ void engine_t::handle(const cmd::select_products& c, emit_fn emit) {
         }
     }
 
-    state_.selected_products = prods;
+    state_ref.selected_products = prods;
     emit(resp::ok{"selected " + std::to_string(prods.size()) + " products"});
 }
 
 void engine_t::handle(const cmd::do_timeseries&, emit_fn emit) {
-    if (!physics_.has_state()) {
+    if (!physics.has_state()) {
         emit(resp::error{"physics state not initialized; use 'init' first"});
         return;
     }
-    if (state_.timeseries.empty()) {
+    if (state_ref.timeseries.empty()) {
         emit(resp::error{"no timeseries selected; use 'select timeseries'"});
         return;
     }
 
     auto sample = resp::timeseries_sample{};
-    for (auto& [col, values] : state_.timeseries) {
-        auto value = physics_.get_timeseries(col);
+    for (auto& [col, values] : state_ref.timeseries) {
+        auto value = physics.get_timeseries(col);
         values.push_back(value);
         sample.values[col] = value;
     }
@@ -651,7 +659,7 @@ void engine_t::handle(const cmd::write_profiler& c, emit_fn emit) {
 }
 
 void engine_t::handle(const cmd::write_timeseries& c, emit_fn emit) {
-    if (state_.timeseries.empty()) {
+    if (state_ref.timeseries.empty()) {
         emit(resp::error{"no timeseries selected; use 'select timeseries'"});
         return;
     }
@@ -670,12 +678,12 @@ void engine_t::handle(const cmd::write_timeseries& c, emit_fn emit) {
         filename = *c.dest;
         fmt = infer_format_from_filename(filename);
     } else {
-        fmt = state_.format;
+        fmt = state_ref.format;
         auto ext = (fmt == output_format::ascii) ? ".dat" : ".bin";
         auto oss = std::ostringstream{};
-        oss << "timeseries." << std::setw(4) << std::setfill('0') << state_.timeseries_count << ext;
+        oss << "timeseries." << std::setw(4) << std::setfill('0') << state_ref.timeseries_count << ext;
         filename = oss.str();
-        state_.timeseries_count++;
+        state_ref.timeseries_count++;
     }
 
     auto file = std::ofstream{filename, std::ios::binary};
@@ -702,12 +710,12 @@ void engine_t::handle(const cmd::write_checkpoint& c, emit_fn emit) {
         filename = *c.dest;
         fmt = infer_format_from_filename(filename);
     } else {
-        fmt = state_.format;
+        fmt = state_ref.format;
         auto ext = (fmt == output_format::ascii) ? ".dat" : ".bin";
         auto oss = std::ostringstream{};
-        oss << "chkpt." << std::setw(4) << std::setfill('0') << state_.checkpoint_count << ext;
+        oss << "chkpt." << std::setw(4) << std::setfill('0') << state_ref.checkpoint_count << ext;
         filename = oss.str();
-        state_.checkpoint_count++;
+        state_ref.checkpoint_count++;
     }
 
     auto file = std::ofstream{filename, std::ios::binary};
@@ -720,11 +728,11 @@ void engine_t::handle(const cmd::write_checkpoint& c, emit_fn emit) {
 }
 
 void engine_t::handle(const cmd::write_products& c, emit_fn emit) {
-    if (!physics_.has_state()) {
+    if (!physics.has_state()) {
         emit(resp::error{"physics state not initialized; use 'init' first"});
         return;
     }
-    if (state_.selected_products.empty()) {
+    if (state_ref.selected_products.empty()) {
         emit(resp::error{"no products selected; use 'select products'"});
         return;
     }
@@ -743,12 +751,12 @@ void engine_t::handle(const cmd::write_products& c, emit_fn emit) {
         filename = *c.dest;
         fmt = infer_format_from_filename(filename);
     } else {
-        fmt = state_.format;
+        fmt = state_ref.format;
         auto ext = (fmt == output_format::ascii) ? ".dat" : ".bin";
         auto oss = std::ostringstream{};
-        oss << "prods." << std::setw(4) << std::setfill('0') << state_.products_count << ext;
+        oss << "prods." << std::setw(4) << std::setfill('0') << state_ref.products_count << ext;
         filename = oss.str();
-        state_.products_count++;
+        state_ref.products_count++;
     }
 
     auto file = std::ofstream{filename, std::ios::binary};
@@ -761,7 +769,7 @@ void engine_t::handle(const cmd::write_products& c, emit_fn emit) {
 }
 
 void engine_t::handle(const cmd::write_iteration& c, emit_fn emit) {
-    if (!physics_.has_state()) {
+    if (!physics.has_state()) {
         emit(resp::error{"physics state not initialized; use 'init' first"});
         return;
     }
@@ -794,7 +802,7 @@ void engine_t::handle(const cmd::repeat_add& c, emit_fn emit) {
     }
 
     if (c.unit != "n") {
-        auto time_names = physics_.time_names();
+        auto time_names = physics.time_names();
         if (std::find(time_names.begin(), time_names.end(), c.unit) == time_names.end()) {
             emit(resp::error{"unknown time variable: " + c.unit});
             return;
@@ -805,32 +813,32 @@ void engine_t::handle(const cmd::repeat_add& c, emit_fn emit) {
     rc.interval = c.interval;
     rc.unit = c.unit;
     rc.sub_command = c.sub_command;
-    state_.repeating_commands.push_back(rc);
+    state_ref.repeating_commands.push_back(rc);
 
     emit(resp::ok{"added repeating command"});
 }
 
 void engine_t::handle(const cmd::clear_repeat&, emit_fn emit) {
-    state_.repeating_commands.clear();
+    state_ref.repeating_commands.clear();
     emit(resp::ok{"cleared all repeating commands"});
 }
 
 void engine_t::handle(const cmd::init&, emit_fn emit) {
-    if (physics_.has_state()) {
+    if (physics.has_state()) {
         emit(resp::error{"state already initialized; use 'reset' first"});
         return;
     }
-    physics_.init();
+    physics.init();
     emit(resp::ok{"initialized physics state"});
 }
 
 void engine_t::handle(const cmd::reset&, emit_fn emit) {
-    physics_.reset();
-    state_.iteration = 0;
-    state_.checkpoint_count = 0;
-    state_.products_count = 0;
-    state_.timeseries_count = 0;
-    state_.timeseries.clear();
+    physics.reset();
+    state_ref.iteration = 0;
+    state_ref.checkpoint_count = 0;
+    state_ref.products_count = 0;
+    state_ref.timeseries_count = 0;
+    state_ref.timeseries.clear();
     emit(resp::ok{"reset driver and physics state"});
 }
 
@@ -845,13 +853,13 @@ void engine_t::handle(const cmd::load& c, emit_fn emit) {
 
     if (fmt == output_format::ascii) {
         auto reader = ascii_reader{file};
-        if (deserialize(reader, "driver_state", state_) && physics_.load_state(file, fmt)) {
+        if (deserialize(reader, "driver_state", state_ref) && physics.load_state(file, fmt)) {
             emit(resp::ok{"loaded checkpoint from " + c.filename});
             return;
         }
     } else {
         auto reader = binary_reader{file};
-        if (deserialize(reader, "driver_state", state_) && physics_.load_state(file, fmt)) {
+        if (deserialize(reader, "driver_state", state_ref) && physics.load_state(file, fmt)) {
             emit(resp::ok{"loaded checkpoint from " + c.filename});
             return;
         }
@@ -859,16 +867,16 @@ void engine_t::handle(const cmd::load& c, emit_fn emit) {
 
     file.clear();
     file.seekg(0);
-    if (physics_.load_physics(file, fmt)) {
-        physics_.reset();
-        state_.iteration = 0;
+    if (physics.load_physics(file, fmt)) {
+        physics.reset();
+        state_ref.iteration = 0;
         emit(resp::ok{"loaded physics config from " + c.filename + "; use 'init' to generate state"});
         return;
     }
 
     file.clear();
     file.seekg(0);
-    if (physics_.load_initial(file, fmt)) {
+    if (physics.load_initial(file, fmt)) {
         emit(resp::ok{"loaded initial config from " + c.filename});
         return;
     }
@@ -878,40 +886,39 @@ void engine_t::handle(const cmd::load& c, emit_fn emit) {
 
 void engine_t::handle(const cmd::show_state&, emit_fn emit) {
     auto info = resp::state_info{};
-    info.initialized = physics_.has_state();
+    info.initialized = physics.has_state();
     if (info.initialized) {
-        info.zone_count = physics_.zone_count();
-        for (const auto& name : physics_.time_names()) {
-            info.times[name] = physics_.get_time(name);
+        info.zone_count = physics.zone_count();
+        for (const auto& name : physics.time_names()) {
+            info.times[name] = physics.get_time(name);
         }
     }
     emit(info);
 }
 
 void engine_t::handle(const cmd::show_all&, emit_fn emit) {
-    handle(cmd::show_state{}, emit);
+    handle(cmd::show_exec{}, emit);
+    handle(cmd::show_products{}, emit);
+    handle(cmd::show_timeseries{}, emit);
     handle(cmd::show_physics{}, emit);
     handle(cmd::show_initial{}, emit);
     handle(cmd::show_driver{}, emit);
-    handle(cmd::show_products{}, emit);
-    handle(cmd::show_timeseries{}, emit);
-    handle(cmd::show_profiler{}, emit);
 }
 
 void engine_t::handle(const cmd::show_physics&, emit_fn emit) {
     auto oss = std::ostringstream{};
-    physics_.write_physics(oss, output_format::ascii);
+    physics.write_physics(oss, output_format::ascii);
     emit(resp::physics_config{oss.str()});
 }
 
 void engine_t::handle(const cmd::show_initial&, emit_fn emit) {
     auto oss = std::ostringstream{};
-    physics_.write_initial(oss, output_format::ascii);
+    physics.write_initial(oss, output_format::ascii);
     emit(resp::initial_config{oss.str()});
 }
 
 void engine_t::handle(const cmd::show_iteration&, emit_fn emit) {
-    if (!physics_.has_state()) {
+    if (!physics.has_state()) {
         emit(resp::error{"physics state not initialized; use 'init' first"});
         return;
     }
@@ -920,8 +927,8 @@ void engine_t::handle(const cmd::show_iteration&, emit_fn emit) {
 
 void engine_t::handle(const cmd::show_timeseries&, emit_fn emit) {
     auto info = resp::timeseries_info{};
-    info.available = physics_.timeseries_names();
-    for (const auto& [col, values] : state_.timeseries) {
+    info.available = physics.timeseries_names();
+    for (const auto& [col, values] : state_ref.timeseries) {
         info.selected.push_back(col);
         info.counts[col] = values.size();
     }
@@ -930,13 +937,13 @@ void engine_t::handle(const cmd::show_timeseries&, emit_fn emit) {
 
 void engine_t::handle(const cmd::show_products&, emit_fn emit) {
     auto info = resp::products_info{};
-    info.available = physics_.product_names();
-    info.selected = state_.selected_products;
+    info.available = physics.product_names();
+    info.selected = state_ref.selected_products;
     emit(info);
 }
 
 void engine_t::handle(const cmd::show_profiler&, emit_fn emit) {
-    auto data = physics_.profiler_data();
+    auto data = physics.profiler_data();
     auto info = resp::profiler_info{};
 
     for (const auto& [name, entry] : data) {
@@ -953,8 +960,16 @@ void engine_t::handle(const cmd::show_profiler&, emit_fn emit) {
 void engine_t::handle(const cmd::show_driver&, emit_fn emit) {
     auto oss = std::ostringstream{};
     auto writer = ascii_writer{oss};
-    serialize(writer, "driver_state", state_);
+    serialize(writer, "driver_state", state_ref);
     emit(resp::driver_state{oss.str()});
+}
+
+void engine_t::handle(const cmd::show_exec&, emit_fn emit) {
+    emit(resp::exec_info{
+        static_cast<int>(exec_context.num_threads()),
+        exec_context.mpi_rank(),
+        exec_context.mpi_size()
+    });
 }
 
 void engine_t::handle(const cmd::help&, emit_fn emit) {

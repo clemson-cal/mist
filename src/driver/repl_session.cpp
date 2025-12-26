@@ -219,6 +219,7 @@ auto parse_command(std::string_view input) -> parsed_command_t {
         if (what == "products") return {cmd::show_products{}, {}, {}};
         if (what == "profiler") return {cmd::show_profiler{}, {}, {}};
         if (what == "driver") return {cmd::show_driver{}, {}, {}};
+        if (what == "exec") return {cmd::show_exec{}, {}, {}};
         return {{}, {}, "unknown: show " + what};
     }
 

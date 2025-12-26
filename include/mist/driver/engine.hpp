@@ -17,6 +17,7 @@
 #include "../binary_reader.hpp"
 #include "../binary_writer.hpp"
 #include "../comm.hpp"
+#include "../exec_context.hpp"
 #include "../socket.hpp"
 
 namespace mist::driver {
@@ -77,15 +78,16 @@ public:
     // Distributed mode: non-root ranks run this loop
     void run_as_follower();
 
-    auto state() const -> const state_t& { return state_; }
-    auto state() -> state_t& { return state_; }
-    auto comm() const -> const comm_t& { return comm_; }
+    auto state() const -> const state_t& { return state_ref; }
+    auto state() -> state_t& { return state_ref; }
+    auto get_comm() const -> const comm_t& { return comm; }
+    auto get_exec_context() const -> const exec_context_t& { return exec_context; }
 
     // Per-rank logging for distributed debugging
     void set_log_prefix(const std::string& prefix);
 
     // Data socket for write commands
-    auto data_socket_port() const -> int { return data_socket_.port(); }
+    auto data_socket_port() const -> int { return data_socket.port(); }
 
     // Direct write methods - session handles I/O, engine handles data
     void write_physics(std::ostream& os, output_format fmt);
@@ -103,15 +105,16 @@ public:
     void write_timeseries_info(std::ostream& os, const color::scheme_t& c);
 
 private:
-    state_t& state_;
-    physics_interface_t& physics_;
-    comm_t comm_;
-    double command_start_wall_time_;
-    int command_start_iteration_;
-    double last_dt_ = 0.0;
-    double last_zps_ = 0.0;
-    socket_t data_socket_;
-    std::optional<std::ofstream> log_stream_;
+    state_t& state_ref;
+    physics_interface_t& physics;
+    comm_t comm;
+    exec_context_t exec_context;
+    double command_start_wall_time;
+    int command_start_iteration;
+    double last_dt = 0.0;
+    double last_zps = 0.0;
+    socket_t data_socket;
+    std::optional<std::ofstream> log_stream;
 
     void broadcast_command(command_t& cmd);
     void execute_local(const command_t& cmd, emit_fn emit);
@@ -156,6 +159,7 @@ private:
     void handle(const cmd::show_products& c, emit_fn emit);
     void handle(const cmd::show_profiler& c, emit_fn emit);
     void handle(const cmd::show_driver& c, emit_fn emit);
+    void handle(const cmd::show_exec& c, emit_fn emit);
     void handle(const cmd::help& c, emit_fn emit);
     void handle(const cmd::help_schema& c, emit_fn emit);
     void handle(const cmd::stop& c, emit_fn emit);

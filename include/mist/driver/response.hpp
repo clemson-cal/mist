@@ -250,6 +250,26 @@ struct profiler_info {
     }
 };
 
+struct exec_info {
+    int num_threads;
+    int mpi_rank;
+    int mpi_size;
+    auto fields() const {
+        return std::make_tuple(
+            field("num_threads", num_threads),
+            field("mpi_rank", mpi_rank),
+            field("mpi_size", mpi_size)
+        );
+    }
+    auto fields() {
+        return std::make_tuple(
+            field("num_threads", num_threads),
+            field("mpi_rank", mpi_rank),
+            field("mpi_size", mpi_size)
+        );
+    }
+};
+
 // --- Write ---
 
 struct wrote_file {
@@ -399,6 +419,12 @@ inline void format(std::ostream& os, const color::scheme_t& c, const resp::produ
     }
 }
 
+inline void format(std::ostream& os, const color::scheme_t& c, const resp::exec_info& r) {
+    os << c.header << "Execution context:" << c.reset << "\n";
+    os << "  " << c.label << "threads: " << c.reset << c.value << r.num_threads << c.reset << "\n";
+    os << "  " << c.label << "mpi_size: " << c.reset << c.value << r.mpi_size << c.reset << "\n";
+}
+
 inline void format(std::ostream& os, const color::scheme_t& c, const resp::profiler_info& r) {
     if (r.entries.empty()) return;
 
@@ -489,6 +515,7 @@ using response_t = std::variant<
     resp::timeseries_info,
     resp::products_info,
     resp::profiler_info,
+    resp::exec_info,
     // Write
     resp::wrote_file,
     // Socket

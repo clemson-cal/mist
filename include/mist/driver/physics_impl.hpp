@@ -19,18 +19,17 @@ concept Physics = requires(
     typename P::initial_t ini,
     typename P::state_t s,
     typename P::product_t p,
-    const typename P::exec_context_t& ctx,
+    const exec_context_t& ctx,
     double dt_max) {
     typename P::config_t;
     typename P::initial_t;
     typename P::state_t;
     typename P::product_t;
-    typename P::exec_context_t;
 
     { default_physics_config(std::type_identity<P>{}) } -> std::same_as<typename P::config_t>;
     { default_initial_config(std::type_identity<P>{}) } -> std::same_as<typename P::initial_t>;
-    { initial_state(ctx) } -> std::same_as<typename P::state_t>;
-    { zone_count(s, ctx) } -> std::same_as<std::size_t>;
+    { initial_state(cfg, ini, ctx) } -> std::same_as<typename P::state_t>;
+    { zone_count(s) } -> std::same_as<std::size_t>;
 
     { names_of_time(std::type_identity<P>{}) } -> std::same_as<std::vector<std::string>>;
     { names_of_timeseries(std::type_identity<P>{}) } -> std::same_as<std::vector<std::string>>;
@@ -39,7 +38,6 @@ concept Physics = requires(
     { get_time(s, std::string{}) } -> std::same_as<double>;
     { get_timeseries(s, std::string{}, ctx) } -> std::same_as<double>;
     { get_product(s, std::string{}, ctx) } -> std::same_as<typename P::product_t>;
-    { get_profiler_data(ctx) } -> std::same_as<std::map<std::string, perf::profile_entry_t>>;
 
     { advance(s, ctx, dt_max) } -> std::same_as<void>;
 };
@@ -48,19 +46,19 @@ concept Physics = requires(
 // ADL helper functions (avoid name collision with member functions)
 // =============================================================================
 
-template<typename State, typename Ctx>
-void adl_advance(State& s, const Ctx& ctx, double dt_max) { advance(s, ctx, dt_max); }
+template<typename State>
+void adl_advance(State& s, const exec_context_t& ctx, double dt_max) { advance(s, ctx, dt_max); }
 
 template<typename State>
 auto adl_get_time(const State& s, const std::string& var) -> double { return get_time(s, var); }
 
-template<typename State, typename Ctx>
-auto adl_get_timeseries(const State& s, const std::string& name, const Ctx& ctx) -> double {
+template<typename State>
+auto adl_get_timeseries(const State& s, const std::string& name, const exec_context_t& ctx) -> double {
     return get_timeseries(s, name, ctx);
 }
 
-template<typename State, typename Ctx>
-auto adl_zone_count(const State& s, const Ctx& ctx) -> std::size_t { return zone_count(s, ctx); }
+template<typename State>
+auto adl_zone_count(const State& s) -> std::size_t { return zone_count(s); }
 
 // =============================================================================
 // physics_impl_t - type-erased implementation of physics_interface_t
@@ -72,7 +70,6 @@ public:
     physics_impl_t()
         : config_(default_physics_config(std::type_identity<P>{}))
         , initial_(default_initial_config(std::type_identity<P>{}))
-        , exec_context_(std::make_unique<typename P::exec_context_t>(config_, initial_))
     {}
 
     // -------------------------------------------------------------------------
@@ -99,7 +96,10 @@ public:
         if (state_.has_value()) {
             throw std::runtime_error("state already initialized");
         }
-        state_ = initial_state(*exec_context_);
+        if (!exec_context_) {
+            throw std::runtime_error("exec_context not set; engine should set it before init");
+        }
+        state_ = initial_state(config_, initial_, *exec_context_);
     }
 
     void reset() override {
@@ -118,6 +118,9 @@ public:
         if (!state_.has_value()) {
             throw std::runtime_error("state not initialized");
         }
+        if (!exec_context_) {
+            throw std::runtime_error("exec_context not set");
+        }
         adl_advance(*state_, *exec_context_, dt_max);
     }
 
@@ -131,6 +134,9 @@ public:
     auto get_timeseries(const std::string& name) const -> double override {
         if (!state_.has_value()) {
             throw std::runtime_error("state not initialized");
+        }
+        if (!exec_context_) {
+            throw std::runtime_error("exec_context not set");
         }
         return adl_get_timeseries(*state_, name, *exec_context_);
     }
@@ -150,23 +156,8 @@ public:
         set(initial_, key, value);
     }
 
-    void set_exec(const std::string& key, const std::string& value) override {
-        if (key == "num_threads") {
-            if constexpr (requires { exec_context_->set_num_threads(std::size_t{}); }) {
-                exec_context_->set_num_threads(std::stoul(value));
-            } else {
-                throw std::runtime_error("physics module does not support num_threads");
-            }
-        } else {
-            throw std::runtime_error("unknown exec parameter: " + key);
-        }
-    }
-
-    void set_comm(const comm_t& comm) override {
-        if constexpr (requires { exec_context_->set_comm(comm); }) {
-            exec_context_->set_comm(comm);
-        }
-        // silently ignore if physics doesn't support distributed mode
+    void set_exec_context(exec_context_t& ctx) override {
+        exec_context_ = &ctx;
     }
 
     // -------------------------------------------------------------------------
@@ -220,6 +211,9 @@ public:
                        const std::vector<std::string>& selected) override {
         if (!state_.has_value()) {
             throw std::runtime_error("state not initialized");
+        }
+        if (!exec_context_) {
+            throw std::runtime_error("exec_context not set");
         }
         if (fmt == output_format::ascii) {
             auto writer = ascii_writer{os};
@@ -295,7 +289,6 @@ public:
         config_ = std::move(cfg);
         initial_ = std::move(ini);
         state_ = std::move(state);
-        exec_context_ = std::make_unique<typename P::exec_context_t>(config_, initial_);
         return true;
     }
 
@@ -307,18 +300,21 @@ public:
         if (!state_.has_value()) {
             return 0;
         }
-        return adl_zone_count(*state_, *exec_context_);
+        return adl_zone_count(*state_);
     }
 
     auto profiler_data() const -> std::map<std::string, perf::profile_entry_t> override {
-        return get_profiler_data(*exec_context_);
+        if (!exec_context_) {
+            return {};
+        }
+        return exec_context_->profiler.data();
     }
 
 private:
     typename P::config_t config_;
     typename P::initial_t initial_;
     std::optional<typename P::state_t> state_;
-    std::unique_ptr<typename P::exec_context_t> exec_context_;
+    exec_context_t* exec_context_ = nullptr;
 };
 
 // =============================================================================

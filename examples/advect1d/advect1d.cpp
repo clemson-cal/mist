@@ -77,8 +77,10 @@ struct patch_t {
     index_space_t<1> interior;
 
     double v = 0.0;
+    double cfl = 0.0;
     double dx = 0.0;
     double dt = 0.0;
+    double L = 0.0;
 
     cached_t<double, 1> cons;
     cached_t<double, 1> fhat;
@@ -100,11 +102,11 @@ struct patch_t {
 struct initial_state_t {
     static constexpr const char* name = "initial_state";
     using context_type = patch_t;
-    double dx;
-    double L;
 
     auto value(patch_t p) const -> patch_t {
         auto& u = p.cons;
+        auto dx = p.dx;
+        auto L = p.L;
         for_each(p.interior, [&](ivec_t<1> i) {
             u(i) = std::sin(2.0 * M_PI * cell_center_x(i[0], dx) / L);
         });
@@ -115,15 +117,10 @@ struct initial_state_t {
 struct compute_local_dt_t {
     static constexpr const char* name = "compute_local_dt";
     using context_type = patch_t;
-    double cfl;
-    double v;
-    double dx;
     double dt_max;
 
     auto value(patch_t p) const -> patch_t {
-        p.v = v;
-        p.dx = dx;
-        p.dt = std::min(cfl * dx / std::abs(v), dt_max);
+        p.dt = std::min(p.cfl * p.dx / std::abs(p.v), dt_max);
         return p;
     }
 };
@@ -334,34 +331,6 @@ struct advection {
     };
 
     using product_t = std::vector<cached_t<double, 1>>;
-
-    struct exec_context_t {
-        const config_t& config;
-        const initial_t& initial;
-        const comm_t* comm = nullptr;
-        mutable parallel::scheduler_t scheduler;
-        mutable perf::profiler_t profiler;
-
-        exec_context_t(const config_t& cfg, const initial_t& ini)
-            : config(cfg), initial(ini) {}
-
-        void set_num_threads(std::size_t n) {
-            scheduler.set_num_threads(n);
-        }
-
-        void set_comm(const comm_t& c) {
-            comm = &c;
-        }
-
-        template<parallel::Pipeline P>
-        void execute(P pipeline, std::vector<patch_t>& patches) const {
-            if (comm) {
-                parallel::execute(pipeline, patches, *comm, scheduler, profiler);
-            } else {
-                parallel::execute(pipeline, patches, scheduler, profiler);
-            }
-        }
-    };
 };
 
 // =============================================================================
@@ -376,55 +345,58 @@ auto default_initial_config(std::type_identity<advection>) -> advection::initial
     return {.num_zones = 200, .num_partitions = 4, .domain_length = 1.0};
 }
 
-auto initial_state(const advection::exec_context_t& ctx) -> advection::state_t {
+auto initial_state(
+    const advection::config_t& config,
+    const advection::initial_t& initial,
+    const exec_context_t& ctx
+) -> advection::state_t {
     using std::views::iota;
     using std::views::transform;
 
-    auto& ini = ctx.initial;
-    auto np = static_cast<int>(ini.num_partitions);
-    auto S = index_space(ivec(0), uvec(ini.num_zones));
-    auto dx = ini.domain_length / ini.num_zones;
-    auto L = ini.domain_length;
+    auto np = static_cast<int>(initial.num_partitions);
+    auto S = index_space(ivec(0), uvec(initial.num_zones));
+    auto dx = initial.domain_length / initial.num_zones;
+    auto L = initial.domain_length;
+    auto v = config.wavespeed;
+    auto cfl = config.cfl;
 
     auto patches = to_vector(iota(0, np) | transform([&](int p) {
-        return patch_t(subspace(S, np, p, 0));
+        auto patch = patch_t(subspace(S, np, p, 0));
+        patch.dx = dx;
+        patch.L = L;
+        patch.v = v;
+        patch.cfl = cfl;
+        return patch;
     }));
 
-    parallel::execute(initial_state_t{dx, L}, patches, ctx.scheduler, ctx.profiler);
+    parallel::execute(initial_state_t{}, patches, ctx.scheduler, ctx.profiler);
 
     return {std::move(patches), 0.0};
 }
 
-void advance(advection::state_t& state, const advection::exec_context_t& ctx, double dt_max) {
-    if (ctx.config.rk_order != 1) {
-        throw std::runtime_error("only rk_order=1 (forward Euler) is supported");
-    }
+void advance(advection::state_t& state, const exec_context_t& ctx, double dt_max) {
+    // Patches store their own v, cfl, dx values from initial_state
+    // Note: use_flux_buffer not accessible here, always use fused path
+    auto pipeline = parallel::pipeline(
+        ghost_exchange_t{},
+        compute_local_dt_t{dt_max},
+        flux_and_update_t{}
+    );
 
-    auto dx = ctx.initial.domain_length / ctx.initial.num_zones;
-    auto v = ctx.config.wavespeed;
-    auto cfl = ctx.config.cfl;
-
-    if (ctx.config.use_flux_buffer) { // Use of separate flux buffer (poor scaling -- memory bandwidth?)
-        auto pipeline = parallel::pipeline(
-            ghost_exchange_t{},
-            compute_local_dt_t{cfl, v, dx, dt_max},
-            compute_flux_t{},
-            update_conserved_t{}
-        );
-        ctx.execute(pipeline, state.patches);
-    } else { // No use of separate flux buffer (good scaling)
-        auto pipeline = parallel::pipeline(
-            ghost_exchange_t{},
-            compute_local_dt_t{cfl, v, dx, dt_max},
-            flux_and_update_t{}
-        );
-        ctx.execute(pipeline, state.patches);
+    if (ctx.comm) {
+        parallel::execute(pipeline, state.patches, *ctx.comm, ctx.scheduler, ctx.profiler);
+    } else {
+        parallel::execute(pipeline, state.patches, ctx.scheduler, ctx.profiler);
     }
     state.time += state.patches[0].dt;
 }
 
-auto zone_count(const advection::state_t& state, const advection::exec_context_t& ctx) -> std::size_t {
-    return ctx.initial.num_zones;
+auto zone_count(const advection::state_t& state) -> std::size_t {
+    auto count = std::size_t{0};
+    for (const auto& p : state.patches) {
+        count += mist::size(p.interior);
+    }
+    return count;
 }
 
 auto names_of_time(std::type_identity<advection>) -> std::vector<std::string> {
@@ -452,14 +424,15 @@ auto get_time(
 auto get_timeseries(
     const advection::state_t& state,
     const std::string& name,
-    const advection::exec_context_t& ctx
+    const exec_context_t& /* ctx */
 ) -> double {
     using std::views::transform;
 
     if (name == "time")
         return state.time;
 
-    const auto dx = ctx.initial.domain_length / ctx.initial.num_zones;
+    // Get dx from first patch (all patches have same dx)
+    const auto dx = state.patches.empty() ? 1.0 : state.patches[0].dx;
     const auto& patches = state.patches;
     auto sums = patches | transform([](const auto& p) { return sum(p.cons); });
     auto mins = patches | transform([](const auto& p) { return min(p.cons); });
@@ -478,12 +451,9 @@ auto get_timeseries(
 auto get_product(
     const advection::state_t& state,
     const std::string& name,
-    const advection::exec_context_t& ctx
+    const exec_context_t& /* ctx */
 ) -> advection::product_t {
     using std::views::transform;
-
-    auto dx = ctx.initial.domain_length / ctx.initial.num_zones;
-    auto v = ctx.config.wavespeed;
 
     if (name == "concentration") {
         return to_vector(state.patches | transform([](const auto& p) {
@@ -493,22 +463,18 @@ auto get_product(
         }));
     }
     if (name == "cell_x") {
-        return to_vector(state.patches | transform([dx](const auto& p) {
+        return to_vector(state.patches | transform([](const auto& p) {
+            auto dx = p.dx;
             return cache(lazy(p.interior, [dx](auto idx) { return cell_center_x(idx[0], dx); }), memory::host, exec::cpu);
         }));
     }
     if (name == "wavespeed") {
-        return to_vector(state.patches | transform([v](const auto& p) {
+        return to_vector(state.patches | transform([](const auto& p) {
+            auto v = p.v;
             return cache(fill(p.interior, v), memory::host, exec::cpu);
         }));
     }
     throw std::runtime_error("unknown product: " + name);
-}
-
-auto get_profiler_data(const advection::exec_context_t& ctx)
-    -> std::map<std::string, perf::profile_entry_t>
-{
-    return ctx.profiler.data();
 }
 
 // =============================================================================
@@ -538,7 +504,7 @@ int main(int argc, char* argv[])
         engine.set_log_prefix(log_prefix);
     }
 
-    if (engine.comm().rank() == 0) {
+    if (engine.get_comm().rank() == 0) {
         if (use_socket) {
             auto session = mist::driver::socket_session_t{engine};
             session.run();
