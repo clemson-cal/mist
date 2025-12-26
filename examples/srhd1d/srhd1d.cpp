@@ -30,6 +30,7 @@ SOFTWARE.
 #include <memory>
 #include <numeric>
 #include <ranges>
+#include "mist/comm.hpp"
 #include "mist/core.hpp"
 #include "mist/driver/physics_impl.hpp"
 #include "mist/driver/repl_session.hpp"
@@ -678,16 +679,13 @@ auto initial_state(
     const srhd::initial_t& initial,
     const exec_context_t& ctx
 ) -> srhd::state_t {
-    using std::views::iota;
-    using std::views::transform;
-
-    auto np = static_cast<int>(initial.num_partitions);
+    auto np = initial.num_partitions;
     auto S = index_space(ivec(0), uvec(initial.num_zones));
     auto dx = initial.domain_length / initial.num_zones;
     auto L = initial.domain_length;
 
-    auto patches = to_vector(iota(0, np) | transform([&](int p) {
-        auto patch = patch_t(subspace(S, np, p, 0));
+    auto make_patch = [&](const auto& space) {
+        auto patch = patch_t(space);
         patch.dx = dx;
         patch.L = L;
         patch.cfl = config.cfl;
@@ -697,7 +695,9 @@ auto initial_state(
         patch.bc_lo = config.bc_lo;
         patch.bc_hi = config.bc_hi;
         return patch;
-    }));
+    };
+
+    auto patches = decomposed_uniform_grid(S, uvec(np), make_patch, ctx.comm);
 
     parallel::execute(initial_state_t{}, patches, ctx.scheduler, ctx.profiler);
 

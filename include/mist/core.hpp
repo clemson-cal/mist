@@ -428,6 +428,13 @@ constexpr index_space_t<S> subspace(const index_space_t<S>& s, const uvec_t<S>& 
     return r;
 }
 
+constexpr index_space_t<1> partition(int lo, int hi, unsigned n, unsigned p) {
+    auto m = unsigned(hi - lo);
+    auto dl = m / n + 1, ds = m / n, nl = m % n;
+    auto pl = p < nl ? p : nl, ps = p > pl ? p - pl : 0;
+    return index_space(ivec(lo + int(pl * dl + ps * ds)), uvec(p < nl ? dl : ds));
+}
+
 template<std::size_t S>
 constexpr index_space_t<S> shift(const index_space_t<S>& s, int d, unsigned a) {
     auto r = s;

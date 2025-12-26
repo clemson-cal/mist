@@ -260,8 +260,8 @@ int main(int argc, char** argv) {
 
     // Decompose domain and create patches
     auto gs = index_space(ivec(0, 0), uvec(cfg.nx, cfg.ny));
-    auto patches = decomposed_uniform_grid(gs, uvec(cfg.px, cfg.py), comm,
-        [&cfg](const auto& space) { return create_patch(cfg, space); });
+    auto patches = decomposed_uniform_grid(gs, uvec(cfg.px, cfg.py),
+        [&cfg](const auto& space) { return create_patch(cfg, space); }, &comm);
 
     // Print patch distribution
     print_patch_distribution(comm, patches);

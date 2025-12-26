@@ -316,24 +316,23 @@ auto initial_state(
     const advection::initial_t& initial,
     const exec_context_t& ctx
 ) -> advection::state_t {
-    using std::views::iota;
-    using std::views::transform;
-
-    auto np = static_cast<int>(initial.num_partitions);
+    auto np = initial.num_partitions;
     auto S = index_space(ivec(0), uvec(initial.num_zones));
     auto dx = initial.domain_length / initial.num_zones;
     auto L = initial.domain_length;
     auto v = config.wavespeed;
     auto cfl = config.cfl;
 
-    auto patches = to_vector(iota(0, np) | transform([&](int p) {
-        auto patch = patch_t(subspace(S, np, p, 0));
+    auto make_patch = [&](const auto& space) {
+        auto patch = patch_t(space);
         patch.dx = dx;
         patch.L = L;
         patch.v = v;
         patch.cfl = cfl;
         return patch;
-    }));
+    };
+
+    auto patches = decomposed_uniform_grid(S, uvec(np), make_patch, ctx.comm);
 
     parallel::execute(initial_state_t{}, patches, ctx.scheduler, ctx.profiler);
 
