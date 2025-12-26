@@ -726,7 +726,9 @@ void advance(srhd::state_t& state, const exec_context_t& ctx, double dt_max) {
     parallel::execute(new_step, state.patches, ctx.scheduler, ctx.profiler);
     parallel::execute(euler_step, state.patches, ctx.scheduler, ctx.profiler);
 
-    state.time = state.patches[0].time;
+    if (!state.patches.empty()) {
+        state.time = state.patches[0].time;
+    }
 }
 
 auto zone_count(const srhd::state_t& state) -> std::size_t {

@@ -345,6 +345,7 @@ void advance(advection::state_t& state, const exec_context_t& ctx, double dt_max
     auto pipeline = parallel::pipeline(
         ghost_exchange_t{},
         compute_local_dt_t{dt_max},
+        global_dt_t{},
         flux_and_update_t{}
     );
 
@@ -353,7 +354,13 @@ void advance(advection::state_t& state, const exec_context_t& ctx, double dt_max
     } else {
         parallel::execute(pipeline, state.patches, ctx.scheduler, ctx.profiler);
     }
-    state.time += state.patches[0].dt;
+
+    // Update time - get dt from local patch or reduce across ranks
+    auto local_dt = state.patches.empty() ? 0.0 : state.patches[0].dt;
+    auto dt = ctx.comm
+        ? ctx.comm->combine(local_dt, [](double a, double b) { return std::max(a, b); })
+        : local_dt;
+    state.time += dt;
 }
 
 auto zone_count(const advection::state_t& state) -> std::size_t {
