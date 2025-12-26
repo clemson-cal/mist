@@ -1,6 +1,7 @@
 #pragma once
 
 #include <span>
+#include <stdexcept>
 #include <vector>
 #include "ndarray.hpp"
 
@@ -321,6 +322,18 @@ auto comm_t::build_plan(
         );
         MPI_Type_free(&meta_type);
 
+        // Validate non-overlapping publications
+        for (std::size_t i = 0; i < all_meta.size(); ++i) {
+            for (std::size_t j = i + 1; j < all_meta.size(); ++j) {
+                auto space_i = index_space(all_meta[i].start, all_meta[i].shape);
+                auto space_j = index_space(all_meta[j].start, all_meta[j].shape);
+                auto overlap = intersect(space_i, space_j);
+                if (mist::size(overlap) > 0) {
+                    throw std::runtime_error("overlapping provides regions in exchange");
+                }
+            }
+        }
+
         // Match requests with publications
         for (const auto& req : requests) {
             auto req_space = space(req);
@@ -430,6 +443,16 @@ auto comm_t::build_plan(
         return plan;
     }
 #endif // MIST_WITH_MPI
+
+    // Validate non-overlapping publications
+    for (std::size_t i = 0; i < publications.size(); ++i) {
+        for (std::size_t j = i + 1; j < publications.size(); ++j) {
+            auto overlap = intersect(space(publications[i]), space(publications[j]));
+            if (mist::size(overlap) > 0) {
+                throw std::runtime_error("overlapping provides regions in exchange");
+            }
+        }
+    }
 
     // Local-only fallback
     for (const auto& req : requests) {
