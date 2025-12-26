@@ -2,6 +2,7 @@
 
 #include <span>
 #include <stdexcept>
+#include <type_traits>
 #include <vector>
 #include "ndarray.hpp"
 
@@ -580,6 +581,44 @@ inline void comm_t::broadcast(std::vector<char>& buffer, int root) const {
     (void)buffer;
     (void)root;
 #endif
+}
+
+// =============================================================================
+// Uniform grid decomposition
+// =============================================================================
+
+template<std::size_t Rank, typename F>
+auto decomposed_uniform_grid(
+    const index_space_t<Rank>& space,
+    const uvec_t<Rank>& layout,
+    F&& patch_fn
+) -> std::vector<std::invoke_result_t<F, index_space_t<Rank>>> {
+    auto total_patches = product(layout);
+    auto results = std::vector<std::invoke_result_t<F, index_space_t<Rank>>>{};
+
+    for (unsigned p = 0; p < total_patches; ++p) {
+        auto patch_space = subspace(space, layout, ndindex(p, layout));
+        results.push_back(patch_fn(patch_space));
+    }
+    return results;
+}
+
+template<std::size_t Rank, typename F>
+auto decomposed_uniform_grid(
+    const index_space_t<Rank>& space,
+    const uvec_t<Rank>& layout,
+    const comm_t& comm,
+    F&& patch_fn
+) -> std::vector<std::invoke_result_t<F, index_space_t<Rank>>> {
+    auto total_patches = product(layout);
+    auto patch_range = subspace(index_space(ivec(0), uvec(total_patches)), comm.size(), comm.rank(), 0);
+    auto results = std::vector<std::invoke_result_t<F, index_space_t<Rank>>>{};
+
+    for (auto pi : patch_range) {
+        auto patch_space = subspace(space, layout, ndindex(pi[0], layout));
+        results.push_back(patch_fn(patch_space));
+    }
+    return results;
 }
 
 // =============================================================================

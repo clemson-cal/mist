@@ -2,16 +2,15 @@
 // 2D Laplacian with Distributed Domain Decomposition
 // =============================================================================
 //
-// This example demonstrates a fluent DSL for defining parallel computation
-// pipelines with minimal boilerplate. The computation pipeline consists of:
+// This example demonstrates parallel computation pipelines with domain
+// decomposition. The computation pipeline consists of:
 //
 // 1. Grid Decomposition: Split a 64x64 domain into px×py patches, each
 //    owned by a rank in the MPI communicator. The patch layout can be
 //    specified at runtime via --patches=px,py (default: 2x2)
 //
 // 2. Ghost Exchange: Share boundary data between neighboring patches before
-//    computation. Each patch requests ghost cells from its neighbors using
-//    the exchange() stage.
+//    computation. Each patch requests ghost cells from its neighbors.
 //
 // 3. Laplacian Computation: Apply a 5-point stencil to compute the discrete
 //    Laplacian of u(x,y) = sin(2πx) sin(2πy). Results are compared against
@@ -21,25 +20,19 @@
 //    using a global reduce operation. The result is the RMS error of the
 //    computed Laplacian.
 //
-// The fluent pipeline syntax allows composing these stages naturally:
-//
-//   transformation<patch_t>()
-//       .exchange(ghost_exchange_t{...})
-//       .compute(compute_laplacian_t{})
-//       .reduce(error_reduce_t{...})
-//       .execute(patches, comm, scheduler, profiler)
-//
 // Usage:
 //   ./laplacian2d                 # 2x2 patches (default)
 //   ./laplacian2d --patches=4,8   # 4x8 patches
 
 #include <cmath>
 #include <cstdlib>
-#include <iostream>
 #include <functional>
+#include <iostream>
 #include <string>
 #include <vector>
-#include "helpers.hpp"
+#include "mist/comm.hpp"
+#include "mist/ndarray.hpp"
+#include "mist/pipeline.hpp"
 
 using namespace mist;
 
@@ -267,28 +260,26 @@ int main(int argc, char** argv) {
 
     // Decompose domain and create patches
     auto gs = index_space(ivec(0, 0), uvec(cfg.nx, cfg.ny));
-    auto patches = grid(gs)
-        .decompose(uvec(cfg.px, cfg.py))
-        .distribute(comm)
-        .map([&cfg](const auto& space) { return create_patch(cfg, space); });
+    auto patches = decomposed_uniform_grid(gs, uvec(cfg.px, cfg.py), comm,
+        [&cfg](const auto& space) { return create_patch(cfg, space); });
 
     // Print patch distribution
     print_patch_distribution(comm, patches);
 
-    // Define computation pipeline
+    // Define and execute computation pipeline
     double dx = cfg.lx / cfg.nx;
     double dy = cfg.ly / cfg.ny;
     int nc = cfg.nx * cfg.ny;
 
-    auto calc = transformation<patch_t>()
-        .exchange(ghost_exchange_t{cfg.ng, cfg.nx, cfg.ny})
-        .compute(compute_laplacian_t{})
-        .reduce(error_reduce_t{dx, dy, nc});
+    auto pipeline = parallel::pipeline(
+        ghost_exchange_t{cfg.ng, cfg.nx, cfg.ny},
+        compute_laplacian_t{},
+        error_reduce_t{dx, dy, nc}
+    );
 
-    // Execute pipeline
-    auto s = parallel::scheduler_t{};
-    auto p = perf::null_profiler_t{};
-    calc.execute(patches, comm, s, p);
+    auto sched = parallel::scheduler_t{};
+    auto prof = perf::null_profiler_t{};
+    parallel::execute(pipeline, patches, comm, sched, prof);
 
     // Display results
     print_results(comm, cfg, patches, dx);
