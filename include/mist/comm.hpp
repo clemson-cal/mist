@@ -559,4 +559,37 @@ inline void comm_t::broadcast(std::vector<char>& buffer, int root) const {
 #endif
 }
 
+// =============================================================================
+// MPI context: RAII wrapper for MPI_Init/MPI_Finalize
+// =============================================================================
+
+class mpi_context {
+public:
+    mpi_context(int argc, char** argv) {
+#ifdef MIST_WITH_MPI
+        MPI_Init(&argc, &argv);
+#else
+        (void)argc;
+        (void)argv;
+#endif
+    }
+
+    ~mpi_context() {
+#ifdef MIST_WITH_MPI
+        MPI_Finalize();
+#endif
+    }
+
+    mpi_context(const mpi_context&) = delete;
+    auto operator=(const mpi_context&) -> mpi_context& = delete;
+
+    auto create_communicator() -> comm_t {
+#ifdef MIST_WITH_MPI
+        return comm_t::from_mpi(MPI_COMM_WORLD);
+#else
+        return comm_t{};
+#endif
+    }
+};
+
 } // namespace mist

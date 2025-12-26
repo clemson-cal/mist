@@ -16,41 +16,7 @@
 #include "mist/pipeline.hpp"
 #include "mist/serialize.hpp"
 
-#ifdef MIST_WITH_MPI
-#include <mpi.h>
-#endif
-
 using namespace mist;
-
-// =============================================================================
-// MPI Initialization
-// =============================================================================
-
-class mpi_context {
-public:
-    mpi_context(int argc, char** argv) {
-#ifdef MIST_WITH_MPI
-        MPI_Init(&argc, &argv);
-#else
-        (void)argc;
-        (void)argv;
-#endif
-    }
-
-    ~mpi_context() {
-#ifdef MIST_WITH_MPI
-        MPI_Finalize();
-#endif
-    }
-
-    auto create_communicator() -> comm_t {
-#ifdef MIST_WITH_MPI
-        return comm_t::from_mpi(MPI_COMM_WORLD);
-#else
-        return comm_t{};
-#endif
-    }
-};
 
 template<std::ranges::range R>
 auto to_vector(R&& r) {
