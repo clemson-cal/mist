@@ -1,8 +1,11 @@
 // engine.cpp - implementation of engine_t
 
+#include <filesystem>
 #include "mist/driver/engine.hpp"
 
 namespace mist::driver {
+
+namespace fs = std::filesystem;
 
 // =============================================================================
 // Help text
@@ -703,28 +706,85 @@ void engine_t::handle(const cmd::write_checkpoint& c, emit_fn emit) {
         return;
     }
 
-    auto filename = std::string{};
     auto fmt = output_format{};
 
-    if (c.dest) {
-        filename = *c.dest;
-        fmt = infer_format_from_filename(filename);
-    } else {
-        fmt = state_ref.format;
+    if (comm.size() > 1) {
+        // Distributed checkpoint: create directory, each rank writes its own file
+        auto dirname = std::string{};
+        if (c.dest) {
+            dirname = *c.dest;
+            // Strip extension if present for directory name
+            if (auto dot = dirname.rfind('.'); dot != std::string::npos) {
+                dirname = dirname.substr(0, dot);
+            }
+            fmt = infer_format_from_filename(*c.dest);
+        } else {
+            fmt = state_ref.format;
+            auto oss = std::ostringstream{};
+            oss << "chkpt." << std::setw(4) << std::setfill('0') << state_ref.checkpoint_count;
+            dirname = oss.str();
+            state_ref.checkpoint_count++;
+        }
+
+        // Rank 0 creates directory
+        if (comm.rank() == 0) {
+            std::error_code ec;
+            fs::create_directories(dirname, ec);
+            if (ec) {
+                emit(resp::error{"failed to create directory " + dirname + ": " + ec.message()});
+                return;
+            }
+        }
+        comm.barrier();
+
+        // Each rank writes its own file
         auto ext = (fmt == output_format::ascii) ? ".dat" : ".bin";
         auto oss = std::ostringstream{};
-        oss << "chkpt." << std::setw(4) << std::setfill('0') << state_ref.checkpoint_count << ext;
-        filename = oss.str();
-        state_ref.checkpoint_count++;
-    }
+        oss << dirname << "/rank." << std::setw(4) << std::setfill('0') << comm.rank() << ext;
+        auto filename = oss.str();
 
-    auto file = std::ofstream{filename, std::ios::binary};
-    if (!file) {
-        emit(resp::error{"failed to open " + filename});
-        return;
+        auto file = std::ofstream{filename, std::ios::binary};
+        if (!file) {
+            // Use barrier to ensure all ranks participate before any error
+            comm.barrier();
+            if (comm.rank() == 0) {
+                emit(resp::error{"failed to open " + filename});
+            }
+            return;
+        }
+        write_checkpoint(file, fmt);
+        auto bytes = static_cast<std::size_t>(file.tellp());
+
+        // Reduce total bytes written across all ranks
+        auto total_bytes = comm.combine(bytes, std::plus<std::size_t>{});
+        comm.barrier();
+
+        if (comm.rank() == 0) {
+            emit(resp::wrote_file{dirname, total_bytes});
+        }
+    } else {
+        // Single-rank checkpoint: write single file
+        auto filename = std::string{};
+        if (c.dest) {
+            filename = *c.dest;
+            fmt = infer_format_from_filename(filename);
+        } else {
+            fmt = state_ref.format;
+            auto ext = (fmt == output_format::ascii) ? ".dat" : ".bin";
+            auto oss = std::ostringstream{};
+            oss << "chkpt." << std::setw(4) << std::setfill('0') << state_ref.checkpoint_count << ext;
+            filename = oss.str();
+            state_ref.checkpoint_count++;
+        }
+
+        auto file = std::ofstream{filename, std::ios::binary};
+        if (!file) {
+            emit(resp::error{"failed to open " + filename});
+            return;
+        }
+        write_checkpoint(file, fmt);
+        emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
     }
-    write_checkpoint(file, fmt);
-    emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
 }
 
 void engine_t::handle(const cmd::write_products& c, emit_fn emit) {
@@ -744,28 +804,80 @@ void engine_t::handle(const cmd::write_products& c, emit_fn emit) {
         return;
     }
 
-    auto filename = std::string{};
     auto fmt = output_format{};
 
-    if (c.dest) {
-        filename = *c.dest;
-        fmt = infer_format_from_filename(filename);
-    } else {
-        fmt = state_ref.format;
+    if (comm.size() > 1) {
+        // Distributed products: create directory, each rank writes its own file
+        auto dirname = std::string{};
+        if (c.dest) {
+            dirname = *c.dest;
+            if (auto dot = dirname.rfind('.'); dot != std::string::npos) {
+                dirname = dirname.substr(0, dot);
+            }
+            fmt = infer_format_from_filename(*c.dest);
+        } else {
+            fmt = state_ref.format;
+            auto oss = std::ostringstream{};
+            oss << "prods." << std::setw(4) << std::setfill('0') << state_ref.products_count;
+            dirname = oss.str();
+            state_ref.products_count++;
+        }
+
+        if (comm.rank() == 0) {
+            std::error_code ec;
+            fs::create_directories(dirname, ec);
+            if (ec) {
+                emit(resp::error{"failed to create directory " + dirname + ": " + ec.message()});
+                return;
+            }
+        }
+        comm.barrier();
+
         auto ext = (fmt == output_format::ascii) ? ".dat" : ".bin";
         auto oss = std::ostringstream{};
-        oss << "prods." << std::setw(4) << std::setfill('0') << state_ref.products_count << ext;
-        filename = oss.str();
-        state_ref.products_count++;
-    }
+        oss << dirname << "/rank." << std::setw(4) << std::setfill('0') << comm.rank() << ext;
+        auto filename = oss.str();
 
-    auto file = std::ofstream{filename, std::ios::binary};
-    if (!file) {
-        emit(resp::error{"failed to open " + filename});
-        return;
+        auto file = std::ofstream{filename, std::ios::binary};
+        if (!file) {
+            comm.barrier();
+            if (comm.rank() == 0) {
+                emit(resp::error{"failed to open " + filename});
+            }
+            return;
+        }
+        write_products(file, fmt);
+        auto bytes = static_cast<std::size_t>(file.tellp());
+
+        auto total_bytes = comm.combine(bytes, std::plus<std::size_t>{});
+        comm.barrier();
+
+        if (comm.rank() == 0) {
+            emit(resp::wrote_file{dirname, total_bytes});
+        }
+    } else {
+        // Single-rank products: write single file
+        auto filename = std::string{};
+        if (c.dest) {
+            filename = *c.dest;
+            fmt = infer_format_from_filename(filename);
+        } else {
+            fmt = state_ref.format;
+            auto ext = (fmt == output_format::ascii) ? ".dat" : ".bin";
+            auto oss = std::ostringstream{};
+            oss << "prods." << std::setw(4) << std::setfill('0') << state_ref.products_count << ext;
+            filename = oss.str();
+            state_ref.products_count++;
+        }
+
+        auto file = std::ofstream{filename, std::ios::binary};
+        if (!file) {
+            emit(resp::error{"failed to open " + filename});
+            return;
+        }
+        write_products(file, fmt);
+        emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
     }
-    write_products(file, fmt);
-    emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
 }
 
 void engine_t::handle(const cmd::write_iteration& c, emit_fn emit) {
@@ -843,6 +955,79 @@ void engine_t::handle(const cmd::reset&, emit_fn emit) {
 }
 
 void engine_t::handle(const cmd::load& c, emit_fn emit) {
+    // Determine the path to load - may be file or directory
+    auto path = c.filename;
+
+    // If path doesn't exist but stripping extension gives a directory, use that
+    // This handles: user says "load chkpt.0000.dat" but we wrote "chkpt.0000/"
+    if (!fs::exists(path)) {
+        if (auto dot = path.rfind('.'); dot != std::string::npos) {
+            auto dirname = path.substr(0, dot);
+            if (fs::is_directory(dirname)) {
+                path = dirname;
+            }
+        }
+    }
+
+    // Check if path is a directory (distributed checkpoint)
+    if (fs::is_directory(path)) {
+        // Distributed checkpoint: each rank reads its own file
+        auto ext = std::string{".bin"};
+
+        // Check for rank file with either extension
+        auto oss = std::ostringstream{};
+        oss << path << "/rank." << std::setw(4) << std::setfill('0') << comm.rank();
+        auto base = oss.str();
+
+        auto filename = std::string{};
+        auto fmt = output_format{};
+        if (fs::exists(base + ".bin")) {
+            filename = base + ".bin";
+            fmt = output_format::binary;
+        } else if (fs::exists(base + ".dat")) {
+            filename = base + ".dat";
+            fmt = output_format::ascii;
+        } else {
+            comm.barrier();
+            if (comm.rank() == 0) {
+                emit(resp::error{"rank file not found: " + base + ".bin or " + base + ".dat"});
+            }
+            return;
+        }
+
+        auto file = std::ifstream{filename, std::ios::binary};
+        if (!file) {
+            comm.barrier();
+            if (comm.rank() == 0) {
+                emit(resp::error{"failed to open " + filename});
+            }
+            return;
+        }
+
+        bool success = false;
+        if (fmt == output_format::ascii) {
+            auto reader = ascii_reader{file};
+            success = deserialize(reader, "driver_state", state_ref) && physics.load_state(file, fmt);
+        } else {
+            auto reader = binary_reader{file};
+            success = deserialize(reader, "driver_state", state_ref) && physics.load_state(file, fmt);
+        }
+
+        // Check if all ranks succeeded
+        auto all_success = comm.combine(success ? 1 : 0, [](int a, int b) { return a * b; }) != 0;
+        comm.barrier();
+
+        if (comm.rank() == 0) {
+            if (all_success) {
+                emit(resp::ok{"loaded distributed checkpoint from " + path});
+            } else {
+                emit(resp::error{"failed to load distributed checkpoint from " + path});
+            }
+        }
+        return;
+    }
+
+    // Single file: try various formats
     auto fmt = infer_format_from_filename(c.filename);
 
     auto file = std::ifstream{c.filename, std::ios::binary};

@@ -567,6 +567,17 @@ void serialize(A& ar, const patch_t& p) {
     ar.begin_group();
     auto interior = cache(map(p.cons[p.interior], std::identity{}), memory::host, exec::cpu);
     serialize(ar, "cons", interior);
+    serialize(ar, "dx", p.dx);
+    serialize(ar, "dt", p.dt);
+    serialize(ar, "time", p.time);
+    serialize(ar, "time_rk", p.time_rk);
+    serialize(ar, "cfl", p.cfl);
+    serialize(ar, "plm_theta", p.plm_theta);
+    serialize(ar, "L", p.L);
+    serialize(ar, "num_zones", p.num_zones);
+    serialize(ar, "ic", to_string(p.ic));
+    serialize(ar, "bc_lo", to_string(p.bc_lo));
+    serialize(ar, "bc_hi", to_string(p.bc_hi));
     ar.end_group();
 }
 
@@ -575,9 +586,26 @@ auto deserialize(A& ar, patch_t& p) -> bool {
     if (!ar.begin_group()) return false;
     auto interior = cached_t<cons_t, 1>{};
     deserialize(ar, "cons", interior);
-    ar.end_group();
     p = patch_t(space(interior));
     copy(p.cons[p.interior], interior);
+    deserialize(ar, "dx", p.dx);
+    deserialize(ar, "dt", p.dt);
+    deserialize(ar, "time", p.time);
+    deserialize(ar, "time_rk", p.time_rk);
+    deserialize(ar, "cfl", p.cfl);
+    deserialize(ar, "plm_theta", p.plm_theta);
+    deserialize(ar, "L", p.L);
+    deserialize(ar, "num_zones", p.num_zones);
+    auto ic_str = std::string{};
+    auto bc_lo_str = std::string{};
+    auto bc_hi_str = std::string{};
+    deserialize(ar, "ic", ic_str);
+    deserialize(ar, "bc_lo", bc_lo_str);
+    deserialize(ar, "bc_hi", bc_hi_str);
+    p.ic = from_string(std::type_identity<initial_condition>{}, ic_str);
+    p.bc_lo = from_string(std::type_identity<boundary_condition>{}, bc_lo_str);
+    p.bc_hi = from_string(std::type_identity<boundary_condition>{}, bc_hi_str);
+    ar.end_group();
     return true;
 }
 

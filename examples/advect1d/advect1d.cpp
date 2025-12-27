@@ -210,6 +210,10 @@ void serialize(A& ar, const patch_t& p) {
     auto interior = cached_t<double, 1>(p.interior, memory::host);
     copy(interior[p.interior], p.cons[p.interior]);
     serialize(ar, "cons", interior);
+    serialize(ar, "v", p.v);
+    serialize(ar, "cfl", p.cfl);
+    serialize(ar, "dx", p.dx);
+    serialize(ar, "L", p.L);
     ar.end_group();
 }
 
@@ -218,9 +222,13 @@ auto deserialize(A& ar, patch_t& p) -> bool {
     if (!ar.begin_group()) return false;
     auto interior = cached_t<double, 1>{};
     deserialize(ar, "cons", interior);
-    ar.end_group();
     p = patch_t(space(interior));
     copy(p.cons[p.interior], interior);
+    deserialize(ar, "v", p.v);
+    deserialize(ar, "cfl", p.cfl);
+    deserialize(ar, "dx", p.dx);
+    deserialize(ar, "L", p.L);
+    ar.end_group();
     return true;
 }
 

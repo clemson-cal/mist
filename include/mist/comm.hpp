@@ -133,6 +133,10 @@ struct comm_t {
     // --- Broadcast ---
 
     void broadcast(std::vector<char>& buffer, int root = 0) const;
+
+    // --- Synchronization ---
+
+    void barrier() const;
 };
 
 // =============================================================================
@@ -580,6 +584,14 @@ inline void comm_t::broadcast(std::vector<char>& buffer, int root) const {
 #else
     (void)buffer;
     (void)root;
+#endif
+}
+
+inline void comm_t::barrier() const {
+#ifdef MIST_WITH_MPI
+    if (mpi_comm_ != MPI_COMM_NULL && size_ > 1) {
+        MPI_Barrier(mpi_comm_);
+    }
 #endif
 }
 
