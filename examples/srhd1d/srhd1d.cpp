@@ -626,73 +626,105 @@ struct srhd {
         initial_condition ic = initial_condition::sod;
         boundary_condition bc_lo = boundary_condition::outflow;
         boundary_condition bc_hi = boundary_condition::outflow;
-
-        auto fields() const {
-            return std::make_tuple(
-                field("rk_order", rk_order),
-                field("cfl", cfl),
-                field("plm_theta", plm_theta),
-                field("ic", ic),
-                field("bc_lo", bc_lo),
-                field("bc_hi", bc_hi)
-            );
-        }
-
-        auto fields() {
-            return std::make_tuple(
-                field("rk_order", rk_order),
-                field("cfl", cfl),
-                field("plm_theta", plm_theta),
-                field("ic", ic),
-                field("bc_lo", bc_lo),
-                field("bc_hi", bc_hi)
-            );
-        }
     };
 
     struct initial_t {
         unsigned int num_zones = 400;
         unsigned int num_partitions = 1;
         double domain_length = 1.0;
-
-        auto fields() const {
-            return std::make_tuple(
-                field("num_zones", num_zones),
-                field("num_partitions", num_partitions),
-                field("domain_length", domain_length)
-            );
-        }
-
-        auto fields() {
-            return std::make_tuple(
-                field("num_zones", num_zones),
-                field("num_partitions", num_partitions),
-                field("domain_length", domain_length)
-            );
-        }
     };
 
     struct state_t {
+        double time = 0.0;
         std::vector<patch_t> patches;
-        double time;
-
-        auto fields() const {
-            return std::make_tuple(
-                field("patches", patches),
-                field("time", time)
-            );
-        }
-
-        auto fields() {
-            return std::make_tuple(
-                field("patches", patches),
-                field("time", time)
-            );
-        }
     };
 
     using product_t = std::vector<cached_t<double, 1>>;
 };
+
+// =============================================================================
+// ADL fields() functions for srhd types
+// =============================================================================
+
+inline auto fields(const srhd::config_t& c) {
+    return std::make_tuple(
+        field("rk_order", c.rk_order),
+        field("cfl", c.cfl),
+        field("plm_theta", c.plm_theta),
+        field("ic", c.ic),
+        field("bc_lo", c.bc_lo),
+        field("bc_hi", c.bc_hi)
+    );
+}
+
+inline auto fields(srhd::config_t& c) {
+    return std::make_tuple(
+        field("rk_order", c.rk_order),
+        field("cfl", c.cfl),
+        field("plm_theta", c.plm_theta),
+        field("ic", c.ic),
+        field("bc_lo", c.bc_lo),
+        field("bc_hi", c.bc_hi)
+    );
+}
+
+inline auto fields(const srhd::initial_t& i) {
+    return std::make_tuple(
+        field("num_zones", i.num_zones),
+        field("num_partitions", i.num_partitions),
+        field("domain_length", i.domain_length)
+    );
+}
+
+inline auto fields(srhd::initial_t& i) {
+    return std::make_tuple(
+        field("num_zones", i.num_zones),
+        field("num_partitions", i.num_partitions),
+        field("domain_length", i.domain_length)
+    );
+}
+
+inline auto fields(const srhd::state_t& s) {
+    return std::make_tuple(
+        field("time", s.time),
+        field("patches", s.patches)
+    );
+}
+
+inline auto fields(srhd::state_t& s) {
+    return std::make_tuple(
+        field("time", s.time),
+        field("patches", s.patches)
+    );
+}
+
+// =============================================================================
+// Parallel IO functions for srhd::state_t
+// =============================================================================
+
+inline auto item_key(const patch_t& p) -> std::string {
+    auto s = start(p.interior);
+    auto n = shape(p.interior);
+    return std::to_string(s[0]) + "_" + std::to_string(n[0]);
+}
+
+template<ArchiveWriter A>
+void serialize_header(A& ar, const srhd::state_t& s) {
+    mist::serialize(ar, "time", s.time);
+}
+
+template<ArchiveReader A>
+auto deserialize_header(A& ar, srhd::state_t& s) -> bool {
+    return mist::deserialize(ar, "time", s.time);
+}
+
+inline auto items(const srhd::state_t& s) -> const std::vector<patch_t>& {
+    return s.patches;
+}
+
+inline auto items(srhd::state_t& s) -> std::vector<patch_t>& {
+    return s.patches;
+}
 
 // =============================================================================
 // Physics interface implementation
@@ -733,7 +765,7 @@ auto initial_state(
 
     parallel::execute(initial_state_t{}, patches, ctx.scheduler, ctx.profiler);
 
-    return {std::move(patches), 0.0};
+    return {.time = 0.0, .patches = std::move(patches)};
 }
 
 void advance(srhd::state_t& state, const exec_context_t& ctx, double dt_max) {

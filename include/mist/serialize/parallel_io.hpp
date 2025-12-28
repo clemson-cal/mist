@@ -44,7 +44,7 @@ void parallel_write(const fs::path& path, const State& state) {
             throw std::runtime_error("failed to open header.bin for writing");
         }
         binary_writer writer(file);
-        serialize(writer, header(state));
+        serialize_header(writer, state);
     }
 
     // Collect item keys and write items
@@ -90,7 +90,9 @@ void parallel_read(const fs::path& path, State& state, Predicate&& wants_item) {
             throw std::runtime_error("failed to open header.bin for reading");
         }
         binary_reader reader(file);
-        deserialize(reader, header(state));
+        if (!deserialize_header(reader, state)) {
+            throw std::runtime_error("failed to deserialize header");
+        }
     }
 
     // Read index file to get list of available items
@@ -137,6 +139,79 @@ void parallel_read(const fs::path& path, State& state) {
 }
 
 // =============================================================================
+// Item-only helpers (for custom header handling)
+// =============================================================================
+
+// Write just the items (index file + item files) - caller handles header
+template<typename Items>
+    requires std::ranges::range<Items>
+          && HasItemKey<std::ranges::range_value_t<Items>>
+void write_items(const fs::path& path, const Items& item_range) {
+    std::vector<std::string> keys;
+    for (const auto& item : item_range) {
+        auto key = item_key(item);
+        keys.push_back(key);
+
+        std::ofstream file(path / ("item_" + key + ".bin"), std::ios::binary);
+        if (!file) {
+            throw std::runtime_error("failed to open item file for writing: " + key);
+        }
+        binary_writer writer(file);
+        serialize(writer, item);
+    }
+
+    std::ofstream file(path / "items.txt");
+    if (!file) {
+        throw std::runtime_error("failed to open items.txt for writing");
+    }
+    for (const auto& key : keys) {
+        file << key << "\n";
+    }
+}
+
+// Read just the items - caller handles header
+template<typename Container, typename Predicate>
+    requires std::invocable<Predicate, const std::string&>
+          && std::convertible_to<std::invoke_result_t<Predicate, const std::string&>, bool>
+void read_items(const fs::path& path, Container& container, Predicate&& wants_item) {
+    using item_type = typename Container::value_type;
+
+    // Read index
+    std::vector<std::string> keys;
+    {
+        std::ifstream file(path / "items.txt");
+        if (!file) {
+            throw std::runtime_error("failed to open items.txt for reading");
+        }
+        std::string key;
+        while (std::getline(file, key)) {
+            if (!key.empty()) {
+                keys.push_back(key);
+            }
+        }
+    }
+
+    // Clear and read items
+    container.clear();
+    for (const auto& key : keys) {
+        if (!wants_item(key)) {
+            continue;
+        }
+
+        std::ifstream file(path / ("item_" + key + ".bin"), std::ios::binary);
+        if (!file) {
+            throw std::runtime_error("failed to open item file for reading: " + key);
+        }
+        binary_reader reader(file);
+        item_type item;
+        if (!deserialize(reader, item)) {
+            throw std::runtime_error("failed to deserialize item: " + key);
+        }
+        container.push_back(std::move(item));
+    }
+}
+
+// =============================================================================
 // Utilities
 // =============================================================================
 
@@ -157,14 +232,16 @@ inline auto list_item_keys(const fs::path& path) -> std::vector<std::string> {
 }
 
 // Read only the header from a parallel IO directory
-template<typename Header>
-void read_header(const fs::path& path, Header& hdr) {
+template<ParallelRead State>
+void read_header(const fs::path& path, State& state) {
     std::ifstream file(path / "header.bin", std::ios::binary);
     if (!file) {
         throw std::runtime_error("failed to open header.bin for reading");
     }
     binary_reader reader(file);
-    deserialize(reader, hdr);
+    if (!deserialize_header(reader, state)) {
+        throw std::runtime_error("failed to deserialize header");
+    }
 }
 
 } // namespace serialize

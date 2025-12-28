@@ -36,6 +36,8 @@ using serialize::ParallelRead;
 using serialize::HasItemKey;
 using serialize::parallel_write;
 using serialize::parallel_read;
+using serialize::write_items;
+using serialize::read_items;
 using serialize::list_item_keys;
 using serialize::read_header;
 

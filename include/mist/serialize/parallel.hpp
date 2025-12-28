@@ -8,27 +8,36 @@
 // data is written as: header + list of items (e.g., patches in domain decomposition).
 //
 // Writing:
-//   - header(const T&) -> returns metadata to write once
-//   - items(const T&)  -> returns iterable of items to write independently
+//   - serialize_header(writer, const T&) -> serializes metadata once
+//   - items(const T&) -> returns iterable of items to write independently
 //   - item_key(const Item&) -> returns unique key for the item (for filenames)
 //
 // Reading:
-//   - header(T&) -> returns reference to metadata to populate
-//   - items(T&)  -> returns container to populate with loaded items
+//   - deserialize_header(reader, T&) -> deserializes metadata
+//   - items(T&) -> returns container to populate with loaded items
 //   - A predicate is passed at call site to filter which items to load
 //
 // Usage example:
 //
 //   struct patch_t { index_space_t space; std::vector<double> data; };
 //   struct simulation_state_t {
-//       config_t config;
+//       double time;
 //       std::vector<patch_t> patches;
 //   };
 //
-//   // ADL functions for ParallelWrite/ParallelRead
-//   auto header(const simulation_state_t& s) -> const config_t& { return s.config; }
+//   // Explicit header serialization
+//   template<ArchiveWriter A>
+//   void serialize_header(A& ar, const simulation_state_t& s) {
+//       serialize(ar, "time", s.time);
+//   }
+//
+//   template<ArchiveReader A>
+//   auto deserialize_header(A& ar, simulation_state_t& s) -> bool {
+//       return deserialize(ar, "time", s.time);
+//   }
+//
+//   // Items access
 //   auto items(const simulation_state_t& s) -> const auto& { return s.patches; }
-//   auto header(simulation_state_t& s) -> config_t& { return s.config; }
 //   auto items(simulation_state_t& s) -> auto& { return s.patches; }
 //
 //   // Item key for filename generation
@@ -44,6 +53,9 @@
 #include <concepts>
 #include <ranges>
 #include <type_traits>
+
+#include "binary_writer.hpp"
+#include "binary_reader.hpp"
 
 namespace serialize {
 
@@ -61,9 +73,9 @@ concept HasItemKey = requires(const T& item) {
 // =============================================================================
 
 template<typename T>
-concept ParallelWrite = requires(const T& t) {
-    // header(t) returns something (metadata to serialize once)
-    { header(t) };
+concept ParallelWrite = requires(const T& t, binary_writer& w) {
+    // serialize_header writes metadata
+    { serialize_header(w, t) };
     // items(t) returns an iterable of items
     { items(t) } -> std::ranges::range;
 };
@@ -73,9 +85,9 @@ concept ParallelWrite = requires(const T& t) {
 // =============================================================================
 
 template<typename T>
-concept ParallelRead = requires(T& t) {
-    // header(t) returns reference to metadata to populate
-    { header(t) };
+concept ParallelRead = requires(T& t, binary_reader& r) {
+    // deserialize_header reads metadata
+    { deserialize_header(r, t) } -> std::same_as<bool>;
     // items(t) returns container to populate
     { items(t) };
 };
@@ -83,9 +95,6 @@ concept ParallelRead = requires(T& t) {
 // =============================================================================
 // Type traits for parallel serialization
 // =============================================================================
-
-template<ParallelWrite T>
-using parallel_header_type = decltype(header(std::declval<const T&>()));
 
 template<ParallelWrite T>
 using parallel_items_type = decltype(items(std::declval<const T&>()));

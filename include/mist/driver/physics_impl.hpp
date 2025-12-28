@@ -1,10 +1,37 @@
 #pragma once
 
+#include <filesystem>
 #include <type_traits>
 #include "physics_interface.hpp"
 #include "../serialize.hpp"
 
 namespace mist::driver {
+
+namespace fs = std::filesystem;
+
+// =============================================================================
+// Physics concept (defines what a physics module must provide)
+// =============================================================================
+
+// =============================================================================
+// ParallelPhysics concept - physics that supports item-based parallel IO
+// =============================================================================
+
+template<typename P>
+concept ParallelPhysics = requires(
+    const typename P::state_t& cs,
+    typename P::state_t& s,
+    binary_writer& w,
+    binary_reader& r
+) {
+    // State must provide serialize_header/deserialize_header and items
+    { serialize_header(w, cs) };
+    { deserialize_header(r, s) } -> std::same_as<bool>;
+    { items(cs) } -> std::ranges::range;
+    { items(s) } -> std::ranges::range;
+    // Items must have keys
+    requires HasItemKey<std::ranges::range_value_t<decltype(items(cs))>>;
+};
 
 // =============================================================================
 // Physics concept (defines what a physics module must provide)
@@ -287,6 +314,70 @@ public:
         initial_ = std::move(ini);
         state_ = std::move(state);
         return true;
+    }
+
+    // -------------------------------------------------------------------------
+    // Parallel I/O - directory-based operations
+    // -------------------------------------------------------------------------
+
+    void write_state(const fs::path& path) override {
+        if (!state_.has_value()) {
+            throw std::runtime_error("state not initialized");
+        }
+
+        if constexpr (ParallelPhysics<P>) {
+            // Create directory
+            fs::create_directories(path);
+
+            // Write header: config + initial + state header
+            {
+                std::ofstream file(path / "header.bin", std::ios::binary);
+                if (!file) {
+                    throw std::runtime_error("failed to open header.bin for writing");
+                }
+                binary_writer writer(file);
+                serialize(writer, "physics", config_);
+                serialize(writer, "initial", initial_);
+                serialize_header(writer, *state_);
+            }
+
+            // Write items using generic helper
+            write_items(path, items(*state_));
+        } else {
+            throw std::runtime_error("this physics module does not support parallel IO");
+        }
+    }
+
+    auto load_state(const fs::path& path, item_predicate wants_item) -> bool override {
+        if constexpr (ParallelPhysics<P>) {
+            try {
+                typename P::config_t cfg;
+                typename P::initial_t ini;
+                typename P::state_t state;
+
+                // Read header: config + initial + state header
+                {
+                    std::ifstream file(path / "header.bin", std::ios::binary);
+                    if (!file) return false;
+                    binary_reader reader(file);
+                    if (!deserialize(reader, "physics", cfg)) return false;
+                    if (!deserialize(reader, "initial", ini)) return false;
+                    if (!deserialize_header(reader, state)) return false;
+                }
+
+                // Read items using generic helper
+                read_items(path, items(state), wants_item);
+
+                config_ = std::move(cfg);
+                initial_ = std::move(ini);
+                state_ = std::move(state);
+                return true;
+            } catch (...) {
+                return false;
+            }
+        } else {
+            throw std::runtime_error("this physics module does not support parallel IO");
+        }
     }
 
     // -------------------------------------------------------------------------

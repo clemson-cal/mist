@@ -1,5 +1,7 @@
 #pragma once
 
+#include <filesystem>
+#include <functional>
 #include <limits>
 #include <map>
 #include <memory>
@@ -62,6 +64,18 @@ struct physics_interface_t {
     virtual auto load_physics(std::istream& is, output_format fmt) -> bool = 0;
     virtual auto load_initial(std::istream& is, output_format fmt) -> bool = 0;
     virtual auto load_state(std::istream& is, output_format fmt) -> bool = 0;
+
+    // -------------------------------------------------------------------------
+    // Parallel I/O - directory-based operations
+    // -------------------------------------------------------------------------
+    using item_predicate = std::function<bool(const std::string&)>;
+
+    virtual void write_state(const std::filesystem::path& path) = 0;
+    virtual auto load_state(const std::filesystem::path& path, item_predicate wants_item) -> bool = 0;
+
+    auto load_state(const std::filesystem::path& path) -> bool {
+        return load_state(path, [](const std::string&) { return true; });
+    }
 
     // -------------------------------------------------------------------------
     // Profiler and performance
