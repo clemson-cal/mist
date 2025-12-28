@@ -45,6 +45,9 @@ concept UnaryFunction = requires(F f, T t) {
 template<Arithmetic T, std::size_t S>
     requires (S > 0)
 struct vec_t {
+    using value_type = T;
+    static constexpr std::size_t extent = S;
+
     T data[S];
 
     MIST_HD constexpr T& operator[](std::size_t i) { return data[i]; }

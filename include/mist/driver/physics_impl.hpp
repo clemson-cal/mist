@@ -2,10 +2,7 @@
 
 #include <type_traits>
 #include "physics_interface.hpp"
-#include "../ascii_reader.hpp"
-#include "../ascii_writer.hpp"
-#include "../binary_reader.hpp"
-#include "../binary_writer.hpp"
+#include "../serialize.hpp"
 
 namespace mist::driver {
 

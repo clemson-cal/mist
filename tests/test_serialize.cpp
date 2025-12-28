@@ -4,10 +4,6 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
-#include "mist/ascii_reader.hpp"
-#include "mist/ascii_writer.hpp"
-#include "mist/binary_reader.hpp"
-#include "mist/binary_writer.hpp"
 #include "mist/core.hpp"
 #include "mist/serialize.hpp"
 
@@ -375,12 +371,12 @@ template<typename Format, typename T>
 auto round_trip(const T& original, const char* name) -> T {
     auto ss = Format::make_stream();
     auto writer = Format::make_writer(ss);
-    serialize(writer, name, original);
+    mist::serialize(writer, name, original);
 
     ss.seekg(0);
     auto reader = Format::make_reader(ss);
     auto loaded = make_default<T>();
-    deserialize(reader, name, loaded);
+    mist::deserialize(reader, name, loaded);
     return loaded;
 }
 
@@ -389,14 +385,14 @@ auto round_trip_file(const T& original, const char* name) -> T {
     {
         auto file = std::ofstream(binary_file_tag::filename, std::ios::binary);
         auto writer = binary_writer(file);
-        serialize(writer, name, original);
+        mist::serialize(writer, name, original);
     }
 
     auto loaded = make_default<T>();
     {
         auto file = std::ifstream(binary_file_tag::filename, std::ios::binary);
         auto reader = binary_reader(file);
-        deserialize(reader, name, loaded);
+        mist::deserialize(reader, name, loaded);
     }
     std::remove(binary_file_tag::filename);
     return loaded;
@@ -448,12 +444,12 @@ void test_binary_vs_ascii_size() {
 
     auto ascii_ss = std::stringstream{};
     auto ascii_w = ascii_writer(ascii_ss);
-    serialize(ascii_w, "state", state);
+    mist::serialize(ascii_w, "state", state);
     auto ascii_size = ascii_ss.str().size();
 
     auto binary_ss = std::stringstream(std::ios::binary | std::ios::in | std::ios::out);
     auto binary_w = binary_writer(binary_ss);
-    serialize(binary_w, "state", state);
+    mist::serialize(binary_w, "state", state);
     auto binary_size = binary_ss.str().size();
 
     std::cout << "\n    ASCII size:  " << ascii_size << " bytes\n";
@@ -473,14 +469,14 @@ void test_binary_file_io() {
     {
         auto file = std::ofstream("test_output.bin", std::ios::binary);
         auto writer = binary_writer(file);
-        serialize(writer, "data", original);
+        mist::serialize(writer, "data", original);
     }
 
     auto loaded = std::vector<double>{};
     {
         auto file = std::ifstream("test_output.bin", std::ios::binary);
         auto reader = binary_reader(file);
-        deserialize(reader, "data", loaded);
+        mist::deserialize(reader, "data", loaded);
     }
 
     assert(equal(original, loaded));

@@ -5,8 +5,6 @@
 #include <type_traits>
 #include "mist/core.hpp"
 #include "mist/serialize.hpp"
-#include "mist/ascii_reader.hpp"
-#include "mist/ascii_writer.hpp"
 
 using namespace mist;
 
@@ -220,23 +218,23 @@ int main(int argc, char* argv[]) {
     try {
         ascii_reader reader(file);
         config_t config;
-        deserialize(reader, "config", config);
+        mist::deserialize(reader, "config", config);
 
         std::cout << "Configuration loaded successfully!\n";
         std::cout << "========================================\n\n";
 
         // Output the configuration using ascii_writer
         ascii_writer writer(std::cout);
-        serialize(writer, "config", config);
+        mist::serialize(writer, "config", config);
 
         // Demo: use set() to override fields by path
         std::cout << "\n========================================\n";
         std::cout << "Demonstrating set() function:\n";
         std::cout << "========================================\n\n";
 
-        set(config, "t_final", "20.0");
-        set(config, "physics.gamma", "1.33");
-        set(config, "mesh.boundary_lo.type", "reflecting");
+        mist::set(config, "t_final", "20.0");
+        mist::set(config, "physics.gamma", "1.33");
+        mist::set(config, "mesh.boundary_lo.type", "reflecting");
 
         std::cout << "After overrides:\n";
         std::cout << "  t_final = " << config.t_final << "\n";

@@ -6,10 +6,8 @@
 #include <string>
 #include <vector>
 #include "binary_writer.hpp"
-#include "core.hpp"
-#include "ndarray.hpp"
 
-namespace mist {
+namespace serialize {
 
 // =============================================================================
 // Binary Reader - key-based lookup, missing fields return false
@@ -88,34 +86,7 @@ public:
         return true;
     }
 
-    // --- Arrays ---
-
-    template<typename T, std::size_t N>
-    auto read(vec_t<T, N>& value) -> bool {
-        if (pending_name_) {
-            if (!seek_field(pending_name_)) {
-                pending_name_ = nullptr;
-                return false;
-            }
-            pending_name_ = nullptr;
-        }
-        uint8_t type_tag = read_type_tag();
-        if (type_tag != binary_format::TYPE_ARRAY) {
-            throw std::runtime_error("Expected array type");
-        }
-        uint8_t elem_tag = read_type_tag();
-        uint64_t count;
-        read_raw(count);
-        if (count != N) {
-            throw std::runtime_error(
-                "Array size mismatch: expected " + std::to_string(N) +
-                ", got " + std::to_string(count));
-        }
-        for (std::size_t i = 0; i < N; ++i) {
-            value[i] = read_element<T>(elem_tag);
-        }
-        return true;
-    }
+    // --- Arrays (std::vector) ---
 
     template<typename T>
         requires std::is_arithmetic_v<T>
@@ -169,33 +140,6 @@ public:
         if (!is_) {
             throw std::runtime_error("Failed to read data");
         }
-        return true;
-    }
-
-    // Overload for vec_t elements: read as flattened scalar array
-    template<typename T, std::size_t N>
-        requires std::is_arithmetic_v<T>
-    auto read_data(vec_t<T, N>* ptr, std::size_t count) -> bool {
-        return read_data(reinterpret_cast<T*>(ptr), count * N);
-    }
-
-    // --- CachedNdArray ---
-
-    template<CachedNdArray T>
-    auto read(T& arr) -> bool {
-        if (!begin_group()) return false;
-        using start_t = std::decay_t<decltype(start(arr))>;
-        using shape_t = std::decay_t<decltype(shape(arr))>;
-        start_t st;
-        shape_t sh;
-        begin_named("start");
-        read(st);
-        begin_named("shape");
-        read(sh);
-        arr = T(index_space(st, sh), memory::host);
-        begin_named("data");
-        read_data(data(arr), size(arr));
-        end_group();
         return true;
     }
 
@@ -282,7 +226,7 @@ public:
 
     auto count_strings(const char* name) -> std::size_t { return count_items(name); }
 
-private:
+protected:
     std::istream& is_;
     const char* pending_name_ = nullptr;
 
@@ -452,4 +396,4 @@ private:
     }
 };
 
-} // namespace mist
+} // namespace serialize

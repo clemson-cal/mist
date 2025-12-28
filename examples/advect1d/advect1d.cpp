@@ -201,14 +201,16 @@ struct flux_and_update_t {
 };
 
 // =============================================================================
-// Custom serialization for patch_t
+// Custom serialization for patch_t (in serialize namespace for ADL)
 // =============================================================================
 
-template<ArchiveWriter A>
+namespace serialize {
+
+template<mist::ArchiveWriter A>
 void serialize(A& ar, const patch_t& p) {
     ar.begin_group();
-    auto interior = cached_t<double, 1>(p.interior, memory::host);
-    copy(interior[p.interior], p.cons[p.interior]);
+    auto interior = mist::cached_t<double, 1>(p.interior, mist::memory::host);
+    mist::copy(interior[p.interior], p.cons[p.interior]);
     serialize(ar, "cons", interior);
     serialize(ar, "v", p.v);
     serialize(ar, "cfl", p.cfl);
@@ -217,13 +219,13 @@ void serialize(A& ar, const patch_t& p) {
     ar.end_group();
 }
 
-template<ArchiveReader A>
+template<mist::ArchiveReader A>
 auto deserialize(A& ar, patch_t& p) -> bool {
     if (!ar.begin_group()) return false;
-    auto interior = cached_t<double, 1>{};
+    auto interior = mist::cached_t<double, 1>{};
     deserialize(ar, "cons", interior);
-    p = patch_t(space(interior));
-    copy(p.cons[p.interior], interior);
+    p = patch_t(mist::space(interior));
+    mist::copy(p.cons[p.interior], interior);
     deserialize(ar, "v", p.v);
     deserialize(ar, "cfl", p.cfl);
     deserialize(ar, "dx", p.dx);
@@ -231,6 +233,8 @@ auto deserialize(A& ar, patch_t& p) -> bool {
     ar.end_group();
     return true;
 }
+
+} // namespace serialize
 
 // =============================================================================
 // 1D Linear Advection Physics Module with Domain Decomposition

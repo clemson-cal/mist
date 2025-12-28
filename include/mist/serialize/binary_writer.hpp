@@ -1,21 +1,19 @@
 #pragma once
 
+#include <cstdint>
+#include <cstring>
 #include <ostream>
 #include <string>
 #include <vector>
-#include <cstdint>
-#include <cstring>
-#include "ndarray.hpp"
-#include "core.hpp"
 
-namespace mist {
+namespace serialize {
 
 // =============================================================================
 // Binary Format Type Tags
 // =============================================================================
 
 namespace binary_format {
-    // Magic header to identify mist binary archives
+    // Magic header to identify binary archives
     constexpr uint32_t MAGIC = 0x4D495354;  // "MIST" in ASCII
     constexpr uint8_t VERSION = 1;
 
@@ -135,26 +133,6 @@ public:
     }
 
     // =========================================================================
-    // Arrays (fixed-size vec_t)
-    // =========================================================================
-
-    template<typename T, std::size_t N>
-    void write(const vec_t<T, N>& value) {
-        ensure_header();
-        write_pending_name();
-        write_type_tag(binary_format::TYPE_ARRAY);
-        write_type_tag(binary_format::element_type_tag<T>());
-
-        uint64_t count = N;
-        write_raw(count);
-
-        // Write elements in standardized format
-        for (std::size_t i = 0; i < N; ++i) {
-            write_element(value[i]);
-        }
-    }
-
-    // =========================================================================
     // Arrays (dynamic std::vector)
     // =========================================================================
 
@@ -175,7 +153,7 @@ public:
     }
 
     // =========================================================================
-    // Bulk data (for ndarray)
+    // Bulk data (for arrays, ndarrays, etc.)
     // =========================================================================
 
     template<typename T>
@@ -191,29 +169,6 @@ public:
 
         // Write raw bytes directly (no per-element conversion)
         os_.write(reinterpret_cast<const char*>(ptr), static_cast<std::streamsize>(count * sizeof(T)));
-    }
-
-    // Overload for vec_t elements: flatten to scalar array
-    template<typename T, std::size_t N>
-        requires std::is_arithmetic_v<T>
-    void write_data(const vec_t<T, N>* ptr, std::size_t count) {
-        write_data(reinterpret_cast<const T*>(ptr), count * N);
-    }
-
-    // =========================================================================
-    // CachedNdArray
-    // =========================================================================
-
-    template<CachedNdArray T>
-    void write(const T& arr) {
-        begin_group();
-        begin_named("start");
-        write(start(arr));
-        begin_named("shape");
-        write(shape(arr));
-        begin_named("data");
-        write_data(data(arr), size(arr));
-        end_group();
     }
 
     // =========================================================================
@@ -295,7 +250,7 @@ public:
         os_.seekp(current_pos);
     }
 
-private:
+protected:
     std::ostream& os_;
     bool header_written_;
     std::vector<std::streampos> group_positions_;
@@ -353,4 +308,4 @@ private:
     }
 };
 
-} // namespace mist
+} // namespace serialize

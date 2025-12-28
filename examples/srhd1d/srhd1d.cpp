@@ -559,10 +559,12 @@ struct rk_average_t {
 };
 
 // =============================================================================
-// Custom serialization for patch_t
+// Custom serialization for patch_t (in serialize namespace for ADL)
 // =============================================================================
 
-template<ArchiveWriter A>
+namespace serialize {
+
+template<mist::ArchiveWriter A>
 void serialize(A& ar, const patch_t& p) {
     ar.begin_group();
     auto interior = cache(map(p.cons[p.interior], std::identity{}), memory::host, exec::cpu);
@@ -581,7 +583,7 @@ void serialize(A& ar, const patch_t& p) {
     ar.end_group();
 }
 
-template<ArchiveReader A>
+template<mist::ArchiveReader A>
 auto deserialize(A& ar, patch_t& p) -> bool {
     if (!ar.begin_group()) return false;
     auto interior = cached_t<cons_t, 1>{};
@@ -608,6 +610,8 @@ auto deserialize(A& ar, patch_t& p) -> bool {
     ar.end_group();
     return true;
 }
+
+} // namespace serialize
 
 // =============================================================================
 // 1D Special Relativistic Hydrodynamics Physics Module

@@ -7,10 +7,8 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
-#include "core.hpp"
-#include "ndarray.hpp"
 
-namespace mist {
+namespace serialize {
 
 // =============================================================================
 // ASCII Reader - key-based lookup, missing fields return false
@@ -59,28 +57,7 @@ public:
         return true;
     }
 
-    // --- Arrays ---
-
-    template<typename T, std::size_t N>
-    auto read(vec_t<T, N>& value) -> bool {
-        if (pending_name_) {
-            if (!seek_field(pending_name_)) {
-                pending_name_ = nullptr;
-                return false;
-            }
-            pending_name_ = nullptr;
-            expect('=');
-        }
-        expect('[');
-        for (std::size_t i = 0; i < N; ++i) {
-            skip_ws();
-            value[i] = read_number<T>();
-            skip_ws();
-            if (i < N - 1) expect(',');
-        }
-        expect(']');
-        return true;
-    }
+    // --- Arrays (std::vector) ---
 
     template<typename T>
         requires std::is_arithmetic_v<T>
@@ -132,33 +109,6 @@ public:
         }
         skip_ws();
         expect(']');
-        return true;
-    }
-
-    // Overload for vec_t elements: read as flattened scalar array
-    template<typename T, std::size_t N>
-        requires std::is_arithmetic_v<T>
-    auto read_data(vec_t<T, N>* ptr, std::size_t count) -> bool {
-        return read_data(reinterpret_cast<T*>(ptr), count * N);
-    }
-
-    // --- CachedNdArray ---
-
-    template<CachedNdArray T>
-    auto read(T& arr) -> bool {
-        if (!begin_group()) return false;
-        using start_t = std::decay_t<decltype(start(arr))>;
-        using shape_t = std::decay_t<decltype(shape(arr))>;
-        start_t st;
-        shape_t sh;
-        begin_named("start");
-        read(st);
-        begin_named("shape");
-        read(sh);
-        arr = T(index_space(st, sh), memory::host);
-        begin_named("data");
-        read_data(data(arr), size(arr));
-        end_group();
         return true;
     }
 
@@ -264,7 +214,7 @@ public:
         return count;
     }
 
-private:
+protected:
     std::istream& is_;
     std::vector<std::streampos> group_stack_;
     const char* pending_name_ = nullptr;
@@ -440,4 +390,4 @@ private:
     }
 };
 
-} // namespace mist
+} // namespace serialize
