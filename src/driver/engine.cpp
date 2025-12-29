@@ -116,7 +116,7 @@ Responses:
   stopped           { }
   state_info        { initialized: bool, zone_count: int, times: {string: double} }
   iteration_info    { n: int, times: {string: double}, dt: double, zps: double }
-  timeseries_sample { values: {string: double} }
+  timeseries_sample { string: double}
   physics_config    { text: string }
   initial_config    { text: string }
   driver_state      { text: string }
@@ -179,8 +179,8 @@ void engine_t::broadcast_command(command_t& cmd) {
     // Rank 0 serializes the command
     if (comm.rank() == 0) {
         auto oss = std::ostringstream{};
-        auto writer = binary_writer{oss};
-        serialize(writer, cmd);
+        auto sink = binary_sink{oss};
+        write(sink, cmd);
         auto str = oss.str();
         buffer.assign(str.begin(), str.end());
     }
@@ -191,8 +191,8 @@ void engine_t::broadcast_command(command_t& cmd) {
     // Non-root ranks deserialize
     if (comm.rank() != 0) {
         auto iss = std::istringstream{std::string{buffer.begin(), buffer.end()}};
-        auto reader = binary_reader{iss};
-        deserialize(reader, cmd);
+        auto source = binary_source{iss};
+        read(source, cmd);
     }
 }
 
@@ -393,22 +393,22 @@ void engine_t::write_initial(std::ostream& os, output_format fmt) {
 
 void engine_t::write_driver(std::ostream& os, output_format fmt) {
     if (fmt == output_format::binary) {
-        auto writer = binary_writer{os};
-        serialize(writer, "driver_state", state_ref);
+        auto sink = binary_sink{os};
+        write(sink, "driver_state", state_ref);
     } else {
-        auto writer = ascii_writer{os};
-        serialize(writer, "driver_state", state_ref);
+        auto sink = ascii_sink{os};
+        write(sink, "driver_state", state_ref);
     }
 }
 
 void engine_t::write_profiler(std::ostream& os, output_format fmt) {
     auto data = physics.profiler_data();
     if (fmt == output_format::binary) {
-        auto writer = binary_writer{os};
-        serialize(writer, "profiler", data);
+        auto sink = binary_sink{os};
+        write(sink, "profiler", data);
     } else {
-        auto writer = ascii_writer{os};
-        serialize(writer, "profiler", data);
+        auto sink = ascii_sink{os};
+        write(sink, "profiler", data);
     }
 }
 
@@ -427,11 +427,11 @@ void engine_t::write_profiler_info(std::ostream& os, const color::scheme_t& c) {
 
 void engine_t::write_timeseries(std::ostream& os, output_format fmt) {
     if (fmt == output_format::binary) {
-        auto writer = binary_writer{os};
-        serialize(writer, "timeseries", state_ref.timeseries);
+        auto sink = binary_sink{os};
+        write(sink, "timeseries", state_ref.timeseries);
     } else {
-        auto writer = ascii_writer{os};
-        serialize(writer, "timeseries", state_ref.timeseries);
+        auto sink = ascii_sink{os};
+        write(sink, "timeseries", state_ref.timeseries);
     }
 }
 
@@ -452,11 +452,11 @@ void engine_t::write_timeseries_info(std::ostream& os, const color::scheme_t& c)
 
 void engine_t::write_checkpoint(std::ostream& os, output_format fmt) {
     if (fmt == output_format::binary) {
-        auto writer = binary_writer{os};
-        serialize(writer, "driver_state", state_ref);
+        auto sink = binary_sink{os};
+        write(sink, "driver_state", state_ref);
     } else {
-        auto writer = ascii_writer{os};
-        serialize(writer, "driver_state", state_ref);
+        auto sink = ascii_sink{os};
+        write(sink, "driver_state", state_ref);
     }
     physics.write_state(os, fmt);
 }
@@ -468,11 +468,11 @@ void engine_t::write_products(std::ostream& os, output_format fmt) {
 void engine_t::write_iteration(std::ostream& os, output_format fmt) {
     auto info = make_iteration_info();
     if (fmt == output_format::binary) {
-        auto writer = binary_writer{os};
-        serialize(writer, "iteration", info);
+        auto sink = binary_sink{os};
+        write(sink, "iteration", info);
     } else {
-        auto writer = ascii_writer{os};
-        serialize(writer, "iteration", info);
+        auto sink = ascii_sink{os};
+        write(sink, "iteration", info);
     }
 }
 
@@ -580,7 +580,7 @@ void engine_t::handle(const cmd::do_timeseries&, emit_fn emit) {
     for (auto& [col, values] : state_ref.timeseries) {
         auto value = physics.get_timeseries(col);
         values.push_back(value);
-        sample.values[col] = value;
+        sample[col] = value;
     }
     emit(sample);
 }
@@ -1006,11 +1006,11 @@ void engine_t::handle(const cmd::load& c, emit_fn emit) {
 
         bool success = false;
         if (fmt == output_format::ascii) {
-            auto reader = ascii_reader{file};
-            success = deserialize(reader, "driver_state", state_ref) && physics.load_state(file, fmt);
+            auto source = ascii_source{file};
+            success = read(source, "driver_state", state_ref) && physics.load_state(file, fmt);
         } else {
-            auto reader = binary_reader{file};
-            success = deserialize(reader, "driver_state", state_ref) && physics.load_state(file, fmt);
+            auto source = binary_source{file};
+            success = read(source, "driver_state", state_ref) && physics.load_state(file, fmt);
         }
 
         // Check if all ranks succeeded
@@ -1037,14 +1037,14 @@ void engine_t::handle(const cmd::load& c, emit_fn emit) {
     }
 
     if (fmt == output_format::ascii) {
-        auto reader = ascii_reader{file};
-        if (deserialize(reader, "driver_state", state_ref) && physics.load_state(file, fmt)) {
+        auto source = ascii_source{file};
+        if (read(source, "driver_state", state_ref) && physics.load_state(file, fmt)) {
             emit(resp::ok{"loaded checkpoint from " + c.filename});
             return;
         }
     } else {
-        auto reader = binary_reader{file};
-        if (deserialize(reader, "driver_state", state_ref) && physics.load_state(file, fmt)) {
+        auto source = binary_source{file};
+        if (read(source, "driver_state", state_ref) && physics.load_state(file, fmt)) {
             emit(resp::ok{"loaded checkpoint from " + c.filename});
             return;
         }
@@ -1144,8 +1144,8 @@ void engine_t::handle(const cmd::show_profiler&, emit_fn emit) {
 
 void engine_t::handle(const cmd::show_driver&, emit_fn emit) {
     auto oss = std::ostringstream{};
-    auto writer = ascii_writer{oss};
-    serialize(writer, "driver_state", state_ref);
+    auto sink = ascii_sink{oss};
+    write(sink, "driver_state", state_ref);
     emit(resp::driver_state{oss.str()});
 }
 

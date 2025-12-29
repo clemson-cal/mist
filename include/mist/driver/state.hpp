@@ -54,32 +54,32 @@ struct state_t {
     std::map<std::string, std::vector<double>> timeseries;
     std::vector<repeating_command_t> repeating_commands;
     std::vector<std::string> selected_products;
-
-    auto fields() const {
-        return std::make_tuple(
-            field("format", format),
-            field("iteration", iteration),
-            field("checkpoint_count", checkpoint_count),
-            field("products_count", products_count),
-            field("timeseries_count", timeseries_count),
-            field("timeseries", timeseries),
-            field("repeating_commands", repeating_commands),
-            field("selected_products", selected_products)
-        );
-    }
-
-    auto fields() {
-        return std::make_tuple(
-            field("format", format),
-            field("iteration", iteration),
-            field("checkpoint_count", checkpoint_count),
-            field("products_count", products_count),
-            field("timeseries_count", timeseries_count),
-            field("timeseries", timeseries),
-            field("repeating_commands", repeating_commands),
-            field("selected_products", selected_products)
-        );
-    }
 };
+
+inline auto fields(const state_t& s) {
+    return std::make_tuple(
+        field("format", s.format),
+        field("iteration", s.iteration),
+        field("checkpoint_count", s.checkpoint_count),
+        field("products_count", s.products_count),
+        field("timeseries_count", s.timeseries_count),
+        field("timeseries", s.timeseries),
+        field("repeating_commands", s.repeating_commands),
+        field("selected_products", s.selected_products)
+    );
+}
+
+inline auto fields(state_t& s) {
+    return std::make_tuple(
+        field("format", s.format),
+        field("iteration", s.iteration),
+        field("checkpoint_count", s.checkpoint_count),
+        field("products_count", s.products_count),
+        field("timeseries_count", s.timeseries_count),
+        field("timeseries", s.timeseries),
+        field("repeating_commands", s.repeating_commands),
+        field("selected_products", s.selected_products)
+    );
+}
 
 } // namespace mist::driver

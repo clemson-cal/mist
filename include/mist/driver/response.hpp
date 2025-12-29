@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <variant>
 #include <vector>
+#include "../archive.hpp"
 
 namespace mist::driver {
 
@@ -76,45 +77,43 @@ namespace resp {
 
 struct ok {
     std::string message;
-    auto fields() const { return std::make_tuple(field("message", message)); }
-    auto fields() { return std::make_tuple(field("message", message)); }
 };
+inline auto fields(const ok& s) { return std::make_tuple(field("message", s.message)); }
+inline auto fields(ok& s) { return std::make_tuple(field("message", s.message)); }
 
 struct error {
     std::string what;
-    auto fields() const { return std::make_tuple(field("what", what)); }
-    auto fields() { return std::make_tuple(field("what", what)); }
 };
+inline auto fields(const error& s) { return std::make_tuple(field("what", s.what)); }
+inline auto fields(error& s) { return std::make_tuple(field("what", s.what)); }
 
-struct interrupted {
-    auto fields() const { return std::make_tuple(); }
-    auto fields() { return std::make_tuple(); }
-};
+struct interrupted {};
+inline auto fields(const interrupted&) { return std::make_tuple(); }
+inline auto fields(interrupted&) { return std::make_tuple(); }
 
-struct stopped {
-    auto fields() const { return std::make_tuple(); }
-    auto fields() { return std::make_tuple(); }
-};
+struct stopped {};
+inline auto fields(const stopped&) { return std::make_tuple(); }
+inline auto fields(stopped&) { return std::make_tuple(); }
 
 struct state_info {
     bool initialized;
     std::size_t zone_count;
     std::map<std::string, double> times;
-    auto fields() const {
-        return std::make_tuple(
-            field("initialized", initialized),
-            field("zone_count", zone_count),
-            field("times", times)
-        );
-    }
-    auto fields() {
-        return std::make_tuple(
-            field("initialized", initialized),
-            field("zone_count", zone_count),
-            field("times", times)
-        );
-    }
 };
+inline auto fields(const state_info& s) {
+    return std::make_tuple(
+        field("initialized", s.initialized),
+        field("zone_count", s.zone_count),
+        field("times", s.times)
+    );
+}
+inline auto fields(state_info& s) {
+    return std::make_tuple(
+        field("initialized", s.initialized),
+        field("zone_count", s.zone_count),
+        field("times", s.times)
+    );
+}
 
 // --- Iteration ---
 
@@ -123,56 +122,51 @@ struct iteration_info {
     std::map<std::string, double> times;
     double dt;
     double zps;
-
-    auto fields() const {
-        return std::make_tuple(
-            field("n", n),
-            field("times", times),
-            field("dt", dt),
-            field("zps", zps)
-        );
-    }
-    auto fields() {
-        return std::make_tuple(
-            field("n", n),
-            field("times", times),
-            field("dt", dt),
-            field("zps", zps)
-        );
-    }
 };
+inline auto fields(const iteration_info& s) {
+    return std::make_tuple(
+        field("n", s.n),
+        field("times", s.times),
+        field("dt", s.dt),
+        field("zps", s.zps)
+    );
+}
+inline auto fields(iteration_info& s) {
+    return std::make_tuple(
+        field("n", s.n),
+        field("times", s.times),
+        field("dt", s.dt),
+        field("zps", s.zps)
+    );
+}
 
-struct timeseries_sample {
-    std::map<std::string, double> values;
-    auto fields() const { return std::make_tuple(field("values", values)); }
-    auto fields() { return std::make_tuple(field("values", values)); }
-};
+using timeseries_sample = std::map<std::string, double>;
 
 // --- Show (serialized) ---
 
 struct physics_config {
     std::string text;
-    auto fields() const { return std::make_tuple(field("text", text)); }
-    auto fields() { return std::make_tuple(field("text", text)); }
 };
+inline auto fields(const physics_config& s) { return std::make_tuple(field("text", s.text)); }
+inline auto fields(physics_config& s) { return std::make_tuple(field("text", s.text)); }
 
 struct initial_config {
     std::string text;
-    auto fields() const { return std::make_tuple(field("text", text)); }
-    auto fields() { return std::make_tuple(field("text", text)); }
 };
+inline auto fields(const initial_config& s) { return std::make_tuple(field("text", s.text)); }
+inline auto fields(initial_config& s) { return std::make_tuple(field("text", s.text)); }
 
 struct driver_state {
     std::string text;
-    auto fields() const { return std::make_tuple(field("text", text)); }
-    auto fields() { return std::make_tuple(field("text", text)); }
 };
+inline auto fields(const driver_state& s) { return std::make_tuple(field("text", s.text)); }
+inline auto fields(driver_state& s) { return std::make_tuple(field("text", s.text)); }
 
 struct help_text {
     std::string text;
-    auto fields() const { return std::make_tuple(field("text", text)); }
-    auto fields() { return std::make_tuple(field("text", text)); }
 };
+inline auto fields(const help_text& s) { return std::make_tuple(field("text", s.text)); }
+inline auto fields(help_text& s) { return std::make_tuple(field("text", s.text)); }
 
 // --- Show (structured) ---
 
@@ -180,133 +174,132 @@ struct timeseries_info {
     std::vector<std::string> available;
     std::vector<std::string> selected;
     std::map<std::string, std::size_t> counts;
-    auto fields() const {
-        return std::make_tuple(
-            field("available", available),
-            field("selected", selected),
-            field("counts", counts)
-        );
-    }
-    auto fields() {
-        return std::make_tuple(
-            field("available", available),
-            field("selected", selected),
-            field("counts", counts)
-        );
-    }
 };
+inline auto fields(const timeseries_info& s) {
+    return std::make_tuple(
+        field("available", s.available),
+        field("selected", s.selected),
+        field("counts", s.counts)
+    );
+}
+inline auto fields(timeseries_info& s) {
+    return std::make_tuple(
+        field("available", s.available),
+        field("selected", s.selected),
+        field("counts", s.counts)
+    );
+}
 
 struct products_info {
     std::vector<std::string> available;
     std::vector<std::string> selected;
-    auto fields() const {
-        return std::make_tuple(
-            field("available", available),
-            field("selected", selected)
-        );
-    }
-    auto fields() {
-        return std::make_tuple(
-            field("available", available),
-            field("selected", selected)
-        );
-    }
 };
+inline auto fields(const products_info& s) {
+    return std::make_tuple(
+        field("available", s.available),
+        field("selected", s.selected)
+    );
+}
+inline auto fields(products_info& s) {
+    return std::make_tuple(
+        field("available", s.available),
+        field("selected", s.selected)
+    );
+}
 
 struct profiler_entry {
     std::string name;
     std::size_t count;
     double time;
-    auto fields() const {
-        return std::make_tuple(
-            field("name", name),
-            field("count", count),
-            field("time", time)
-        );
-    }
-    auto fields() {
-        return std::make_tuple(
-            field("name", name),
-            field("count", count),
-            field("time", time)
-        );
-    }
 };
+inline auto fields(const profiler_entry& s) {
+    return std::make_tuple(
+        field("name", s.name),
+        field("count", s.count),
+        field("time", s.time)
+    );
+}
+inline auto fields(profiler_entry& s) {
+    return std::make_tuple(
+        field("name", s.name),
+        field("count", s.count),
+        field("time", s.time)
+    );
+}
 
 struct profiler_info {
     std::vector<profiler_entry> entries;
     double total_time;
-    auto fields() const {
-        return std::make_tuple(
-            field("entries", entries),
-            field("total_time", total_time)
-        );
-    }
-    auto fields() {
-        return std::make_tuple(
-            field("entries", entries),
-            field("total_time", total_time)
-        );
-    }
 };
+inline auto fields(const profiler_info& s) {
+    return std::make_tuple(
+        field("entries", s.entries),
+        field("total_time", s.total_time)
+    );
+}
+inline auto fields(profiler_info& s) {
+    return std::make_tuple(
+        field("entries", s.entries),
+        field("total_time", s.total_time)
+    );
+}
 
 struct exec_info {
     int num_threads;
     int mpi_rank;
     int mpi_size;
-    auto fields() const {
-        return std::make_tuple(
-            field("num_threads", num_threads),
-            field("mpi_rank", mpi_rank),
-            field("mpi_size", mpi_size)
-        );
-    }
-    auto fields() {
-        return std::make_tuple(
-            field("num_threads", num_threads),
-            field("mpi_rank", mpi_rank),
-            field("mpi_size", mpi_size)
-        );
-    }
 };
+inline auto fields(const exec_info& s) {
+    return std::make_tuple(
+        field("num_threads", s.num_threads),
+        field("mpi_rank", s.mpi_rank),
+        field("mpi_size", s.mpi_size)
+    );
+}
+inline auto fields(exec_info& s) {
+    return std::make_tuple(
+        field("num_threads", s.num_threads),
+        field("mpi_rank", s.mpi_rank),
+        field("mpi_size", s.mpi_size)
+    );
+}
 
 // --- Write ---
 
 struct wrote_file {
     std::string filename;
     std::size_t bytes;
-    auto fields() const {
-        return std::make_tuple(
-            field("filename", filename),
-            field("bytes", bytes)
-        );
-    }
-    auto fields() {
-        return std::make_tuple(
-            field("filename", filename),
-            field("bytes", bytes)
-        );
-    }
 };
+inline auto fields(const wrote_file& s) {
+    return std::make_tuple(
+        field("filename", s.filename),
+        field("bytes", s.bytes)
+    );
+}
+inline auto fields(wrote_file& s) {
+    return std::make_tuple(
+        field("filename", s.filename),
+        field("bytes", s.bytes)
+    );
+}
 
 // --- Socket ---
 
 struct socket_listening {
     int port;
-    auto fields() const { return std::make_tuple(field("port", port)); }
-    auto fields() { return std::make_tuple(field("port", port)); }
 };
+inline auto fields(const socket_listening& s) { return std::make_tuple(field("port", s.port)); }
+inline auto fields(socket_listening& s) { return std::make_tuple(field("port", s.port)); }
 
 struct socket_sent {
     std::size_t bytes;
-    auto fields() const { return std::make_tuple(field("bytes", bytes)); }
-    auto fields() { return std::make_tuple(field("bytes", bytes)); }
 };
+inline auto fields(const socket_sent& s) { return std::make_tuple(field("bytes", s.bytes)); }
+inline auto fields(socket_sent& s) { return std::make_tuple(field("bytes", s.bytes)); }
 
-struct socket_cancelled {
-    auto fields() const { return std::make_tuple(); }
-    auto fields() { return std::make_tuple(); }
-};
+struct socket_cancelled {};
+inline auto fields(const socket_cancelled&) { return std::make_tuple(); }
+inline auto fields(socket_cancelled&) { return std::make_tuple(); }
 
 } // namespace resp
 
@@ -364,7 +357,7 @@ inline void format(std::ostream& os, const color::scheme_t& c, const resp::itera
 inline void format(std::ostream& os, const color::scheme_t& c, const resp::timeseries_sample& r) {
     os << c.info << "recorded sample" << c.reset << " (";
     auto first = true;
-    for (const auto& [name, value] : r.values) {
+    for (const auto& [name, value] : r) {
         if (!first) os << ", ";
         os << c.label << name << "=" << c.reset
            << c.value << std::scientific << std::setprecision(6) << value << c.reset;

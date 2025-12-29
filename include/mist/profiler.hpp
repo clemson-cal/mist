@@ -16,21 +16,21 @@ namespace perf {
 struct profile_entry_t {
     std::size_t count = 0;
     double time = 0.0;
-
-    auto fields() const {
-        return std::make_tuple(
-            field("count", count),
-            field("time", time)
-        );
-    }
-
-    auto fields() {
-        return std::make_tuple(
-            field("count", count),
-            field("time", time)
-        );
-    }
 };
+
+inline auto fields(const profile_entry_t& e) {
+    return std::make_tuple(
+        field("count", e.count),
+        field("time", e.time)
+    );
+}
+
+inline auto fields(profile_entry_t& e) {
+    return std::make_tuple(
+        field("count", e.count),
+        field("time", e.time)
+    );
+}
 
 template<typename P>
 concept Profiler = requires(P& p, const P& cp, const std::string& name) {

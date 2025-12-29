@@ -60,9 +60,9 @@ auto socket_session_t::read_command(socket_t& client) -> std::optional<command_t
 
         // Deserialize command
         auto iss = std::istringstream{std::string{buffer.begin(), buffer.end()}};
-        auto reader = binary_reader{iss};
+        auto source = binary_source{iss};
         auto cmd = command_t{};
-        if (deserialize(reader, cmd)) {
+        if (read(source, cmd)) {
             return cmd;
         }
         return std::nullopt;
@@ -74,8 +74,8 @@ auto socket_session_t::read_command(socket_t& client) -> std::optional<command_t
 void socket_session_t::write_response(socket_t& client, const response_t& r) {
     // Serialize response to binary
     auto oss = std::ostringstream{};
-    auto writer = binary_writer{oss};
-    serialize(writer, r);
+    auto sink = binary_sink{oss};
+    write(sink, r);
     auto data = oss.str();
 
     // Send size-prefixed
