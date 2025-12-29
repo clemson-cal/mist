@@ -23,6 +23,7 @@ SOFTWARE.
 */
 
 #include <cmath>
+#include <cstring>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -34,9 +35,10 @@ SOFTWARE.
 #include "mist/core.hpp"
 #include "mist/driver/physics_impl.hpp"
 #include "mist/driver/repl_session.hpp"
+#include "mist/driver/socket_session.hpp"
 #include "mist/ndarray.hpp"
 #include "mist/pipeline.hpp"
-#include "mist/serialize.hpp"
+#include "mist/archive.hpp"
 
 using namespace mist;
 
@@ -559,59 +561,110 @@ struct rk_average_t {
 };
 
 // =============================================================================
-// Custom serialization for patch_t (in serialize namespace for ADL)
+// Truthful implementation for patch_t
 // =============================================================================
 
-namespace serialize {
+// The serializable "truth" of a patch (excludes derived fields)
+struct patch_truth_t {
+    cached_t<cons_t, 1> cons;  // interior conserved data only
+    double dx = 0.0;
+    double time = 0.0;
+    double cfl = 0.4;
+    double plm_theta = 1.5;
+    double L = 0.0;
+    unsigned num_zones = 0;
+    initial_condition ic = initial_condition::sod;
+    boundary_condition bc_lo = boundary_condition::outflow;
+    boundary_condition bc_hi = boundary_condition::outflow;
+};
 
-template<mist::ArchiveWriter A>
-void serialize(A& ar, const patch_t& p) {
-    ar.begin_group();
-    auto interior = cache(map(p.cons[p.interior], std::identity{}), memory::host, exec::cpu);
-    serialize(ar, "cons", interior);
-    serialize(ar, "dx", p.dx);
-    serialize(ar, "dt", p.dt);
-    serialize(ar, "time", p.time);
-    serialize(ar, "time_rk", p.time_rk);
-    serialize(ar, "cfl", p.cfl);
-    serialize(ar, "plm_theta", p.plm_theta);
-    serialize(ar, "L", p.L);
-    serialize(ar, "num_zones", p.num_zones);
-    serialize(ar, "ic", to_string(p.ic));
-    serialize(ar, "bc_lo", to_string(p.bc_lo));
-    serialize(ar, "bc_hi", to_string(p.bc_hi));
-    ar.end_group();
+inline auto fields(patch_truth_t& t) {
+    return std::make_tuple(
+        field("cons", t.cons),
+        field("dx", t.dx),
+        field("time", t.time),
+        field("cfl", t.cfl),
+        field("plm_theta", t.plm_theta),
+        field("L", t.L),
+        field("num_zones", t.num_zones),
+        field("ic", t.ic),
+        field("bc_lo", t.bc_lo),
+        field("bc_hi", t.bc_hi)
+    );
 }
 
-template<mist::ArchiveReader A>
-auto deserialize(A& ar, patch_t& p) -> bool {
-    if (!ar.begin_group()) return false;
-    auto interior = cached_t<cons_t, 1>{};
-    deserialize(ar, "cons", interior);
-    p = patch_t(space(interior));
-    copy(p.cons[p.interior], interior);
-    deserialize(ar, "dx", p.dx);
-    deserialize(ar, "dt", p.dt);
-    deserialize(ar, "time", p.time);
-    deserialize(ar, "time_rk", p.time_rk);
-    deserialize(ar, "cfl", p.cfl);
-    deserialize(ar, "plm_theta", p.plm_theta);
-    deserialize(ar, "L", p.L);
-    deserialize(ar, "num_zones", p.num_zones);
-    auto ic_str = std::string{};
-    auto bc_lo_str = std::string{};
-    auto bc_hi_str = std::string{};
-    deserialize(ar, "ic", ic_str);
-    deserialize(ar, "bc_lo", bc_lo_str);
-    deserialize(ar, "bc_hi", bc_hi_str);
-    p.ic = from_string(std::type_identity<initial_condition>{}, ic_str);
-    p.bc_lo = from_string(std::type_identity<boundary_condition>{}, bc_lo_str);
-    p.bc_hi = from_string(std::type_identity<boundary_condition>{}, bc_hi_str);
-    ar.end_group();
-    return true;
+inline auto fields(const patch_truth_t& t) {
+    return std::make_tuple(
+        field("cons", t.cons),
+        field("dx", t.dx),
+        field("time", t.time),
+        field("cfl", t.cfl),
+        field("plm_theta", t.plm_theta),
+        field("L", t.L),
+        field("num_zones", t.num_zones),
+        field("ic", t.ic),
+        field("bc_lo", t.bc_lo),
+        field("bc_hi", t.bc_hi)
+    );
 }
 
-} // namespace serialize
+inline auto to_truth(const patch_t& p) -> patch_truth_t {
+    auto truth = patch_truth_t{};
+    truth.cons = cached_t<cons_t, 1>(p.interior, memory::host);
+    copy(truth.cons[p.interior], p.cons[p.interior]);
+    truth.dx = p.dx;
+    truth.time = p.time;
+    truth.cfl = p.cfl;
+    truth.plm_theta = p.plm_theta;
+    truth.L = p.L;
+    truth.num_zones = p.num_zones;
+    truth.ic = p.ic;
+    truth.bc_lo = p.bc_lo;
+    truth.bc_hi = p.bc_hi;
+    return truth;
+}
+
+inline void from_truth(patch_t& p, patch_truth_t truth) {
+    p = patch_t(space(truth.cons));
+    copy(p.cons[p.interior], truth.cons[p.interior]);
+    p.dx = truth.dx;
+    p.time = truth.time;
+    p.cfl = truth.cfl;
+    p.plm_theta = truth.plm_theta;
+    p.L = truth.L;
+    p.num_zones = truth.num_zones;
+    p.ic = truth.ic;
+    p.bc_lo = truth.bc_lo;
+    p.bc_hi = truth.bc_hi;
+}
+
+// =============================================================================
+// Patch key type for checkpoint filenames
+// =============================================================================
+
+struct patch_key_t {
+    int start = 0;
+    unsigned int size = 0;
+
+    auto operator==(const patch_key_t&) const -> bool = default;
+};
+
+inline auto to_string(const patch_key_t& k) -> std::string {
+    return std::to_string(k.start) + "_" + std::to_string(k.size);
+}
+
+inline auto from_string(std::type_identity<patch_key_t>, std::string_view sv) -> patch_key_t {
+    auto s = std::string(sv);
+    auto pos = s.find('_');
+    return {std::stoi(s.substr(0, pos)), static_cast<unsigned int>(std::stoul(s.substr(pos + 1)))};
+}
+
+template<>
+struct std::hash<patch_key_t> {
+    auto operator()(const patch_key_t& k) const noexcept -> std::size_t {
+        return std::hash<int>{}(k.start) ^ (std::hash<unsigned int>{}(k.size) << 1);
+    }
+};
 
 // =============================================================================
 // 1D Special Relativistic Hydrodynamics Physics Module
@@ -635,6 +688,8 @@ struct srhd {
     };
 
     struct state_t {
+        using patch_key_type = patch_key_t;
+
         double time = 0.0;
         std::vector<patch_t> patches;
     };
@@ -684,46 +739,99 @@ inline auto fields(srhd::initial_t& i) {
     );
 }
 
-inline auto fields(const srhd::state_t& s) {
+// =============================================================================
+// Truthful implementation for srhd::state_t (for single-file IO)
+// =============================================================================
+
+struct state_truth_t {
+    double time = 0.0;
+    std::vector<patch_truth_t> patches;
+};
+
+inline auto fields(state_truth_t& t) {
     return std::make_tuple(
-        field("time", s.time),
-        field("patches", s.patches)
+        field("time", t.time),
+        field("patches", t.patches)
     );
 }
 
-inline auto fields(srhd::state_t& s) {
+inline auto fields(const state_truth_t& t) {
     return std::make_tuple(
-        field("time", s.time),
-        field("patches", s.patches)
+        field("time", t.time),
+        field("patches", t.patches)
     );
 }
 
+inline auto to_truth(const srhd::state_t& s) -> state_truth_t {
+    auto truth = state_truth_t{};
+    truth.time = s.time;
+    for (const auto& p : s.patches) {
+        truth.patches.push_back(to_truth(p));
+    }
+    return truth;
+}
+
+inline void from_truth(srhd::state_t& s, state_truth_t truth) {
+    s.time = truth.time;
+    s.patches.clear();
+    for (auto& pt : truth.patches) {
+        patch_t p;
+        from_truth(p, std::move(pt));
+        s.patches.push_back(std::move(p));
+    }
+}
+
 // =============================================================================
-// Parallel IO functions for srhd::state_t
+// Checkpointable protocol for srhd::state_t (for parallel IO)
 // =============================================================================
 
-inline auto item_key(const patch_t& p) -> std::string {
-    auto s = start(p.interior);
-    auto n = shape(p.interior);
-    return std::to_string(s[0]) + "_" + std::to_string(n[0]);
+// Helper to get patch key from a patch
+inline auto get_patch_key(const patch_t& p) -> patch_key_t {
+    return {start(p.interior)[0], shape(p.interior)[0]};
 }
 
-template<ArchiveWriter A>
-void serialize_header(A& ar, const srhd::state_t& s) {
-    mist::serialize(ar, "time", s.time);
+// Emittable: emit/load header data (time only, patches written separately)
+template<Sink S>
+void emit(S& sink, const srhd::state_t& s) {
+    write(sink, "time", s.time);
 }
 
-template<ArchiveReader A>
-auto deserialize_header(A& ar, srhd::state_t& s) -> bool {
-    return mist::deserialize(ar, "time", s.time);
+template<Source S>
+void load(S& source, srhd::state_t& s) {
+    read(source, "time", s.time);
+    s.patches.clear();  // patches will be loaded via emplace_patch
 }
 
-inline auto items(const srhd::state_t& s) -> const std::vector<patch_t>& {
-    return s.patches;
+// Scatterable: iterate patches and get patch data
+inline auto patch_keys(const srhd::state_t& s) {
+    auto keys = std::vector<patch_key_t>{};
+    for (const auto& p : s.patches) {
+        keys.push_back(get_patch_key(p));
+    }
+    return keys;
 }
 
-inline auto items(srhd::state_t& s) -> std::vector<patch_t>& {
-    return s.patches;
+inline auto patch_data(const srhd::state_t& s, const patch_key_t& key) -> const patch_t& {
+    for (const auto& p : s.patches) {
+        if (get_patch_key(p) == key) {
+            return p;
+        }
+    }
+    throw std::runtime_error("patch not found: " + to_string(key));
+}
+
+// Gatherable: determine affinity and emplace patches
+inline auto patch_affinity(const srhd::state_t& /* s */, const patch_key_t& key, int rank, int num_ranks) -> bool {
+    // Simple round-robin assignment based on patch start position
+    auto hash = std::hash<patch_key_t>{}(key);
+    return static_cast<int>(hash % num_ranks) == rank;
+}
+
+template<Source S>
+void emplace_patch(srhd::state_t& s, const patch_key_t& /* key */, S& source) {
+    patch_t p;
+    read(source, p);
+    s.patches.push_back(std::move(p));
 }
 
 // =============================================================================
@@ -891,12 +999,39 @@ auto get_product(
 // Main
 // =============================================================================
 
-int main()
+int main(int argc, char* argv[])
 {
+    auto mpi = mpi_context{argc, argv};
+    auto comm = mpi.create_communicator();
+
+    auto use_socket = false;
+    const char* log_prefix = nullptr;
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--socket") == 0 || std::strcmp(argv[i], "-s") == 0) {
+            use_socket = true;
+        } else if (std::strcmp(argv[i], "--log") == 0 && i + 1 < argc) {
+            log_prefix = argv[++i];
+        }
+    }
+
     auto physics = mist::driver::make_physics<srhd>();
     auto state = mist::driver::state_t{};
-    auto engine = mist::driver::engine_t{state, *physics};
-    auto repl = mist::driver::repl_session_t{engine};
-    repl.run();
+    auto engine = mist::driver::engine_t{state, *physics, std::move(comm)};
+
+    if (log_prefix) {
+        engine.set_log_prefix(log_prefix);
+    }
+
+    if (engine.get_comm().rank() == 0) {
+        if (use_socket) {
+            auto session = mist::driver::socket_session_t{engine};
+            session.run();
+        } else {
+            auto session = mist::driver::repl_session_t{engine};
+            session.run();
+        }
+    } else {
+        engine.run_as_follower();
+    }
     return 0;
 }
