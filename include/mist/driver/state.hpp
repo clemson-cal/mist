@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 #include "command.hpp"
-#include "../serialize.hpp"
+#include "../archive.hpp"
 
 namespace mist::driver {
 

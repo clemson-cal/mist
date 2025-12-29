@@ -70,11 +70,13 @@ struct physics_interface_t {
     // -------------------------------------------------------------------------
     using item_predicate = std::function<bool(const std::string&)>;
 
-    virtual void write_state(const std::filesystem::path& path) = 0;
-    virtual auto load_state(const std::filesystem::path& path, item_predicate wants_item) -> bool = 0;
+    virtual void write_state(const std::filesystem::path& path, output_format fmt) = 0;
+    virtual auto load_state(const std::filesystem::path& path, output_format fmt, item_predicate wants_item) -> bool = 0;
+    virtual void write_products(const std::filesystem::path& path, output_format fmt,
+                                const std::vector<std::string>& selected) = 0;
 
-    auto load_state(const std::filesystem::path& path) -> bool {
-        return load_state(path, [](const std::string&) { return true; });
+    auto load_state(const std::filesystem::path& path, output_format fmt) -> bool {
+        return load_state(path, fmt, [](const std::string&) { return true; });
     }
 
     // -------------------------------------------------------------------------

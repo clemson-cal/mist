@@ -22,6 +22,7 @@ using archive::Sink;
 using archive::Source;
 using archive::write;
 using archive::read;
+using archive::set;
 
 // Sink/Source classes
 using archive::ascii_sink;
@@ -29,12 +30,17 @@ using archive::ascii_source;
 using archive::binary_sink;
 using archive::binary_source;
 
-// Checkpoint concepts
+// Checkpoint concepts and functions
 using archive::Checkpointable;
 using archive::Emittable;
 using archive::Gatherable;
 using archive::PatchKey;
 using archive::Scatterable;
+using archive::Truthful;
+using archive::Binary;
+using archive::Ascii;
+using archive::write_checkpoint;
+using archive::read_checkpoint;
 
 // =============================================================================
 // Type traits for mist-specific types

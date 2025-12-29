@@ -642,7 +642,7 @@ void copy(array_view_t<T, S> dst, array_view_t<const T, S> src) {
 // Copy from const view to mutable view (same types)
 template<typename T, std::size_t S>
 void copy(array_view_t<T, S> dst, array_view_t<T, S> src) {
-    copy(dst, array_view_t<const T, S>(src.space, src.data, src._strides));
+    copy(dst, array_view_t<const T, S>(src.space, src.parent, src.data));
 }
 
 // Copy from cached_t to view

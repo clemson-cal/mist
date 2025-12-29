@@ -13,11 +13,17 @@
 #include <concepts>
 #include <cstddef>
 #include <filesystem>
+#include <fstream>
 #include <functional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <type_traits>
 #include <vector>
+
+#include "sink.hpp"
+#include "source.hpp"
+#include "protocol.hpp"
 
 namespace archive {
 
@@ -157,31 +163,42 @@ template <typename T, typename SinkT, typename SourceT>
 concept Checkpointable = Emittable<T, SinkT, SourceT> && Scatterable<T> && Gatherable<T, SourceT>;
 
 // ============================================================================
-// Checkpoint operations (stubs)
+// Checkpoint operations
 // ============================================================================
 
 namespace detail {
 
-inline std::filesystem::path header_path(const std::filesystem::path& dir, Binary) {
-    return dir / "header.bin";
-}
+// Format traits
+template <typename Format> struct format_traits;
 
-inline std::filesystem::path header_path(const std::filesystem::path& dir, Ascii) {
-    return dir / "header.dat";
-}
+template <>
+struct format_traits<Binary> {
+    using sink_type = binary_sink;
+    using source_type = binary_source;
+    static constexpr auto extension() { return ".bin"; }
+    static constexpr auto open_mode() { return std::ios::binary; }
+};
+
+template <>
+struct format_traits<Ascii> {
+    using sink_type = ascii_sink;
+    using source_type = ascii_source;
+    static constexpr auto extension() { return ".dat"; }
+    static constexpr auto open_mode() { return std::ios::openmode{}; }
+};
 
 inline std::filesystem::path patches_dir(const std::filesystem::path& dir) {
     return dir / "patches";
 }
 
-template <PatchKey K>
-std::filesystem::path patch_path(const std::filesystem::path& dir, const K& key, Binary) {
-    return patches_dir(dir) / (to_string(key) + ".bin");
+template <typename Format>
+std::filesystem::path header_path(const std::filesystem::path& dir) {
+    return dir / ("header" + std::string(format_traits<Format>::extension()));
 }
 
-template <PatchKey K>
-std::filesystem::path patch_path(const std::filesystem::path& dir, const K& key, Ascii) {
-    return patches_dir(dir) / (to_string(key) + ".dat");
+template <typename Format, PatchKey K>
+std::filesystem::path patch_path(const std::filesystem::path& dir, const K& key) {
+    return patches_dir(dir) / (to_string(key) + std::string(format_traits<Format>::extension()));
 }
 
 } // namespace detail
@@ -191,20 +208,28 @@ std::filesystem::path patch_path(const std::filesystem::path& dir, const K& key,
 // ----------------------------------------------------------------------------
 
 template <typename Format, Scatterable T>
-void write_checkpoint(const std::filesystem::path& dir, const T& state, Format fmt = {}) {
+void write_checkpoint(const std::filesystem::path& dir, const T& state, Format = {}) {
     namespace fs = std::filesystem;
+    using traits = detail::format_traits<Format>;
+    using sink_type = typename traits::sink_type;
 
     fs::create_directories(detail::patches_dir(dir));
 
     // 1. Emit shared/header data
-    // TODO: open sink for detail::header_path(dir, fmt)
-    // emit(sink, state);
+    {
+        std::ofstream file(detail::header_path<Format>(dir), traits::open_mode());
+        if (!file) throw std::runtime_error("failed to open header file for writing");
+        sink_type sink(file);
+        emit(sink, state);
+    }
 
     // 2. Scatter patches
     for (const auto& key : patch_keys(state)) {
-        // TODO: open sink for detail::patch_path(dir, key, fmt)
-        // const auto& data = patch_data(state, key);
-        // write(sink, data);
+        std::ofstream file(detail::patch_path<Format>(dir, key), traits::open_mode());
+        if (!file) throw std::runtime_error("failed to open patch file for writing");
+        sink_type sink(file);
+        const auto& pdata = patch_data(state, key);
+        write(sink, pdata);
     }
 }
 
@@ -214,23 +239,33 @@ void write_checkpoint(const std::filesystem::path& dir, const T& state, Format f
 
 template <typename Format, typename T>
     requires requires { typename T::patch_key_type; }
-void read_checkpoint(const std::filesystem::path& dir, T& state, int rank, int num_ranks, Format fmt = {}) {
+void read_checkpoint(const std::filesystem::path& dir, T& state, int rank, int num_ranks, Format = {}) {
     namespace fs = std::filesystem;
+    using traits = detail::format_traits<Format>;
+    using source_type = typename traits::source_type;
+    auto ext = std::string(traits::extension());
 
     // 1. Load shared/header data (all ranks)
-    // TODO: open source for detail::header_path(dir, fmt)
-    // load(source, state);
+    {
+        std::ifstream file(detail::header_path<Format>(dir), traits::open_mode());
+        if (!file) throw std::runtime_error("failed to open header file for reading");
+        source_type source(file);
+        load(source, state);
+    }
 
     // 2. Gather patches by affinity
     for (const auto& entry : fs::directory_iterator(detail::patches_dir(dir))) {
         if (!entry.is_regular_file()) continue;
+        if (entry.path().extension() != ext) continue;
 
         auto stem = entry.path().stem().string();
         auto key = from_string(std::type_identity<typename T::patch_key_type>{}, stem);
 
         if (patch_affinity(state, key, rank, num_ranks)) {
-            // TODO: open source for entry.path()
-            // emplace_patch(state, key, source);
+            std::ifstream file(entry.path(), traits::open_mode());
+            if (!file) throw std::runtime_error("failed to open patch file for reading");
+            source_type source(file);
+            emplace_patch(state, key, source);
         }
     }
 }

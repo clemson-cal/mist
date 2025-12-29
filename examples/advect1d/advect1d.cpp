@@ -14,7 +14,7 @@
 #include "mist/driver/socket_session.hpp"
 #include "mist/ndarray.hpp"
 #include "mist/pipeline.hpp"
-#include "mist/serialize.hpp"
+#include "mist/archive.hpp"
 
 using namespace mist;
 
@@ -201,40 +201,89 @@ struct flux_and_update_t {
 };
 
 // =============================================================================
-// Custom serialization for patch_t (in serialize namespace for ADL)
+// Truthful implementation for patch_t
 // =============================================================================
 
-namespace serialize {
+// The serializable "truth" of a patch (excludes derived fields like fhat)
+struct patch_truth_t {
+    cached_t<double, 1> cons;  // interior conserved data only
+    double v = 0.0;
+    double cfl = 0.0;
+    double dx = 0.0;
+    double L = 0.0;
+};
 
-template<mist::ArchiveWriter A>
-void serialize(A& ar, const patch_t& p) {
-    ar.begin_group();
-    auto interior = mist::cached_t<double, 1>(p.interior, mist::memory::host);
-    mist::copy(interior[p.interior], p.cons[p.interior]);
-    serialize(ar, "cons", interior);
-    serialize(ar, "v", p.v);
-    serialize(ar, "cfl", p.cfl);
-    serialize(ar, "dx", p.dx);
-    serialize(ar, "L", p.L);
-    ar.end_group();
+inline auto fields(patch_truth_t& t) {
+    return std::make_tuple(
+        field("cons", t.cons),
+        field("v", t.v),
+        field("cfl", t.cfl),
+        field("dx", t.dx),
+        field("L", t.L)
+    );
 }
 
-template<mist::ArchiveReader A>
-auto deserialize(A& ar, patch_t& p) -> bool {
-    if (!ar.begin_group()) return false;
-    auto interior = mist::cached_t<double, 1>{};
-    deserialize(ar, "cons", interior);
-    p = patch_t(mist::space(interior));
-    mist::copy(p.cons[p.interior], interior);
-    deserialize(ar, "v", p.v);
-    deserialize(ar, "cfl", p.cfl);
-    deserialize(ar, "dx", p.dx);
-    deserialize(ar, "L", p.L);
-    ar.end_group();
-    return true;
+inline auto fields(const patch_truth_t& t) {
+    return std::make_tuple(
+        field("cons", t.cons),
+        field("v", t.v),
+        field("cfl", t.cfl),
+        field("dx", t.dx),
+        field("L", t.L)
+    );
 }
 
-} // namespace serialize
+inline auto to_truth(const patch_t& p) -> patch_truth_t {
+    auto truth = patch_truth_t{};
+    truth.cons = cached_t<double, 1>(p.interior, memory::host);
+    copy(truth.cons[p.interior], p.cons[p.interior]);
+    truth.v = p.v;
+    truth.cfl = p.cfl;
+    truth.dx = p.dx;
+    truth.L = p.L;
+    return truth;
+}
+
+inline void from_truth(patch_t& p, patch_truth_t truth) {
+    p = patch_t(space(truth.cons));
+    copy(p.cons[p.interior], truth.cons[p.interior]);
+    p.v = truth.v;
+    p.cfl = truth.cfl;
+    p.dx = truth.dx;
+    p.L = truth.L;
+}
+
+// =============================================================================
+// 1D Linear Advection Physics Module with Domain Decomposition
+// =============================================================================
+
+// =============================================================================
+// Patch key type for checkpoint filenames
+// =============================================================================
+
+struct patch_key_t {
+    int start = 0;
+    unsigned int size = 0;
+
+    auto operator==(const patch_key_t&) const -> bool = default;
+};
+
+inline auto to_string(const patch_key_t& k) -> std::string {
+    return std::to_string(k.start) + "_" + std::to_string(k.size);
+}
+
+inline auto from_string(std::type_identity<patch_key_t>, std::string_view sv) -> patch_key_t {
+    auto s = std::string(sv);
+    auto pos = s.find('_');
+    return {std::stoi(s.substr(0, pos)), static_cast<unsigned int>(std::stoul(s.substr(pos + 1)))};
+}
+
+template<>
+struct std::hash<patch_key_t> {
+    auto operator()(const patch_key_t& k) const noexcept -> std::size_t {
+        return std::hash<int>{}(k.start) ^ (std::hash<unsigned int>{}(k.size) << 1);
+    }
+};
 
 // =============================================================================
 // 1D Linear Advection Physics Module with Domain Decomposition
@@ -256,6 +305,8 @@ struct advection {
     };
 
     struct state_t {
+        using patch_key_type = patch_key_t;
+
         double time = 0.0;
         std::vector<patch_t> patches;
     };
@@ -301,46 +352,99 @@ inline auto fields(advection::initial_t& i) {
     );
 }
 
-inline auto fields(const advection::state_t& s) {
+// =============================================================================
+// Truthful implementation for advection::state_t (for single-file IO)
+// =============================================================================
+
+struct state_truth_t {
+    double time = 0.0;
+    std::vector<patch_truth_t> patches;
+};
+
+inline auto fields(state_truth_t& t) {
     return std::make_tuple(
-        field("time", s.time),
-        field("patches", s.patches)
+        field("time", t.time),
+        field("patches", t.patches)
     );
 }
 
-inline auto fields(advection::state_t& s) {
+inline auto fields(const state_truth_t& t) {
     return std::make_tuple(
-        field("time", s.time),
-        field("patches", s.patches)
+        field("time", t.time),
+        field("patches", t.patches)
     );
 }
 
+inline auto to_truth(const advection::state_t& s) -> state_truth_t {
+    auto truth = state_truth_t{};
+    truth.time = s.time;
+    for (const auto& p : s.patches) {
+        truth.patches.push_back(to_truth(p));
+    }
+    return truth;
+}
+
+inline void from_truth(advection::state_t& s, state_truth_t truth) {
+    s.time = truth.time;
+    s.patches.clear();
+    for (auto& pt : truth.patches) {
+        patch_t p;
+        from_truth(p, std::move(pt));
+        s.patches.push_back(std::move(p));
+    }
+}
+
 // =============================================================================
-// Parallel IO functions for advection::state_t
+// Checkpointable protocol for advection::state_t (for parallel IO)
 // =============================================================================
 
-inline auto item_key(const patch_t& p) -> std::string {
-    auto s = start(p.interior);
-    auto n = shape(p.interior);
-    return std::to_string(s[0]) + "_" + std::to_string(n[0]);
+// Helper to get patch key from a patch
+inline auto get_patch_key(const patch_t& p) -> patch_key_t {
+    return {start(p.interior)[0], shape(p.interior)[0]};
 }
 
-template<ArchiveWriter A>
-void serialize_header(A& ar, const advection::state_t& s) {
-    mist::serialize(ar, "time", s.time);
+// Emittable: emit/load header data (time only, patches written separately)
+template<Sink S>
+void emit(S& sink, const advection::state_t& s) {
+    write(sink, "time", s.time);
 }
 
-template<ArchiveReader A>
-auto deserialize_header(A& ar, advection::state_t& s) -> bool {
-    return mist::deserialize(ar, "time", s.time);
+template<Source S>
+void load(S& source, advection::state_t& s) {
+    read(source, "time", s.time);
+    s.patches.clear();  // patches will be loaded via emplace_patch
 }
 
-inline auto items(const advection::state_t& s) -> const std::vector<patch_t>& {
-    return s.patches;
+// Scatterable: iterate patches and get patch data
+inline auto patch_keys(const advection::state_t& s) {
+    auto keys = std::vector<patch_key_t>{};
+    for (const auto& p : s.patches) {
+        keys.push_back(get_patch_key(p));
+    }
+    return keys;
 }
 
-inline auto items(advection::state_t& s) -> std::vector<patch_t>& {
-    return s.patches;
+inline auto patch_data(const advection::state_t& s, const patch_key_t& key) -> const patch_t& {
+    for (const auto& p : s.patches) {
+        if (get_patch_key(p) == key) {
+            return p;
+        }
+    }
+    throw std::runtime_error("patch not found: " + to_string(key));
+}
+
+// Gatherable: determine affinity and emplace patches
+inline auto patch_affinity(const advection::state_t& /* s */, const patch_key_t& key, int rank, int num_ranks) -> bool {
+    // Simple round-robin assignment based on patch start position
+    auto hash = std::hash<patch_key_t>{}(key);
+    return static_cast<int>(hash % num_ranks) == rank;
+}
+
+template<Source S>
+void emplace_patch(advection::state_t& s, const patch_key_t& /* key */, S& source) {
+    patch_t p;
+    read(source, p);
+    s.patches.push_back(std::move(p));
 }
 
 // =============================================================================

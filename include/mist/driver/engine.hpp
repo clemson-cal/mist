@@ -12,7 +12,7 @@
 #include "physics_interface.hpp"
 #include "response.hpp"
 #include "state.hpp"
-#include "../serialize.hpp"
+#include "../archive.hpp"
 #include "../comm.hpp"
 #include "../exec_context.hpp"
 #include "../socket.hpp"

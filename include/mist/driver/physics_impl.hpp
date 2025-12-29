@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <type_traits>
 #include "physics_interface.hpp"
-#include "../serialize.hpp"
+#include "../archive.hpp"
 
 namespace mist::driver {
 
@@ -14,24 +14,100 @@ namespace fs = std::filesystem;
 // =============================================================================
 
 // =============================================================================
-// ParallelPhysics concept - physics that supports item-based parallel IO
+// ParallelPhysics concept - physics that supports checkpoint-based parallel IO
 // =============================================================================
 
 template<typename P>
 concept ParallelPhysics = requires(
     const typename P::state_t& cs,
     typename P::state_t& s,
-    binary_writer& w,
-    binary_reader& r
+    binary_sink& sink,
+    binary_source& source,
+    int rank,
+    int num_ranks
 ) {
-    // State must provide serialize_header/deserialize_header and items
-    { serialize_header(w, cs) };
-    { deserialize_header(r, s) } -> std::same_as<bool>;
-    { items(cs) } -> std::ranges::range;
-    { items(s) } -> std::ranges::range;
-    // Items must have keys
-    requires HasItemKey<std::ranges::range_value_t<decltype(items(cs))>>;
+    typename P::state_t::patch_key_type;
+    { emit(sink, cs) };
+    { load(source, s) };
+    { patch_keys(cs) };
+    { patch_data(cs, std::declval<typename P::state_t::patch_key_type>()) };
+    { patch_affinity(s, std::declval<typename P::state_t::patch_key_type>(), rank, num_ranks) } -> std::same_as<bool>;
+    { emplace_patch(s, std::declval<typename P::state_t::patch_key_type>(), source) };
 };
+
+// =============================================================================
+// Checkpoint wrapper - combines config, initial, and state for checkpointing
+// =============================================================================
+
+template<typename Config, typename Initial, typename State>
+struct checkpoint_t {
+    using patch_key_type = typename State::patch_key_type;
+
+    const Config& config;
+    const Initial& initial;
+    const State& state;
+};
+
+template<typename Config, typename Initial, typename State>
+struct mutable_checkpoint_t {
+    using patch_key_type = typename State::patch_key_type;
+
+    Config& config;
+    Initial& initial;
+    State& state;
+};
+
+// Emittable: emit writes config, initial, then state header
+template<Sink S, typename C, typename I, typename St>
+void emit(S& sink, const checkpoint_t<C, I, St>& cp) {
+    write(sink, "config", cp.config);
+    write(sink, "initial", cp.initial);
+    emit(sink, cp.state);
+}
+
+template<Source S, typename C, typename I, typename St>
+void load(S& source, mutable_checkpoint_t<C, I, St>& cp) {
+    read(source, "config", cp.config);
+    read(source, "initial", cp.initial);
+    load(source, cp.state);
+}
+
+// Scatterable: delegate to state
+template<typename C, typename I, typename St>
+auto patch_keys(const checkpoint_t<C, I, St>& cp) {
+    return patch_keys(cp.state);
+}
+
+template<typename C, typename I, typename St>
+decltype(auto) patch_data(const checkpoint_t<C, I, St>& cp, const typename St::patch_key_type& key) {
+    return patch_data(cp.state, key);
+}
+
+// Gatherable: delegate to state
+template<typename C, typename I, typename St>
+auto patch_affinity(const mutable_checkpoint_t<C, I, St>& cp,
+                    const typename St::patch_key_type& key,
+                    int rank, int num_ranks) -> bool {
+    return patch_affinity(cp.state, key, rank, num_ranks);
+}
+
+template<Source S, typename C, typename I, typename St>
+void emplace_patch(mutable_checkpoint_t<C, I, St>& cp,
+                   const typename St::patch_key_type& key,
+                   S& source) {
+    emplace_patch(cp.state, key, source);
+}
+
+// PatchKey support for checkpoint wrapper
+template<typename C, typename I, typename St>
+auto to_string(const typename checkpoint_t<C, I, St>::patch_key_type& key) -> std::string {
+    return to_string(key);
+}
+
+template<typename C, typename I, typename St>
+auto from_string(std::type_identity<typename checkpoint_t<C, I, St>::patch_key_type>, std::string_view sv) {
+    return from_string(std::type_identity<typename St::patch_key_type>{}, sv);
+}
 
 // =============================================================================
 // Physics concept (defines what a physics module must provide)
@@ -190,21 +266,21 @@ public:
 
     void write_physics(std::ostream& os, output_format fmt) override {
         if (fmt == output_format::ascii) {
-            auto writer = ascii_writer{os};
-            serialize(writer, "physics", config_);
+            auto sink = ascii_sink{os};
+            write(sink, "physics", config_);
         } else {
-            auto writer = binary_writer{os};
-            serialize(writer, "physics", config_);
+            auto sink = binary_sink{os};
+            write(sink, "physics", config_);
         }
     }
 
     void write_initial(std::ostream& os, output_format fmt) override {
         if (fmt == output_format::ascii) {
-            auto writer = ascii_writer{os};
-            serialize(writer, "initial", initial_);
+            auto sink = ascii_sink{os};
+            write(sink, "initial", initial_);
         } else {
-            auto writer = binary_writer{os};
-            serialize(writer, "initial", initial_);
+            auto sink = binary_sink{os};
+            write(sink, "initial", initial_);
         }
     }
 
@@ -213,22 +289,22 @@ public:
             throw std::runtime_error("state not initialized");
         }
         if (fmt == output_format::ascii) {
-            auto writer = ascii_writer{os};
-            serialize_state_to(writer);
+            auto sink = ascii_sink{os};
+            write_state_to(sink);
         } else {
-            auto writer = binary_writer{os};
-            serialize_state_to(writer);
+            auto sink = binary_sink{os};
+            write_state_to(sink);
         }
     }
 
-    template<typename Writer>
-    void serialize_state_to(Writer& writer) {
+    template<typename SinkT>
+    void write_state_to(SinkT& sink) {
         if (!state_.has_value()) {
             throw std::runtime_error("state not initialized");
         }
-        serialize(writer, "physics", config_);
-        serialize(writer, "initial", initial_);
-        serialize(writer, "physics_state", *state_);
+        write(sink, "physics", config_);
+        write(sink, "initial", initial_);
+        write(sink, "physics_state", *state_);
     }
 
     void write_products(std::ostream& os, output_format fmt,
@@ -240,16 +316,16 @@ public:
             throw std::runtime_error("exec_context not set");
         }
         if (fmt == output_format::ascii) {
-            auto writer = ascii_writer{os};
+            auto sink = ascii_sink{os};
             for (const auto& name : selected) {
                 auto product = get_product(*state_, name, *exec_context_);
-                serialize(writer, name.c_str(), product);
+                write(sink, name.c_str(), product);
             }
         } else {
-            auto writer = binary_writer{os};
+            auto sink = binary_sink{os};
             for (const auto& name : selected) {
                 auto product = get_product(*state_, name, *exec_context_);
-                serialize(writer, name.c_str(), product);
+                write(sink, name.c_str(), product);
             }
         }
     }
@@ -261,11 +337,11 @@ public:
     auto load_physics(std::istream& is, output_format fmt) -> bool override {
         try {
             if (fmt == output_format::ascii) {
-                auto reader = ascii_reader{is};
-                return deserialize(reader, "physics", config_);
+                auto source = ascii_source{is};
+                return read(source, "physics", config_);
             } else {
-                auto reader = binary_reader{is};
-                return deserialize(reader, "physics", config_);
+                auto source = binary_source{is};
+                return read(source, "physics", config_);
             }
         } catch (...) {
             return false;
@@ -275,11 +351,11 @@ public:
     auto load_initial(std::istream& is, output_format fmt) -> bool override {
         try {
             if (fmt == output_format::ascii) {
-                auto reader = ascii_reader{is};
-                return deserialize(reader, "initial", initial_);
+                auto source = ascii_source{is};
+                return read(source, "initial", initial_);
             } else {
-                auto reader = binary_reader{is};
-                return deserialize(reader, "initial", initial_);
+                auto source = binary_source{is};
+                return read(source, "initial", initial_);
             }
         } catch (...) {
             return false;
@@ -289,26 +365,26 @@ public:
     auto load_state(std::istream& is, output_format fmt) -> bool override {
         try {
             if (fmt == output_format::ascii) {
-                auto reader = ascii_reader{is};
-                return deserialize_state_from(reader);
+                auto source = ascii_source{is};
+                return read_state_from(source);
             } else {
-                auto reader = binary_reader{is};
-                return deserialize_state_from(reader);
+                auto source = binary_source{is};
+                return read_state_from(source);
             }
         } catch (...) {
             return false;
         }
     }
 
-    template<typename Reader>
-    auto deserialize_state_from(Reader& reader) -> bool {
+    template<typename SourceT>
+    auto read_state_from(SourceT& source) -> bool {
         typename P::config_t cfg;
         typename P::initial_t ini;
         typename P::state_t state;
 
-        if (!deserialize(reader, "physics", cfg)) return false;
-        if (!deserialize(reader, "initial", ini)) return false;
-        if (!deserialize(reader, "physics_state", state)) return false;
+        if (!read(source, "physics", cfg)) return false;
+        if (!read(source, "initial", ini)) return false;
+        if (!read(source, "physics_state", state)) return false;
 
         config_ = std::move(cfg);
         initial_ = std::move(ini);
@@ -320,64 +396,102 @@ public:
     // Parallel I/O - directory-based operations
     // -------------------------------------------------------------------------
 
-    void write_state(const fs::path& path) override {
+    void write_state(const fs::path& path, output_format fmt) override {
         if (!state_.has_value()) {
             throw std::runtime_error("state not initialized");
         }
+        if (!exec_context_) {
+            throw std::runtime_error("exec_context not set");
+        }
 
-        if constexpr (ParallelPhysics<P>) {
-            // Create directory
-            fs::create_directories(path);
+        auto is_distributed = exec_context_->comm && exec_context_->comm->size() > 1;
 
-            // Write header: config + initial + state header
-            {
-                std::ofstream file(path / "header.bin", std::ios::binary);
-                if (!file) {
-                    throw std::runtime_error("failed to open header.bin for writing");
+        if (is_distributed) {
+            if constexpr (ParallelPhysics<P>) {
+                auto cp = checkpoint_t<typename P::config_t, typename P::initial_t, typename P::state_t>{
+                    config_, initial_, *state_
+                };
+                if (fmt == output_format::binary) {
+                    write_checkpoint(path, cp, Binary{});
+                } else {
+                    write_checkpoint(path, cp, Ascii{});
                 }
-                binary_writer writer(file);
-                serialize(writer, "physics", config_);
-                serialize(writer, "initial", initial_);
-                serialize_header(writer, *state_);
+            } else {
+                throw std::runtime_error("this physics module does not support parallel IO");
             }
-
-            // Write items using generic helper
-            write_items(path, items(*state_));
         } else {
-            throw std::runtime_error("this physics module does not support parallel IO");
+            // Single-file IO for non-distributed case
+            auto mode = fmt == output_format::binary ? std::ios::binary : std::ios::out;
+            std::ofstream file(path, mode);
+            if (!file) {
+                throw std::runtime_error("failed to open state file for writing");
+            }
+            write_state(file, fmt);
         }
     }
 
-    auto load_state(const fs::path& path, item_predicate wants_item) -> bool override {
-        if constexpr (ParallelPhysics<P>) {
-            try {
-                typename P::config_t cfg;
-                typename P::initial_t ini;
-                typename P::state_t state;
+    auto load_state(const fs::path& path, output_format fmt, item_predicate /* wants_item */) -> bool override {
+        if (!exec_context_) {
+            throw std::runtime_error("exec_context not set");
+        }
 
-                // Read header: config + initial + state header
-                {
-                    std::ifstream file(path / "header.bin", std::ios::binary);
-                    if (!file) return false;
-                    binary_reader reader(file);
-                    if (!deserialize(reader, "physics", cfg)) return false;
-                    if (!deserialize(reader, "initial", ini)) return false;
-                    if (!deserialize_header(reader, state)) return false;
+        // Check if path is a directory (parallel IO) or file (single-file IO)
+        if (fs::is_directory(path)) {
+            if constexpr (ParallelPhysics<P>) {
+                try {
+                    typename P::config_t cfg;
+                    typename P::initial_t ini;
+                    typename P::state_t state;
+
+                    auto cp = mutable_checkpoint_t<typename P::config_t, typename P::initial_t, typename P::state_t>{
+                        cfg, ini, state
+                    };
+
+                    auto rank = exec_context_->comm ? exec_context_->comm->rank() : 0;
+                    auto num_ranks = exec_context_->comm ? exec_context_->comm->size() : 1;
+
+                    if (fmt == output_format::binary) {
+                        read_checkpoint(path, cp, rank, num_ranks, Binary{});
+                    } else {
+                        read_checkpoint(path, cp, rank, num_ranks, Ascii{});
+                    }
+
+                    config_ = std::move(cfg);
+                    initial_ = std::move(ini);
+                    state_ = std::move(state);
+                    return true;
+                } catch (...) {
+                    return false;
                 }
-
-                // Read items using generic helper
-                read_items(path, items(state), wants_item);
-
-                config_ = std::move(cfg);
-                initial_ = std::move(ini);
-                state_ = std::move(state);
-                return true;
-            } catch (...) {
-                return false;
+            } else {
+                throw std::runtime_error("this physics module does not support parallel IO");
             }
         } else {
-            throw std::runtime_error("this physics module does not support parallel IO");
+            // Single-file IO
+            auto mode = fmt == output_format::binary ? std::ios::binary : std::ios::in;
+            std::ifstream file(path, mode);
+            if (!file) return false;
+            return load_state(file, fmt);
         }
+    }
+
+    void write_products(const fs::path& path, output_format fmt,
+                        const std::vector<std::string>& selected) override {
+        if (!state_.has_value()) {
+            throw std::runtime_error("state not initialized");
+        }
+        if (!exec_context_) {
+            throw std::runtime_error("exec_context not set");
+        }
+
+        // For now, products use single-file IO only
+        // TODO: Add product checkpoint support if needed
+        auto mode = fmt == output_format::binary ? std::ios::binary : std::ios::out;
+        std::ofstream file(path, mode);
+        if (!file) {
+            throw std::runtime_error("failed to open products file for writing");
+        }
+        write_products(file, fmt, selected);
     }
 
     // -------------------------------------------------------------------------
