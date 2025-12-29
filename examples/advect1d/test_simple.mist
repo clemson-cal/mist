@@ -2,7 +2,11 @@ set exec num_threads=1
 set initial num_partitions=1
 set initial num_zones=100
 init
-n++
+repeat 1 n show iteration
 select products
 write products
+write checkpoint chkpt.0000.dat
+n += 10
+load chkpt.0000.dat
+n += 10
 stop

@@ -4,7 +4,7 @@
 #include <stdexcept>
 #include <type_traits>
 #include "mist/core.hpp"
-#include "mist/serialize.hpp"
+#include "mist/archive.hpp"
 
 using namespace mist;
 
@@ -36,22 +36,16 @@ inline boundary_condition from_string(std::type_identity<boundary_condition>, co
 
 struct boundary_t {
     boundary_condition type = boundary_condition::periodic;
-    double value = 0.0;                // boundary value (if applicable)
-
-    auto fields() const {
-        return std::make_tuple(
-            field("type", type),
-            field("value", value)
-        );
-    }
-
-    auto fields() {
-        return std::make_tuple(
-            field("type", type),
-            field("value", value)
-        );
-    }
+    double value = 0.0;
 };
+
+inline auto fields(const boundary_t& b) {
+    return std::make_tuple(field("type", b.type), field("value", b.value));
+}
+
+inline auto fields(boundary_t& b) {
+    return std::make_tuple(field("type", b.type), field("value", b.value));
+}
 
 struct mesh_t {
     vec_t<int, 3> resolution;
@@ -59,49 +53,49 @@ struct mesh_t {
     vec_t<double, 3> upper;
     boundary_t boundary_lo;
     boundary_t boundary_hi;
-
-    auto fields() const {
-        return std::make_tuple(
-            field("resolution", resolution),
-            field("lower", lower),
-            field("upper", upper),
-            field("boundary_lo", boundary_lo),
-            field("boundary_hi", boundary_hi)
-        );
-    }
-
-    auto fields() {
-        return std::make_tuple(
-            field("resolution", resolution),
-            field("lower", lower),
-            field("upper", upper),
-            field("boundary_lo", boundary_lo),
-            field("boundary_hi", boundary_hi)
-        );
-    }
 };
+
+inline auto fields(const mesh_t& m) {
+    return std::make_tuple(
+        field("resolution", m.resolution),
+        field("lower", m.lower),
+        field("upper", m.upper),
+        field("boundary_lo", m.boundary_lo),
+        field("boundary_hi", m.boundary_hi)
+    );
+}
+
+inline auto fields(mesh_t& m) {
+    return std::make_tuple(
+        field("resolution", m.resolution),
+        field("lower", m.lower),
+        field("upper", m.upper),
+        field("boundary_lo", m.boundary_lo),
+        field("boundary_hi", m.boundary_hi)
+    );
+}
 
 struct physics_t {
     double gamma;
     double cfl;
     std::vector<double> diffusion_coeffs;
-
-    auto fields() const {
-        return std::make_tuple(
-            field("gamma", gamma),
-            field("cfl", cfl),
-            field("diffusion_coeffs", diffusion_coeffs)
-        );
-    }
-
-    auto fields() {
-        return std::make_tuple(
-            field("gamma", gamma),
-            field("cfl", cfl),
-            field("diffusion_coeffs", diffusion_coeffs)
-        );
-    }
 };
+
+inline auto fields(const physics_t& p) {
+    return std::make_tuple(
+        field("gamma", p.gamma),
+        field("cfl", p.cfl),
+        field("diffusion_coeffs", p.diffusion_coeffs)
+    );
+}
+
+inline auto fields(physics_t& p) {
+    return std::make_tuple(
+        field("gamma", p.gamma),
+        field("cfl", p.cfl),
+        field("diffusion_coeffs", p.diffusion_coeffs)
+    );
+}
 
 struct source_t {
     std::string name;
@@ -109,27 +103,27 @@ struct source_t {
     vec_t<double, 3> velocity;
     double radius;
     double amplitude;
-
-    auto fields() const {
-        return std::make_tuple(
-            field("name", name),
-            field("position", position),
-            field("velocity", velocity),
-            field("radius", radius),
-            field("amplitude", amplitude)
-        );
-    }
-
-    auto fields() {
-        return std::make_tuple(
-            field("name", name),
-            field("position", position),
-            field("velocity", velocity),
-            field("radius", radius),
-            field("amplitude", amplitude)
-        );
-    }
 };
+
+inline auto fields(const source_t& s) {
+    return std::make_tuple(
+        field("name", s.name),
+        field("position", s.position),
+        field("velocity", s.velocity),
+        field("radius", s.radius),
+        field("amplitude", s.amplitude)
+    );
+}
+
+inline auto fields(source_t& s) {
+    return std::make_tuple(
+        field("name", s.name),
+        field("position", s.position),
+        field("velocity", s.velocity),
+        field("radius", s.radius),
+        field("amplitude", s.amplitude)
+    );
+}
 
 struct output_t {
     std::string directory;
@@ -137,27 +131,27 @@ struct output_t {
     std::vector<double> snapshot_times;
     int checkpoint_interval;
     double timeseries_dt;
-
-    auto fields() const {
-        return std::make_tuple(
-            field("directory", directory),
-            field("prefix", prefix),
-            field("snapshot_times", snapshot_times),
-            field("checkpoint_interval", checkpoint_interval),
-            field("timeseries_dt", timeseries_dt)
-        );
-    }
-
-    auto fields() {
-        return std::make_tuple(
-            field("directory", directory),
-            field("prefix", prefix),
-            field("snapshot_times", snapshot_times),
-            field("checkpoint_interval", checkpoint_interval),
-            field("timeseries_dt", timeseries_dt)
-        );
-    }
 };
+
+inline auto fields(const output_t& o) {
+    return std::make_tuple(
+        field("directory", o.directory),
+        field("prefix", o.prefix),
+        field("snapshot_times", o.snapshot_times),
+        field("checkpoint_interval", o.checkpoint_interval),
+        field("timeseries_dt", o.timeseries_dt)
+    );
+}
+
+inline auto fields(output_t& o) {
+    return std::make_tuple(
+        field("directory", o.directory),
+        field("prefix", o.prefix),
+        field("snapshot_times", o.snapshot_times),
+        field("checkpoint_interval", o.checkpoint_interval),
+        field("timeseries_dt", o.timeseries_dt)
+    );
+}
 
 struct config_t {
     std::string title;
@@ -169,35 +163,35 @@ struct config_t {
     physics_t physics;
     std::vector<source_t> sources;
     output_t output;
-
-    auto fields() const {
-        return std::make_tuple(
-            field("title", title),
-            field("description", description),
-            field("version", version),
-            field("t_final", t_final),
-            field("max_iterations", max_iterations),
-            field("mesh", mesh),
-            field("physics", physics),
-            field("sources", sources),
-            field("output", output)
-        );
-    }
-
-    auto fields() {
-        return std::make_tuple(
-            field("title", title),
-            field("description", description),
-            field("version", version),
-            field("t_final", t_final),
-            field("max_iterations", max_iterations),
-            field("mesh", mesh),
-            field("physics", physics),
-            field("sources", sources),
-            field("output", output)
-        );
-    }
 };
+
+inline auto fields(const config_t& c) {
+    return std::make_tuple(
+        field("title", c.title),
+        field("description", c.description),
+        field("version", c.version),
+        field("t_final", c.t_final),
+        field("max_iterations", c.max_iterations),
+        field("mesh", c.mesh),
+        field("physics", c.physics),
+        field("sources", c.sources),
+        field("output", c.output)
+    );
+}
+
+inline auto fields(config_t& c) {
+    return std::make_tuple(
+        field("title", c.title),
+        field("description", c.description),
+        field("version", c.version),
+        field("t_final", c.t_final),
+        field("max_iterations", c.max_iterations),
+        field("mesh", c.mesh),
+        field("physics", c.physics),
+        field("sources", c.sources),
+        field("output", c.output)
+    );
+}
 
 // =============================================================================
 // Main
@@ -216,25 +210,25 @@ int main(int argc, char* argv[]) {
     }
 
     try {
-        ascii_reader reader(file);
+        ascii_source source(file);
         config_t config;
-        mist::deserialize(reader, "config", config);
+        read(source, "config", config);
 
         std::cout << "Configuration loaded successfully!\n";
         std::cout << "========================================\n\n";
 
-        // Output the configuration using ascii_writer
-        ascii_writer writer(std::cout);
-        mist::serialize(writer, "config", config);
+        // Output the configuration using ascii_sink
+        ascii_sink sink(std::cout);
+        write(sink, "config", config);
 
         // Demo: use set() to override fields by path
         std::cout << "\n========================================\n";
         std::cout << "Demonstrating set() function:\n";
         std::cout << "========================================\n\n";
 
-        mist::set(config, "t_final", "20.0");
-        mist::set(config, "physics.gamma", "1.33");
-        mist::set(config, "mesh.boundary_lo.type", "reflecting");
+        set(config, "t_final", "20.0");
+        set(config, "physics.gamma", "1.33");
+        set(config, "mesh.boundary_lo.type", "reflecting");
 
         std::cout << "After overrides:\n";
         std::cout << "  t_final = " << config.t_final << "\n";

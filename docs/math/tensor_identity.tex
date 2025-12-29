@@ -1,0 +1,33 @@
+\documentclass[11pt]{article}
+\usepackage{amsmath}
+\usepackage[margin=1in]{geometry}
+
+\begin{document}
+
+\section*{Divergence of a Symmetric Tensor}
+
+For a symmetric second-rank tensor $T^{\mu\nu}$, the covariant divergence can be written in terms of coordinate derivatives and metric derivatives.
+
+Starting from the general identity:
+\begin{equation}
+\nabla_\mu T^{\mu\nu} = \frac{1}{\sqrt{-g}} \partial_\mu \left(\sqrt{-g} \, T^{\mu\nu}\right) + \Gamma^\nu_{\mu\lambda} T^{\mu\lambda}
+\end{equation}
+
+For a \textbf{symmetric} tensor $T^{\mu\lambda} = T^{\lambda\mu}$, the Christoffel symbol contraction simplifies:
+\begin{equation}
+\Gamma^\nu_{\mu\lambda} T^{\mu\lambda} = \frac{1}{2} T^{\mu\lambda} g^{\nu\sigma} \partial_\sigma g_{\mu\lambda}
+\end{equation}
+
+Therefore, the covariant divergence becomes:
+\begin{equation}
+\boxed{\nabla_\mu T^{\mu\nu} = \frac{1}{\sqrt{-g}} \partial_\mu \left(\sqrt{-g} \, T^{\mu\nu}\right) + \frac{1}{2} T^{\mu\lambda} g^{\nu\sigma} \partial_\sigma g_{\mu\lambda}}
+\end{equation}
+
+Equivalently, for the coordinate divergence of the tensor density:
+\begin{equation}
+\partial_\mu \left(\sqrt{-g} \, T^{\mu\nu}\right) = \sqrt{-g} \left( \nabla_\mu T^{\mu\nu} - \frac{1}{2} T^{\mu\lambda} g^{\nu\sigma} \partial_\sigma g_{\mu\lambda} \right)
+\end{equation}
+
+This identity is useful in general relativity for writing $\nabla_\mu T^{\mu\nu} = 0$ in a form suitable for numerical conservation laws, where the metric derivative term acts as a geometric source.
+
+\end{document}

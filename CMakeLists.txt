@@ -1,4 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
+
+# Prevent in-source builds
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR)
+    message(FATAL_ERROR "In-source builds are not allowed. Use: cmake -B build")
+endif()
+
 project(mist VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)

@@ -1,15 +1,5 @@
-# Build outputs
-*.o
-*.a
-*.so
-*.dylib
-*.exe
-
-# Example executables
-examples/advect1d/advect1d
-examples/config-reader/config-reader
-examples/laplacian2d/laplacian2d
-examples/srhd1d/srhd1d
+# Build outputs (all in build/)
+build/
 
 # Output data files
 *.dat
@@ -19,16 +9,6 @@ examples/srhd1d/srhd1d
 *.log
 *.csv
 *.pdf
-
-# CMake
-build/
-CMakeCache.txt
-CMakeFiles/
-cmake_install.cmake
-install_manifest.txt
-Makefile
-CTestTestfile.cmake
-Testing/
 
 # IDE files
 .vscode/
@@ -57,4 +37,9 @@ compile_commands.json
 tests/test_*
 !tests/test_*.cpp
 !tests/test_*.py
-tests/write_test_binaries
+
+# Example executables (same name as directory)
+examples/advect1d/advect1d
+examples/srhd1d/srhd1d
+examples/config-reader/config-reader
+examples/laplacian2d/laplacian2d

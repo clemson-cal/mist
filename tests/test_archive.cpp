@@ -4,53 +4,56 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
-#include "mist/archive/archive.hpp"
+#include "mist/core.hpp"
+#include "mist/archive.hpp"
+
+using namespace mist;
 
 // =============================================================================
 // Test structures
 // =============================================================================
 
 struct particle_t {
-    std::array<double, 3> position;
-    std::array<double, 3> velocity;
+    vec_t<double, 3> position;
+    vec_t<double, 3> velocity;
     double mass;
 };
 
-auto fields(particle_t& p) {
+inline auto fields(const particle_t& p) {
     return std::make_tuple(
-        archive::field("position", p.position),
-        archive::field("velocity", p.velocity),
-        archive::field("mass", p.mass)
+        field("position", p.position),
+        field("velocity", p.velocity),
+        field("mass", p.mass)
     );
 }
 
-auto fields(const particle_t& p) {
+inline auto fields(particle_t& p) {
     return std::make_tuple(
-        archive::field("position", p.position),
-        archive::field("velocity", p.velocity),
-        archive::field("mass", p.mass)
+        field("position", p.position),
+        field("velocity", p.velocity),
+        field("mass", p.mass)
     );
 }
 
 struct grid_config_t {
-    std::array<int, 3> resolution;
-    std::array<double, 3> domain_min;
-    std::array<double, 3> domain_max;
+    vec_t<int, 3> resolution;
+    vec_t<double, 3> domain_min;
+    vec_t<double, 3> domain_max;
 };
 
-auto fields(grid_config_t& g) {
+inline auto fields(const grid_config_t& g) {
     return std::make_tuple(
-        archive::field("resolution", g.resolution),
-        archive::field("domain_min", g.domain_min),
-        archive::field("domain_max", g.domain_max)
+        field("resolution", g.resolution),
+        field("domain_min", g.domain_min),
+        field("domain_max", g.domain_max)
     );
 }
 
-auto fields(const grid_config_t& g) {
+inline auto fields(grid_config_t& g) {
     return std::make_tuple(
-        archive::field("resolution", g.resolution),
-        archive::field("domain_min", g.domain_min),
-        archive::field("domain_max", g.domain_max)
+        field("resolution", g.resolution),
+        field("domain_min", g.domain_min),
+        field("domain_max", g.domain_max)
     );
 }
 
@@ -62,23 +65,23 @@ struct simulation_state_t {
     std::vector<double> scalar_field;
 };
 
-auto fields(simulation_state_t& s) {
+inline auto fields(const simulation_state_t& s) {
     return std::make_tuple(
-        archive::field("time", s.time),
-        archive::field("iteration", s.iteration),
-        archive::field("grid", s.grid),
-        archive::field("particles", s.particles),
-        archive::field("scalar_field", s.scalar_field)
+        field("time", s.time),
+        field("iteration", s.iteration),
+        field("grid", s.grid),
+        field("particles", s.particles),
+        field("scalar_field", s.scalar_field)
     );
 }
 
-auto fields(const simulation_state_t& s) {
+inline auto fields(simulation_state_t& s) {
     return std::make_tuple(
-        archive::field("time", s.time),
-        archive::field("iteration", s.iteration),
-        archive::field("grid", s.grid),
-        archive::field("particles", s.particles),
-        archive::field("scalar_field", s.scalar_field)
+        field("time", s.time),
+        field("iteration", s.iteration),
+        field("grid", s.grid),
+        field("particles", s.particles),
+        field("scalar_field", s.scalar_field)
     );
 }
 
@@ -86,12 +89,12 @@ struct nested_strings_t {
     std::vector<std::string> items;
 };
 
-auto fields(nested_strings_t& n) {
-    return std::make_tuple(archive::field("items", n.items));
+inline auto fields(const nested_strings_t& n) {
+    return std::make_tuple(field("items", n.items));
 }
 
-auto fields(const nested_strings_t& n) {
-    return std::make_tuple(archive::field("items", n.items));
+inline auto fields(nested_strings_t& n) {
+    return std::make_tuple(field("items", n.items));
 }
 
 // =============================================================================
@@ -103,7 +106,7 @@ auto approx_equal(double a, double b, double tol = 1e-10) -> bool {
 }
 
 template<typename T, std::size_t N>
-auto equal(const std::array<T, N>& a, const std::array<T, N>& b) -> bool {
+auto equal(const vec_t<T, N>& a, const vec_t<T, N>& b) -> bool {
     for (auto i = std::size_t{0}; i < N; ++i) {
         if constexpr (std::is_floating_point_v<T>) {
             if (!approx_equal(a[i], b[i])) return false;
@@ -159,37 +162,37 @@ auto equal(const nested_strings_t& a, const nested_strings_t& b) -> bool {
     return equal(a.items, b.items);
 }
 
+template<std::size_t D>
+auto equal(const cached_t<double, D>& a, const cached_t<double, D>& b) -> bool {
+    if (start(a) != start(b)) return false;
+    if (shape(a) != shape(b)) return false;
+    for (auto i = std::size_t{0}; i < size(a); ++i) {
+        if (!approx_equal(data(a)[i], data(b)[i])) return false;
+    }
+    return true;
+}
+
+template<std::size_t D>
+auto equal(const cached_t<int, D>& a, const cached_t<int, D>& b) -> bool {
+    if (start(a) != start(b)) return false;
+    if (shape(a) != shape(b)) return false;
+    for (auto i = std::size_t{0}; i < size(a); ++i) {
+        if (data(a)[i] != data(b)[i]) return false;
+    }
+    return true;
+}
+
 // =============================================================================
 // Test data factories
 // =============================================================================
 
-auto make_test_int() -> int {
-    return 42;
-}
-
-auto make_test_double() -> double {
-    return 3.14159265358979;
-}
-
-auto make_test_string() -> std::string {
-    return "Hello, World!\nWith escape chars: \t\"quoted\"";
-}
-
-auto make_test_vec3_double() -> std::array<double, 3> {
-    return {1.5, 2.5, 3.5};
-}
-
-auto make_test_vec3_int() -> std::array<int, 3> {
-    return {64, 128, 256};
-}
-
-auto make_test_vector_double() -> std::vector<double> {
-    return {300.0, 305.2, 298.5, 302.1};
-}
-
-auto make_test_vector_double_empty() -> std::vector<double> {
-    return {};
-}
+auto make_test_int() -> int { return 42; }
+auto make_test_double() -> double { return 3.14159265358979; }
+auto make_test_string() -> std::string { return "Hello, World!\nWith escape chars: \t\"quoted\""; }
+auto make_test_vec3_double() -> vec_t<double, 3> { return {1.5, 2.5, 3.5}; }
+auto make_test_vec3_int() -> vec_t<int, 3> { return {64, 128, 256}; }
+auto make_test_vector_double() -> std::vector<double> { return {300.0, 305.2, 298.5, 302.1}; }
+auto make_test_vector_double_empty() -> std::vector<double> { return {}; }
 
 auto make_test_vector_double_large() -> std::vector<double> {
     auto result = std::vector<double>{};
@@ -199,28 +202,18 @@ auto make_test_vector_double_large() -> std::vector<double> {
     return result;
 }
 
-auto make_test_vector_string() -> std::vector<std::string> {
-    return {"default", "primitive", "conserved"};
-}
-
-auto make_test_vector_string_empty() -> std::vector<std::string> {
-    return {};
-}
-
-auto make_test_particle() -> particle_t {
-    return {{{0.1, 0.2, 0.15}}, {{1.5, -0.3, 0.0}}, 1.2};
-}
+auto make_test_vector_string() -> std::vector<std::string> { return {"default", "primitive", "conserved"}; }
+auto make_test_vector_string_empty() -> std::vector<std::string> { return {}; }
+auto make_test_particle() -> particle_t { return {{0.1, 0.2, 0.15}, {1.5, -0.3, 0.0}, 1.2}; }
 
 auto make_test_vector_particle() -> std::vector<particle_t> {
     return {
-        {{{0.1, 0.2, 0.15}}, {{1.5, -0.3, 0.0}}, 1.0},
-        {{{0.8, 0.7, 0.25}}, {{-0.5, 0.8, 0.2}}, 2.0}
+        {{0.1, 0.2, 0.15}, {1.5, -0.3, 0.0}, 1.0},
+        {{0.8, 0.7, 0.25}, {-0.5, 0.8, 0.2}, 2.0}
     };
 }
 
-auto make_test_grid_config() -> grid_config_t {
-    return {{{64, 64, 32}}, {{0.0, 0.0, 0.0}}, {{1.0, 1.0, 0.5}}};
-}
+auto make_test_grid_config() -> grid_config_t { return {{64, 64, 32}, {0.0, 0.0, 0.0}, {1.0, 1.0, 0.5}}; }
 
 auto make_test_simulation_state() -> simulation_state_t {
     auto state = simulation_state_t{};
@@ -232,12 +225,51 @@ auto make_test_simulation_state() -> simulation_state_t {
     return state;
 }
 
-auto make_test_nested_strings() -> nested_strings_t {
-    return {{"alpha", "beta", "gamma"}};
+auto make_test_nested_strings() -> nested_strings_t { return {{"alpha", "beta", "gamma"}}; }
+auto make_test_nested_strings_empty() -> nested_strings_t { return {{}}; }
+
+auto make_test_cached_1d() -> cached_t<double, 1> {
+    auto space = index_space(ivec(0), uvec(100u));
+    auto arr = cached_t<double, 1>(space, memory::host);
+    for (auto i = 0; i < 100; ++i) arr(ivec(i)) = static_cast<double>(i) * 0.5;
+    return arr;
 }
 
-auto make_test_nested_strings_empty() -> nested_strings_t {
-    return {{}};
+auto make_test_cached_2d() -> cached_t<double, 2> {
+    auto space = index_space(ivec(0, 0), uvec(10u, 20u));
+    auto arr = cached_t<double, 2>(space, memory::host);
+    for (auto i = 0; i < 10; ++i)
+        for (auto j = 0; j < 20; ++j)
+            arr(ivec(i, j)) = static_cast<double>(i * 20 + j);
+    return arr;
+}
+
+auto make_test_cached_3d() -> cached_t<double, 3> {
+    auto space = index_space(ivec(0, 0, 0), uvec(4u, 5u, 6u));
+    auto arr = cached_t<double, 3>(space, memory::host);
+    for (auto i = 0; i < 4; ++i)
+        for (auto j = 0; j < 5; ++j)
+            for (auto k = 0; k < 6; ++k)
+                arr(ivec(i, j, k)) = static_cast<double>(i * 30 + j * 6 + k);
+    return arr;
+}
+
+auto make_test_cached_2d_offset() -> cached_t<double, 2> {
+    auto space = index_space(ivec(-5, 10), uvec(10u, 20u));
+    auto arr = cached_t<double, 2>(space, memory::host);
+    for (auto i = -5; i < 5; ++i)
+        for (auto j = 10; j < 30; ++j)
+            arr(ivec(i, j)) = static_cast<double>(i * 100 + j);
+    return arr;
+}
+
+auto make_test_cached_2d_int() -> cached_t<int, 2> {
+    auto space = index_space(ivec(0, 0), uvec(5u, 5u));
+    auto arr = cached_t<int, 2>(space, memory::host);
+    for (auto i = 0; i < 5; ++i)
+        for (auto j = 0; j < 5; ++j)
+            arr(ivec(i, j)) = i * 10 + j;
+    return arr;
 }
 
 // =============================================================================
@@ -245,53 +277,42 @@ auto make_test_nested_strings_empty() -> nested_strings_t {
 // =============================================================================
 
 struct ascii_tag {
-    static auto make_stream() -> std::stringstream {
-        return std::stringstream{};
-    }
-
-    static auto make_sink(std::stringstream& ss) -> archive::ascii_sink {
-        return archive::ascii_sink(ss);
-    }
-
-    static auto make_source(std::stringstream& ss) -> archive::ascii_source {
-        return archive::ascii_source(ss);
-    }
+    static auto make_stream() -> std::stringstream { return std::stringstream{}; }
+    static auto make_sink(std::stringstream& ss) -> ascii_sink { return ascii_sink(ss); }
+    static auto make_source(std::stringstream& ss) -> ascii_source { return ascii_source(ss); }
 };
 
 struct binary_tag {
     static auto make_stream() -> std::stringstream {
         return std::stringstream(std::ios::binary | std::ios::in | std::ios::out);
     }
-
-    static auto make_sink(std::stringstream& ss) -> archive::binary_sink {
-        return archive::binary_sink(ss);
-    }
-
-    static auto make_source(std::stringstream& ss) -> archive::binary_source {
-        return archive::binary_source(ss);
-    }
+    static auto make_sink(std::stringstream& ss) -> binary_sink { return binary_sink(ss); }
+    static auto make_source(std::stringstream& ss) -> binary_source { return binary_source(ss); }
 };
 
 struct binary_file_tag {
     static constexpr const char* filename = "test_round_trip.bin";
 };
 
-// Default construction for most types
 template<typename T>
-auto make_default() -> T {
-    return T{};
+auto make_default() -> T { return T{}; }
+
+template<typename T, std::size_t D>
+auto make_default() -> cached_t<T, D> {
+    auto dummy_space = index_space(vec_t<int, D>{}, vec_t<unsigned, D>{});
+    return cached_t<T, D>(dummy_space, memory::host);
 }
 
 template<typename Format, typename T>
 auto round_trip(const T& original, const char* name) -> T {
     auto ss = Format::make_stream();
     auto sink = Format::make_sink(ss);
-    archive::write(sink, name, original);
+    write(sink, name, original);
 
     ss.seekg(0);
     auto source = Format::make_source(ss);
     auto loaded = make_default<T>();
-    archive::read(source, name, loaded);
+    read(source, name, loaded);
     return loaded;
 }
 
@@ -299,15 +320,14 @@ template<typename T>
 auto round_trip_file(const T& original, const char* name) -> T {
     {
         auto file = std::ofstream(binary_file_tag::filename, std::ios::binary);
-        auto sink = archive::binary_sink(file);
-        archive::write(sink, name, original);
+        auto sink = binary_sink(file);
+        write(sink, name, original);
     }
-
     auto loaded = make_default<T>();
     {
         auto file = std::ifstream(binary_file_tag::filename, std::ios::binary);
-        auto source = archive::binary_source(file);
-        archive::read(source, name, loaded);
+        auto source = binary_source(file);
+        read(source, name, loaded);
     }
     std::remove(binary_file_tag::filename);
     return loaded;
@@ -340,83 +360,62 @@ void test_round_trip(const char* type_name, Factory make_value, const char* fiel
     std::cout << "PASSED\n";
 }
 
-// =============================================================================
-// Additional tests (size comparison, file I/O)
-// =============================================================================
-
 void test_binary_vs_ascii_size() {
     std::cout << "Testing binary vs ASCII size comparison... ";
-
     auto state = simulation_state_t{};
     state.time = 1.234;
     state.iteration = 42;
     state.grid = make_test_grid_config();
     state.particles = make_test_vector_particle();
-
-    for (auto i = 0; i < 1000000; ++i) {
-        state.scalar_field.push_back(300.0 + 0.00001 * i);
-    }
+    for (auto i = 0; i < 1000000; ++i) state.scalar_field.push_back(300.0 + 0.00001 * i);
 
     auto ascii_ss = std::stringstream{};
-    auto ascii_sink = archive::ascii_sink(ascii_ss);
-    archive::write(ascii_sink, "state", state);
+    auto ascii_s = ascii_sink(ascii_ss);
+    write(ascii_s, "state", state);
     auto ascii_size = ascii_ss.str().size();
 
     auto binary_ss = std::stringstream(std::ios::binary | std::ios::in | std::ios::out);
-    auto binary_sink = archive::binary_sink(binary_ss);
-    archive::write(binary_sink, "state", state);
+    auto binary_s = binary_sink(binary_ss);
+    write(binary_s, "state", state);
     auto binary_size = binary_ss.str().size();
 
     std::cout << "\n    ASCII size:  " << ascii_size << " bytes\n";
     std::cout << "    Binary size: " << binary_size << " bytes\n";
     std::cout << "    Ratio: " << static_cast<double>(binary_size) / ascii_size * 100.0 << "%\n";
-
     assert(binary_size < ascii_size);
-
     std::cout << "    PASSED\n";
 }
 
 void test_binary_file_io() {
     std::cout << "Testing binary file I/O... ";
-
     auto original = make_test_vector_double_large();
     {
         auto file = std::ofstream("test_output.bin", std::ios::binary);
-        auto sink = archive::binary_sink(file);
-        archive::write(sink, "data", original);
+        auto sink = binary_sink(file);
+        write(sink, "data", original);
     }
-
     auto loaded = std::vector<double>{};
     {
         auto file = std::ifstream("test_output.bin", std::ios::binary);
-        auto source = archive::binary_source(file);
-        archive::read(source, "data", loaded);
+        auto source = binary_source(file);
+        read(source, "data", loaded);
     }
-
     assert(equal(original, loaded));
     std::remove("test_output.bin");
-
     std::cout << "PASSED\n";
 }
 
-// =============================================================================
-// Main
-// =============================================================================
-
 int main() {
     std::cout << "=== Scalar Types ===\n\n";
-
     test_round_trip("int", make_test_int, "value");
     test_round_trip("double", make_test_double, "value");
     test_round_trip("string", make_test_string, "message");
 
     std::cout << "\n=== Fixed-Size Arrays ===\n\n";
-
-    test_round_trip("std::array<double, 3>", make_test_vec3_double, "position");
-    test_round_trip("std::array<int, 3>", make_test_vec3_int, "resolution");
+    test_round_trip("vec_t<double, 3>", make_test_vec3_double, "position");
+    test_round_trip("vec_t<int, 3>", make_test_vec3_int, "resolution");
 
     std::cout << "\n=== Dynamic Arrays ===\n\n";
-
     test_round_trip("vector<double>", make_test_vector_double, "data");
     test_round_trip("vector<double> (empty)", make_test_vector_double_empty, "data");
     test_round_trip("vector<double> (large)", make_test_vector_double_large, "data");
@@ -424,7 +423,6 @@ int main() {
     test_round_trip("vector<string> (empty)", make_test_vector_string_empty, "products");
 
     std::cout << "\n=== Compound Types ===\n\n";
-
     test_round_trip("particle_t", make_test_particle, "particle");
     test_round_trip("vector<particle_t>", make_test_vector_particle, "particles");
     test_round_trip("grid_config_t", make_test_grid_config, "grid");
@@ -432,8 +430,14 @@ int main() {
     test_round_trip("nested_strings_t", make_test_nested_strings, "nested");
     test_round_trip("nested_strings_t (empty)", make_test_nested_strings_empty, "nested");
 
-    std::cout << "\n=== Additional Tests ===\n\n";
+    std::cout << "\n=== NdArray Types ===\n\n";
+    test_round_trip("cached_t<double, 1>", make_test_cached_1d, "array");
+    test_round_trip("cached_t<double, 2>", make_test_cached_2d, "grid");
+    test_round_trip("cached_t<double, 3>", make_test_cached_3d, "volume");
+    test_round_trip("cached_t<double, 2> (offset)", make_test_cached_2d_offset, "offset_grid");
+    test_round_trip("cached_t<int, 2>", make_test_cached_2d_int, "int_grid");
 
+    std::cout << "\n=== Additional Tests ===\n\n";
     test_binary_vs_ascii_size();
     test_binary_file_io();
 

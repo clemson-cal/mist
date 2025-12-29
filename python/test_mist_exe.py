@@ -4,7 +4,7 @@
 import mist
 
 print("=== Testing Mist class ===")
-with mist.mist_exe.Mist("./examples/advect1d/advect1d") as sim:
+with mist.mist_exe.Mist("../build/examples/advect1d/advect1d") as sim:
     # Initialize
     sim.init()
     print(f"Initialized: time = {sim.time}")
