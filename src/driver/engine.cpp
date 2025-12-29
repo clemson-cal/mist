@@ -380,6 +380,14 @@ void engine_t::write_to_socket(const std::function<void(std::ostream&)>& writer,
 }
 
 // -----------------------------------------------------------------------------
+// Format conversion helper
+// -----------------------------------------------------------------------------
+
+auto to_archive_format(output_format fmt) -> archive::format {
+    return fmt == output_format::binary ? archive::format::binary : archive::format::ascii;
+}
+
+// -----------------------------------------------------------------------------
 // Direct write methods
 // -----------------------------------------------------------------------------
 
@@ -392,24 +400,12 @@ void engine_t::write_initial(std::ostream& os, output_format fmt) {
 }
 
 void engine_t::write_driver(std::ostream& os, output_format fmt) {
-    if (fmt == output_format::binary) {
-        auto sink = binary_sink{os};
-        write(sink, "driver_state", state_ref);
-    } else {
-        auto sink = ascii_sink{os};
-        write(sink, "driver_state", state_ref);
-    }
+    archive::with_sink(os, to_archive_format(fmt), [&](auto& sink) { write(sink, "driver_state", state_ref); });
 }
 
 void engine_t::write_profiler(std::ostream& os, output_format fmt) {
     auto data = physics.profiler_data();
-    if (fmt == output_format::binary) {
-        auto sink = binary_sink{os};
-        write(sink, "profiler", data);
-    } else {
-        auto sink = ascii_sink{os};
-        write(sink, "profiler", data);
-    }
+    archive::with_sink(os, to_archive_format(fmt), [&](auto& sink) { write(sink, "profiler", data); });
 }
 
 void engine_t::write_profiler_info(std::ostream& os, const color::scheme_t& c) {
@@ -426,13 +422,7 @@ void engine_t::write_profiler_info(std::ostream& os, const color::scheme_t& c) {
 }
 
 void engine_t::write_timeseries(std::ostream& os, output_format fmt) {
-    if (fmt == output_format::binary) {
-        auto sink = binary_sink{os};
-        write(sink, "timeseries", state_ref.timeseries);
-    } else {
-        auto sink = ascii_sink{os};
-        write(sink, "timeseries", state_ref.timeseries);
-    }
+    archive::with_sink(os, to_archive_format(fmt), [&](auto& sink) { write(sink, "timeseries", state_ref.timeseries); });
 }
 
 void engine_t::write_timeseries_info(std::ostream& os, const color::scheme_t& c) {
@@ -451,13 +441,7 @@ void engine_t::write_timeseries_info(std::ostream& os, const color::scheme_t& c)
 }
 
 void engine_t::write_checkpoint(std::ostream& os, output_format fmt) {
-    if (fmt == output_format::binary) {
-        auto sink = binary_sink{os};
-        write(sink, "driver_state", state_ref);
-    } else {
-        auto sink = ascii_sink{os};
-        write(sink, "driver_state", state_ref);
-    }
+    archive::with_sink(os, to_archive_format(fmt), [&](auto& sink) { write(sink, "driver_state", state_ref); });
     physics.write_state(os, fmt);
 }
 
@@ -467,13 +451,7 @@ void engine_t::write_products(std::ostream& os, output_format fmt) {
 
 void engine_t::write_iteration(std::ostream& os, output_format fmt) {
     auto info = make_iteration_info();
-    if (fmt == output_format::binary) {
-        auto sink = binary_sink{os};
-        write(sink, "iteration", info);
-    } else {
-        auto sink = ascii_sink{os};
-        write(sink, "iteration", info);
-    }
+    archive::with_sink(os, to_archive_format(fmt), [&](auto& sink) { write(sink, "iteration", info); });
 }
 
 void engine_t::write_iteration_info(std::ostream& os, const color::scheme_t& c) {
@@ -709,7 +687,7 @@ void engine_t::handle(const cmd::write_checkpoint& c, emit_fn emit) {
     auto fmt = output_format{};
 
     if (comm.size() > 1) {
-        // Distributed checkpoint: create directory, each rank writes its own file
+        // Distributed checkpoint: create directory with header + patches
         auto dirname = std::string{};
         if (c.dest) {
             dirname = *c.dest;
@@ -726,41 +704,34 @@ void engine_t::handle(const cmd::write_checkpoint& c, emit_fn emit) {
             state_ref.checkpoint_count++;
         }
 
-        // Rank 0 creates directory
+        // Rank 0 creates directory and writes driver state
+        auto dir = fs::path{dirname};
         if (comm.rank() == 0) {
             std::error_code ec;
-            fs::create_directories(dirname, ec);
+            fs::create_directories(dir, ec);
             if (ec) {
                 emit(resp::error{"failed to create directory " + dirname + ": " + ec.message()});
+                comm.barrier();
                 return;
             }
+
+            auto driver_filename = dir / (fmt == output_format::ascii ? "driver.dat" : "driver.bin");
+            auto driver_file = std::ofstream{driver_filename, std::ios::binary};
+            if (!driver_file) {
+                emit(resp::error{"failed to open driver state file"});
+                comm.barrier();
+                return;
+            }
+            archive::with_sink(driver_file, to_archive_format(fmt), [&](auto& sink) { write(sink, "driver_state", state_ref); });
         }
         comm.barrier();
 
-        // Each rank writes its own file
-        auto ext = (fmt == output_format::ascii) ? ".dat" : ".bin";
-        auto oss = std::ostringstream{};
-        oss << dirname << "/rank." << std::setw(4) << std::setfill('0') << comm.rank() << ext;
-        auto filename = oss.str();
-
-        auto file = std::ofstream{filename, std::ios::binary};
-        if (!file) {
-            // Use barrier to ensure all ranks participate before any error
-            comm.barrier();
-            if (comm.rank() == 0) {
-                emit(resp::error{"failed to open " + filename});
-            }
-            return;
-        }
-        write_checkpoint(file, fmt);
-        auto bytes = static_cast<std::size_t>(file.tellp());
-
-        // Reduce total bytes written across all ranks
-        auto total_bytes = comm.combine(bytes, std::plus<std::size_t>{});
+        // All ranks write physics state (header + patches)
+        physics.write_state(dir, fmt);
         comm.barrier();
 
         if (comm.rank() == 0) {
-            emit(resp::wrote_file{dirname, total_bytes});
+            emit(resp::wrote_file{dirname, 0});
         }
     } else {
         // Single-rank checkpoint: write single file
@@ -971,46 +942,47 @@ void engine_t::handle(const cmd::load& c, emit_fn emit) {
 
     // Check if path is a directory (distributed checkpoint)
     if (fs::is_directory(path)) {
-        // Distributed checkpoint: each rank reads its own file
-        auto ext = std::string{".bin"};
-
-        // Check for rank file with either extension
-        auto oss = std::ostringstream{};
-        oss << path << "/rank." << std::setw(4) << std::setfill('0') << comm.rank();
-        auto base = oss.str();
-
-        auto filename = std::string{};
+        // Distributed checkpoint: header + patches structure
         auto fmt = output_format{};
-        if (fs::exists(base + ".bin")) {
-            filename = base + ".bin";
+
+        // Detect format from driver file
+        auto dir = fs::path{path};
+        auto driver_bin = dir / "driver.bin";
+        auto driver_dat = dir / "driver.dat";
+        fs::path driver_file;
+        if (fs::exists(driver_bin)) {
+            driver_file = driver_bin;
             fmt = output_format::binary;
-        } else if (fs::exists(base + ".dat")) {
-            filename = base + ".dat";
+        } else if (fs::exists(driver_dat)) {
+            driver_file = driver_dat;
             fmt = output_format::ascii;
         } else {
             comm.barrier();
             if (comm.rank() == 0) {
-                emit(resp::error{"rank file not found: " + base + ".bin or " + base + ".dat"});
+                emit(resp::error{"driver file not found in " + path});
             }
             return;
         }
 
-        auto file = std::ifstream{filename, std::ios::binary};
-        if (!file) {
-            comm.barrier();
-            if (comm.rank() == 0) {
-                emit(resp::error{"failed to open " + filename});
+        // All ranks read driver state
+        auto success = false;
+        {
+            auto file = std::ifstream{driver_file, std::ios::binary};
+            if (!file) {
+                comm.barrier();
+                if (comm.rank() == 0) {
+                    emit(resp::error{"failed to open " + driver_file.string()});
+                }
+                return;
             }
-            return;
+            success = archive::with_source(file, to_archive_format(fmt), [&](auto& source) {
+                return read(source, "driver_state", state_ref);
+            });
         }
 
-        bool success = false;
-        if (fmt == output_format::ascii) {
-            auto source = ascii_source{file};
-            success = read(source, "driver_state", state_ref) && physics.load_state(file, fmt);
-        } else {
-            auto source = binary_source{file};
-            success = read(source, "driver_state", state_ref) && physics.load_state(file, fmt);
+        // Load physics state (header + patches by affinity)
+        if (success) {
+            success = physics.load_state(fs::path{path}, fmt);
         }
 
         // Check if all ranks succeeded
@@ -1036,18 +1008,12 @@ void engine_t::handle(const cmd::load& c, emit_fn emit) {
         return;
     }
 
-    if (fmt == output_format::ascii) {
-        auto source = ascii_source{file};
-        if (read(source, "driver_state", state_ref) && physics.load_state(file, fmt)) {
-            emit(resp::ok{"loaded checkpoint from " + c.filename});
-            return;
-        }
-    } else {
-        auto source = binary_source{file};
-        if (read(source, "driver_state", state_ref) && physics.load_state(file, fmt)) {
-            emit(resp::ok{"loaded checkpoint from " + c.filename});
-            return;
-        }
+    auto loaded = archive::with_source(file, to_archive_format(fmt), [&](auto& source) {
+        return read(source, "driver_state", state_ref);
+    });
+    if (loaded && physics.load_state(file, fmt)) {
+        emit(resp::ok{"loaded checkpoint from " + c.filename});
+        return;
     }
 
     file.clear();

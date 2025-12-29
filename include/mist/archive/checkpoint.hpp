@@ -28,11 +28,42 @@
 namespace archive {
 
 // ============================================================================
-// Format tag types
+// Format tag types and enum
 // ============================================================================
 
 struct Binary {};
 struct Ascii {};
+
+enum class format {
+    ascii,
+    binary
+};
+
+// ============================================================================
+// Format dispatch helpers
+// ============================================================================
+
+template <typename F>
+auto with_sink(std::ostream& os, format fmt, F&& func) {
+    if (fmt == format::binary) {
+        auto sink = binary_sink{os};
+        return func(sink);
+    } else {
+        auto sink = ascii_sink{os};
+        return func(sink);
+    }
+}
+
+template <typename F>
+auto with_source(std::istream& is, format fmt, F&& func) {
+    if (fmt == format::binary) {
+        auto source = binary_source{is};
+        return func(source);
+    } else {
+        auto source = ascii_source{is};
+        return func(source);
+    }
+}
 
 // ============================================================================
 // Hashable concept (not in standard)
@@ -267,6 +298,29 @@ void read_checkpoint(const std::filesystem::path& dir, T& state, int rank, int n
             source_type source(file);
             emplace_patch(state, key, source);
         }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Overloads that accept format enum
+// ----------------------------------------------------------------------------
+
+template <Scatterable T>
+void write_checkpoint(const std::filesystem::path& dir, const T& state, format fmt) {
+    if (fmt == format::binary) {
+        write_checkpoint(dir, state, Binary{});
+    } else {
+        write_checkpoint(dir, state, Ascii{});
+    }
+}
+
+template <typename T>
+    requires requires { typename T::patch_key_type; }
+void read_checkpoint(const std::filesystem::path& dir, T& state, int rank, int num_ranks, format fmt) {
+    if (fmt == format::binary) {
+        read_checkpoint(dir, state, rank, num_ranks, Binary{});
+    } else {
+        read_checkpoint(dir, state, rank, num_ranks, Ascii{});
     }
 }
 

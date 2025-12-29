@@ -9,6 +9,10 @@ namespace mist::driver {
 
 namespace fs = std::filesystem;
 
+inline auto to_archive_format(output_format fmt) -> archive::format {
+    return fmt == output_format::binary ? archive::format::binary : archive::format::ascii;
+}
+
 // =============================================================================
 // Physics concept (defines what a physics module must provide)
 // =============================================================================
@@ -168,8 +172,8 @@ template<Physics P>
 class physics_impl_t : public physics_interface_t {
 public:
     physics_impl_t()
-        : config_(default_physics_config(std::type_identity<P>{}))
-        , initial_(default_initial_config(std::type_identity<P>{}))
+        : config(default_physics_config(std::type_identity<P>{}))
+        , initial(default_initial_config(std::type_identity<P>{}))
     {}
 
     // -------------------------------------------------------------------------
@@ -193,21 +197,21 @@ public:
     // -------------------------------------------------------------------------
 
     void init() override {
-        if (state_.has_value()) {
+        if (state.has_value()) {
             throw std::runtime_error("state already initialized");
         }
-        if (!exec_context_) {
+        if (!exec_context) {
             throw std::runtime_error("exec_context not set; engine should set it before init");
         }
-        state_ = initial_state(config_, initial_, *exec_context_);
+        state = initial_state(config, initial, *exec_context);
     }
 
     void reset() override {
-        state_ = std::nullopt;
+        state = std::nullopt;
     }
 
     auto has_state() const -> bool override {
-        return state_.has_value();
+        return state.has_value();
     }
 
     // -------------------------------------------------------------------------
@@ -215,30 +219,30 @@ public:
     // -------------------------------------------------------------------------
 
     void advance(double dt_max = std::numeric_limits<double>::infinity()) override {
-        if (!state_.has_value()) {
+        if (!state.has_value()) {
             throw std::runtime_error("state not initialized");
         }
-        if (!exec_context_) {
+        if (!exec_context) {
             throw std::runtime_error("exec_context not set");
         }
-        adl_advance(*state_, *exec_context_, dt_max);
+        adl_advance(*state, *exec_context, dt_max);
     }
 
     auto get_time(const std::string& var) const -> double override {
-        if (!state_.has_value()) {
+        if (!state.has_value()) {
             throw std::runtime_error("state not initialized");
         }
-        return adl_get_time(*state_, var);
+        return adl_get_time(*state, var);
     }
 
     auto get_timeseries(const std::string& name) const -> double override {
-        if (!state_.has_value()) {
+        if (!state.has_value()) {
             throw std::runtime_error("state not initialized");
         }
-        if (!exec_context_) {
+        if (!exec_context) {
             throw std::runtime_error("exec_context not set");
         }
-        return adl_get_timeseries(*state_, name, *exec_context_);
+        return adl_get_timeseries(*state, name, *exec_context);
     }
 
     // -------------------------------------------------------------------------
@@ -246,18 +250,18 @@ public:
     // -------------------------------------------------------------------------
 
     void set_physics(const std::string& key, const std::string& value) override {
-        set(config_, key, value);
+        set(config, key, value);
     }
 
     void set_initial(const std::string& key, const std::string& value) override {
-        if (state_.has_value()) {
+        if (state.has_value()) {
             throw std::runtime_error("cannot modify initial when state exists");
         }
-        set(initial_, key, value);
+        set(initial, key, value);
     }
 
     void set_exec_context(exec_context_t& ctx) override {
-        exec_context_ = &ctx;
+        exec_context = &ctx;
     }
 
     // -------------------------------------------------------------------------
@@ -265,69 +269,45 @@ public:
     // -------------------------------------------------------------------------
 
     void write_physics(std::ostream& os, output_format fmt) override {
-        if (fmt == output_format::ascii) {
-            auto sink = ascii_sink{os};
-            write(sink, "physics", config_);
-        } else {
-            auto sink = binary_sink{os};
-            write(sink, "physics", config_);
-        }
+        auto f = to_archive_format(fmt);
+        archive::with_sink(os, f, [&](auto& sink) { write(sink, "physics", config); });
     }
 
     void write_initial(std::ostream& os, output_format fmt) override {
-        if (fmt == output_format::ascii) {
-            auto sink = ascii_sink{os};
-            write(sink, "initial", initial_);
-        } else {
-            auto sink = binary_sink{os};
-            write(sink, "initial", initial_);
-        }
+        auto f = to_archive_format(fmt);
+        archive::with_sink(os, f, [&](auto& sink) { write(sink, "initial", initial); });
     }
 
     void write_state(std::ostream& os, output_format fmt) override {
-        if (!state_.has_value()) {
+        if (!state.has_value()) {
             throw std::runtime_error("state not initialized");
         }
-        if (fmt == output_format::ascii) {
-            auto sink = ascii_sink{os};
-            write_state_to(sink);
-        } else {
-            auto sink = binary_sink{os};
-            write_state_to(sink);
-        }
+        auto f = to_archive_format(fmt);
+        archive::with_sink(os, f, [&](auto& sink) { write_state_to(sink); });
     }
 
     template<typename SinkT>
     void write_state_to(SinkT& sink) {
-        if (!state_.has_value()) {
-            throw std::runtime_error("state not initialized");
-        }
-        write(sink, "physics", config_);
-        write(sink, "initial", initial_);
-        write(sink, "physics_state", *state_);
+        write(sink, "physics", config);
+        write(sink, "initial", initial);
+        write(sink, "physics_state", *state);
     }
 
     void write_products(std::ostream& os, output_format fmt,
                        const std::vector<std::string>& selected) override {
-        if (!state_.has_value()) {
+        if (!state.has_value()) {
             throw std::runtime_error("state not initialized");
         }
-        if (!exec_context_) {
+        if (!exec_context) {
             throw std::runtime_error("exec_context not set");
         }
-        if (fmt == output_format::ascii) {
-            auto sink = ascii_sink{os};
+        auto f = to_archive_format(fmt);
+        archive::with_sink(os, f, [&](auto& sink) {
             for (const auto& name : selected) {
-                auto product = get_product(*state_, name, *exec_context_);
+                auto product = get_product(*state, name, *exec_context);
                 write(sink, name.c_str(), product);
             }
-        } else {
-            auto sink = binary_sink{os};
-            for (const auto& name : selected) {
-                auto product = get_product(*state_, name, *exec_context_);
-                write(sink, name.c_str(), product);
-            }
-        }
+        });
     }
 
     // -------------------------------------------------------------------------
@@ -336,13 +316,10 @@ public:
 
     auto load_physics(std::istream& is, output_format fmt) -> bool override {
         try {
-            if (fmt == output_format::ascii) {
-                auto source = ascii_source{is};
-                return read(source, "physics", config_);
-            } else {
-                auto source = binary_source{is};
-                return read(source, "physics", config_);
-            }
+            auto f = to_archive_format(fmt);
+            return archive::with_source(is, f, [&](auto& source) {
+                return read(source, "physics", config);
+            });
         } catch (...) {
             return false;
         }
@@ -350,13 +327,10 @@ public:
 
     auto load_initial(std::istream& is, output_format fmt) -> bool override {
         try {
-            if (fmt == output_format::ascii) {
-                auto source = ascii_source{is};
-                return read(source, "initial", initial_);
-            } else {
-                auto source = binary_source{is};
-                return read(source, "initial", initial_);
-            }
+            auto f = to_archive_format(fmt);
+            return archive::with_source(is, f, [&](auto& source) {
+                return read(source, "initial", initial);
+            });
         } catch (...) {
             return false;
         }
@@ -364,31 +338,28 @@ public:
 
     auto load_state(std::istream& is, output_format fmt) -> bool override {
         try {
-            if (fmt == output_format::ascii) {
-                auto source = ascii_source{is};
-                return read_state_from(source);
-            } else {
-                auto source = binary_source{is};
-                return read_state_from(source);
-            }
+            auto f = to_archive_format(fmt);
+            return archive::with_source(is, f, [&](auto& source) {
+                return read_statefrom(source);
+            });
         } catch (...) {
             return false;
         }
     }
 
     template<typename SourceT>
-    auto read_state_from(SourceT& source) -> bool {
-        typename P::config_t cfg;
-        typename P::initial_t ini;
-        typename P::state_t state;
+    auto read_statefrom(SourceT& source) -> bool {
+        auto cfg = typename P::config_t{};
+        auto ini = typename P::initial_t{};
+        auto st = typename P::state_t{};
 
         if (!read(source, "physics", cfg)) return false;
         if (!read(source, "initial", ini)) return false;
-        if (!read(source, "physics_state", state)) return false;
+        if (!read(source, "physics_state", st)) return false;
 
-        config_ = std::move(cfg);
-        initial_ = std::move(ini);
-        state_ = std::move(state);
+        config = std::move(cfg);
+        initial = std::move(ini);
+        state = std::move(st);
         return true;
     }
 
@@ -397,25 +368,21 @@ public:
     // -------------------------------------------------------------------------
 
     void write_state(const fs::path& path, output_format fmt) override {
-        if (!state_.has_value()) {
+        if (!state.has_value()) {
             throw std::runtime_error("state not initialized");
         }
-        if (!exec_context_) {
+        if (!exec_context) {
             throw std::runtime_error("exec_context not set");
         }
 
-        auto is_distributed = exec_context_->comm && exec_context_->comm->size() > 1;
+        auto is_distributed = exec_context->comm && exec_context->comm->size() > 1;
 
         if (is_distributed) {
             if constexpr (ParallelPhysics<P>) {
                 auto cp = checkpoint_t<typename P::config_t, typename P::initial_t, typename P::state_t>{
-                    config_, initial_, *state_
+                    config, initial, *state
                 };
-                if (fmt == output_format::binary) {
-                    write_checkpoint(path, cp, Binary{});
-                } else {
-                    write_checkpoint(path, cp, Ascii{});
-                }
+                write_checkpoint(path, cp, to_archive_format(fmt));
             } else {
                 throw std::runtime_error("this physics module does not support parallel IO");
             }
@@ -431,7 +398,7 @@ public:
     }
 
     auto load_state(const fs::path& path, output_format fmt, item_predicate /* wants_item */) -> bool override {
-        if (!exec_context_) {
+        if (!exec_context) {
             throw std::runtime_error("exec_context not set");
         }
 
@@ -447,18 +414,14 @@ public:
                         cfg, ini, state
                     };
 
-                    auto rank = exec_context_->comm ? exec_context_->comm->rank() : 0;
-                    auto num_ranks = exec_context_->comm ? exec_context_->comm->size() : 1;
+                    auto rank = exec_context->comm ? exec_context->comm->rank() : 0;
+                    auto num_ranks = exec_context->comm ? exec_context->comm->size() : 1;
 
-                    if (fmt == output_format::binary) {
-                        read_checkpoint(path, cp, rank, num_ranks, Binary{});
-                    } else {
-                        read_checkpoint(path, cp, rank, num_ranks, Ascii{});
-                    }
+                    read_checkpoint(path, cp, rank, num_ranks, to_archive_format(fmt));
 
-                    config_ = std::move(cfg);
-                    initial_ = std::move(ini);
-                    state_ = std::move(state);
+                    config = std::move(cfg);
+                    initial = std::move(ini);
+                    state = std::move(state);
                     return true;
                 } catch (...) {
                     return false;
@@ -477,10 +440,10 @@ public:
 
     void write_products(const fs::path& path, output_format fmt,
                         const std::vector<std::string>& selected) override {
-        if (!state_.has_value()) {
+        if (!state.has_value()) {
             throw std::runtime_error("state not initialized");
         }
-        if (!exec_context_) {
+        if (!exec_context) {
             throw std::runtime_error("exec_context not set");
         }
 
@@ -499,24 +462,24 @@ public:
     // -------------------------------------------------------------------------
 
     auto zone_count() const -> std::size_t override {
-        if (!state_.has_value()) {
+        if (!state.has_value()) {
             return 0;
         }
-        return adl_zone_count(*state_);
+        return adl_zone_count(*state);
     }
 
     auto profiler_data() const -> std::map<std::string, perf::profile_entry_t> override {
-        if (!exec_context_) {
+        if (!exec_context) {
             return {};
         }
-        return exec_context_->profiler.data();
+        return exec_context->profiler.data();
     }
 
 private:
-    typename P::config_t config_;
-    typename P::initial_t initial_;
-    std::optional<typename P::state_t> state_;
-    exec_context_t* exec_context_ = nullptr;
+    typename P::config_t config;
+    typename P::initial_t initial;
+    std::optional<typename P::state_t> state;
+    exec_context_t* exec_context = nullptr;
 };
 
 // =============================================================================
