@@ -683,7 +683,7 @@ struct srhd {
 
     struct initial_t {
         unsigned int num_zones = 400;
-        unsigned int num_partitions = 1;
+        unsigned int num_patches = 1;
         double domain_length = 1.0;
     };
 
@@ -726,7 +726,7 @@ inline auto fields(srhd::config_t& c) {
 inline auto fields(const srhd::initial_t& i) {
     return std::make_tuple(
         field("num_zones", i.num_zones),
-        field("num_partitions", i.num_partitions),
+        field("num_patches", i.num_patches),
         field("domain_length", i.domain_length)
     );
 }
@@ -734,7 +734,7 @@ inline auto fields(const srhd::initial_t& i) {
 inline auto fields(srhd::initial_t& i) {
     return std::make_tuple(
         field("num_zones", i.num_zones),
-        field("num_partitions", i.num_partitions),
+        field("num_patches", i.num_patches),
         field("domain_length", i.domain_length)
     );
 }
@@ -843,7 +843,7 @@ auto default_physics_config(std::type_identity<srhd>) -> srhd::config_t {
 }
 
 auto default_initial_config(std::type_identity<srhd>) -> srhd::initial_t {
-    return {.num_zones = 400, .num_partitions = 1, .domain_length = 1.0};
+    return {.num_zones = 400, .num_patches = 1, .domain_length = 1.0};
 }
 
 auto initial_state(
@@ -851,7 +851,7 @@ auto initial_state(
     const srhd::initial_t& initial,
     const exec_context_t& ctx
 ) -> srhd::state_t {
-    auto np = initial.num_partitions;
+    auto np = initial.num_patches;
     auto S = index_space(ivec(0), uvec(initial.num_zones));
     auto dx = initial.domain_length / initial.num_zones;
     auto L = initial.domain_length;

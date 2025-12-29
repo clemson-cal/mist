@@ -300,7 +300,7 @@ struct advection {
 
     struct initial_t {
         unsigned int num_zones = 200;
-        unsigned int num_partitions = 4;
+        unsigned int num_patches = 4;
         double domain_length = 1.0;
     };
 
@@ -339,7 +339,7 @@ inline auto fields(advection::config_t& c) {
 inline auto fields(const advection::initial_t& i) {
     return std::make_tuple(
         field("num_zones", i.num_zones),
-        field("num_partitions", i.num_partitions),
+        field("num_patches", i.num_patches),
         field("domain_length", i.domain_length)
     );
 }
@@ -347,7 +347,7 @@ inline auto fields(const advection::initial_t& i) {
 inline auto fields(advection::initial_t& i) {
     return std::make_tuple(
         field("num_zones", i.num_zones),
-        field("num_partitions", i.num_partitions),
+        field("num_patches", i.num_patches),
         field("domain_length", i.domain_length)
     );
 }
@@ -456,7 +456,7 @@ auto default_physics_config(std::type_identity<advection>) -> advection::config_
 }
 
 auto default_initial_config(std::type_identity<advection>) -> advection::initial_t {
-    return {.num_zones = 200, .num_partitions = 4, .domain_length = 1.0};
+    return {.num_zones = 200, .num_patches = 4, .domain_length = 1.0};
 }
 
 auto initial_state(
@@ -464,7 +464,7 @@ auto initial_state(
     const advection::initial_t& initial,
     const exec_context_t& ctx
 ) -> advection::state_t {
-    auto np = initial.num_partitions;
+    auto np = initial.num_patches;
     auto S = index_space(ivec(0), uvec(initial.num_zones));
     auto dx = initial.domain_length / initial.num_zones;
     auto L = initial.domain_length;

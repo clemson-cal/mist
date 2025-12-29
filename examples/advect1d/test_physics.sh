@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Test runs for advect1d
-# Configurations: wavespeed = +1/-1, num_partitions = 1/8
+# Configurations: wavespeed = +1/-1, num_patches = 1/8
 
 cd "$(dirname "$0")"
 
@@ -10,7 +10,7 @@ cd "$(dirname "$0")"
 reset
 set physics wavespeed=1.0
 set initial num_zones=1000
-set initial num_partitions=1
+set initial num_patches=1
 init
 t -> 0.5
 select products concentration cell_x
@@ -23,7 +23,7 @@ EOF
 reset
 set physics wavespeed=1.0
 set initial num_zones=1000
-set initial num_partitions=8
+set initial num_patches=8
 init
 t -> 0.5
 select products concentration cell_x
@@ -36,7 +36,7 @@ EOF
 reset
 set physics wavespeed=-1.0
 set initial num_zones=1000
-set initial num_partitions=1
+set initial num_patches=1
 init
 t -> 0.5
 select products concentration cell_x
@@ -49,7 +49,7 @@ EOF
 reset
 set physics wavespeed=-1.0
 set initial num_zones=1000
-set initial num_partitions=8
+set initial num_patches=8
 init
 t -> 0.5
 select products concentration cell_x

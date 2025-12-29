@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 
 OUTFILE="scaling_results.csv"
 
-echo "num_threads,num_partitions,num_zones,use_flux_buffer,Mzps" > "$OUTFILE"
+echo "num_threads,num_patches,num_zones,use_flux_buffer,Mzps" > "$OUTFILE"
 
 run_test() {
     local nt=$1
@@ -18,7 +18,7 @@ run_test() {
     local mzps=$(./advect1d 2>&1 << EOF | grep -E '^\[' | tail -1 | sed -E 's/.*Mzps=([0-9.eE+-]+).*/\1/'
 reset
 set exec num_threads=$nt
-set initial num_partitions=$np
+set initial num_patches=$np
 set initial num_zones=$nz
 set physics use_flux_buffer=$ufb
 init

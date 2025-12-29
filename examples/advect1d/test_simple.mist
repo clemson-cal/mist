@@ -1,5 +1,5 @@
 set exec num_threads=1
-set initial num_partitions=1
+set initial num_patches=1
 set initial num_zones=100
 init
 repeat 1 n show iteration

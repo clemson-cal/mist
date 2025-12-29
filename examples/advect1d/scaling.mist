@@ -1,7 +1,7 @@
 reset
 set initial num_zones=10000000
 show all
-set initial num_partitions=1
+set initial num_patches=1
 set exec num_threads=0
 init
 n += 100
