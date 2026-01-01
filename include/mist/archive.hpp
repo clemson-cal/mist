@@ -39,8 +39,8 @@ using archive::Scatterable;
 using archive::Truthful;
 using archive::Binary;
 using archive::Ascii;
-using archive::write_checkpoint;
-using archive::read_checkpoint;
+using archive::distributed_write;
+using archive::distributed_read;
 
 // =============================================================================
 // Type traits for mist-specific types

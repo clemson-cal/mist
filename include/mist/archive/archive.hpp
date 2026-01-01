@@ -61,7 +61,7 @@
 //
 // ============================================================================
 
-#include "checkpoint.hpp"
+#include "distributed.hpp"
 #include "format.hpp"
 #include "protocol.hpp"
 #include "sink.hpp"

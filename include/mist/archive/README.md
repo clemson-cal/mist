@@ -278,14 +278,14 @@ auto fields(block_index& b) {
 auto fields(const block_index& b) { /* same */ }
 ```
 
-### Checkpoint API
+### Distributed I/O API
 
 ```cpp
-// Write checkpoint (each rank writes its patches)
-archive::write_checkpoint("checkpoint_0001", state, archive::Binary{});
+// Write distributed data (each rank writes its patches)
+archive::distributed_write("checkpoint_0001", state, archive::Binary{});
 
-// Read checkpoint (patches distributed by affinity)
-archive::read_checkpoint("checkpoint_0001", state, rank, num_ranks, archive::Binary{});
+// Read distributed data (patches distributed by affinity)
+archive::distributed_read("checkpoint_0001", state, rank, num_ranks, archive::Binary{});
 ```
 
 ## Binary Format

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <filesystem>
 #include <type_traits>
 #include "physics_interface.hpp"
@@ -111,6 +112,55 @@ auto to_string(const typename checkpoint_t<C, I, St>::patch_key_type& key) -> st
 template<typename C, typename I, typename St>
 auto from_string(std::type_identity<typename checkpoint_t<C, I, St>::patch_key_type>, std::string_view sv) {
     return from_string(std::type_identity<typename St::patch_key_type>{}, sv);
+}
+
+// =============================================================================
+// Products wrapper - for parallel products output using Scatterable
+// =============================================================================
+
+template<typename Product>
+struct patch_products_t {
+    const std::vector<std::string>& names;
+    const std::map<std::string, Product>& products;
+    std::size_t patch_index;
+};
+
+template<Sink S, typename Product>
+void write(S& sink, const patch_products_t<Product>& pp) {
+    for (const auto& name : pp.names) {
+        write(sink, name.c_str(), pp.products.at(name)[pp.patch_index]);
+    }
+}
+
+template<typename State, typename Product>
+struct products_data_t {
+    using patch_key_type = typename State::patch_key_type;
+
+    const State& state;
+    const std::vector<std::string>& names;
+    const std::map<std::string, Product>& products;
+};
+
+// emit: write product names to header
+template<Sink S, typename St, typename Pr>
+void emit(S& sink, const products_data_t<St, Pr>& pd) {
+    write(sink, "products", pd.names);
+}
+
+// patch_keys: delegate to state
+template<typename St, typename Pr>
+auto patch_keys(const products_data_t<St, Pr>& pd) {
+    return patch_keys(pd.state);
+}
+
+// patch_data: return struct with products for this patch index
+template<typename St, typename Pr>
+auto patch_data(const products_data_t<St, Pr>& pd,
+                const typename St::patch_key_type& key) {
+    auto keys = patch_keys(pd.state);
+    auto it = std::find(keys.begin(), keys.end(), key);
+    auto idx = static_cast<std::size_t>(std::distance(keys.begin(), it));
+    return patch_products_t<Pr>{pd.names, pd.products, idx};
 }
 
 // =============================================================================
@@ -382,7 +432,7 @@ public:
                 auto cp = checkpoint_t<typename P::config_t, typename P::initial_t, typename P::state_t>{
                     config, initial, *state
                 };
-                write_checkpoint(path, cp, to_archive_format(fmt));
+                distributed_write(path, cp, to_archive_format(fmt));
             } else {
                 throw std::runtime_error("this physics module does not support parallel IO");
             }
@@ -417,7 +467,7 @@ public:
                     auto rank = exec_context->comm ? exec_context->comm->rank() : 0;
                     auto num_ranks = exec_context->comm ? exec_context->comm->size() : 1;
 
-                    read_checkpoint(path, cp, rank, num_ranks, to_archive_format(fmt));
+                    distributed_read(path, cp, rank, num_ranks, to_archive_format(fmt));
 
                     config = std::move(cfg);
                     initial = std::move(ini);
@@ -447,14 +497,37 @@ public:
             throw std::runtime_error("exec_context not set");
         }
 
-        // For now, products use single-file IO only
-        // TODO: Add product checkpoint support if needed
-        auto mode = fmt == output_format::binary ? std::ios::binary : std::ios::out;
-        std::ofstream file(path, mode);
-        if (!file) {
-            throw std::runtime_error("failed to open products file for writing");
+        auto is_distributed = exec_context->comm && exec_context->comm->size() > 1;
+
+        if (is_distributed) {
+            if constexpr (ParallelPhysics<P>) {
+                write_products_parallel(path, fmt, selected);
+            } else {
+                throw std::runtime_error("this physics module does not support parallel IO");
+            }
+        } else {
+            auto mode = fmt == output_format::binary ? std::ios::binary : std::ios::out;
+            auto file = std::ofstream{path, mode};
+            if (!file) {
+                throw std::runtime_error("failed to open products file for writing");
+            }
+            write_products(file, fmt, selected);
         }
-        write_products(file, fmt, selected);
+    }
+
+    void write_products_parallel(const fs::path& dir, output_format fmt,
+                                 const std::vector<std::string>& selected)
+        requires ParallelPhysics<P>
+    {
+        auto products = std::map<std::string, typename P::product_t>{};
+        for (const auto& name : selected) {
+            products[name] = get_product(*state, name, *exec_context);
+        }
+
+        auto pd = products_data_t<typename P::state_t, typename P::product_t>{
+            *state, selected, products
+        };
+        distributed_write(dir, pd, to_archive_format(fmt));
     }
 
     // -------------------------------------------------------------------------

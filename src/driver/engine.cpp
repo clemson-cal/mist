@@ -778,7 +778,7 @@ void engine_t::handle(const cmd::write_products& c, emit_fn emit) {
     auto fmt = output_format{};
 
     if (comm.size() > 1) {
-        // Distributed products: create directory, each rank writes its own file
+        // Distributed products: create directory with header + patches
         auto dirname = std::string{};
         if (c.dest) {
             dirname = *c.dest;
@@ -794,37 +794,23 @@ void engine_t::handle(const cmd::write_products& c, emit_fn emit) {
             state_ref.products_count++;
         }
 
+        auto dir = fs::path{dirname};
         if (comm.rank() == 0) {
             std::error_code ec;
-            fs::create_directories(dirname, ec);
+            fs::create_directories(dir, ec);
             if (ec) {
                 emit(resp::error{"failed to create directory " + dirname + ": " + ec.message()});
+                comm.barrier();
                 return;
             }
         }
         comm.barrier();
 
-        auto ext = (fmt == output_format::ascii) ? ".dat" : ".bin";
-        auto oss = std::ostringstream{};
-        oss << dirname << "/rank." << std::setw(4) << std::setfill('0') << comm.rank() << ext;
-        auto filename = oss.str();
-
-        auto file = std::ofstream{filename, std::ios::binary};
-        if (!file) {
-            comm.barrier();
-            if (comm.rank() == 0) {
-                emit(resp::error{"failed to open " + filename});
-            }
-            return;
-        }
-        write_products(file, fmt);
-        auto bytes = static_cast<std::size_t>(file.tellp());
-
-        auto total_bytes = comm.combine(bytes, std::plus<std::size_t>{});
+        physics.write_products(dir, fmt, state_ref.selected_products);
         comm.barrier();
 
         if (comm.rank() == 0) {
-            emit(resp::wrote_file{dirname, total_bytes});
+            emit(resp::wrote_file{dirname, 0});
         }
     } else {
         // Single-rank products: write single file

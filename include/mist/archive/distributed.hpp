@@ -235,11 +235,11 @@ std::filesystem::path patch_path(const std::filesystem::path& dir, const K& key)
 } // namespace detail
 
 // ----------------------------------------------------------------------------
-// write_checkpoint: emit shared data + scatter patches
+// distributed_write: emit shared data + scatter patches
 // ----------------------------------------------------------------------------
 
 template <typename Format, Scatterable T>
-void write_checkpoint(const std::filesystem::path& dir, const T& state, Format = {}) {
+void distributed_write(const std::filesystem::path& dir, const T& state, Format = {}) {
     namespace fs = std::filesystem;
     using traits = detail::format_traits<Format>;
     using sink_type = typename traits::sink_type;
@@ -265,12 +265,12 @@ void write_checkpoint(const std::filesystem::path& dir, const T& state, Format =
 }
 
 // ----------------------------------------------------------------------------
-// read_checkpoint: load shared data + gather patches by affinity
+// distributed_read: load shared data + gather patches by affinity
 // ----------------------------------------------------------------------------
 
 template <typename Format, typename T>
     requires requires { typename T::patch_key_type; }
-void read_checkpoint(const std::filesystem::path& dir, T& state, int rank, int num_ranks, Format = {}) {
+void distributed_read(const std::filesystem::path& dir, T& state, int rank, int num_ranks, Format = {}) {
     namespace fs = std::filesystem;
     using traits = detail::format_traits<Format>;
     using source_type = typename traits::source_type;
@@ -306,21 +306,21 @@ void read_checkpoint(const std::filesystem::path& dir, T& state, int rank, int n
 // ----------------------------------------------------------------------------
 
 template <Scatterable T>
-void write_checkpoint(const std::filesystem::path& dir, const T& state, format fmt) {
+void distributed_write(const std::filesystem::path& dir, const T& state, format fmt) {
     if (fmt == format::binary) {
-        write_checkpoint(dir, state, Binary{});
+        distributed_write(dir, state, Binary{});
     } else {
-        write_checkpoint(dir, state, Ascii{});
+        distributed_write(dir, state, Ascii{});
     }
 }
 
 template <typename T>
     requires requires { typename T::patch_key_type; }
-void read_checkpoint(const std::filesystem::path& dir, T& state, int rank, int num_ranks, format fmt) {
+void distributed_read(const std::filesystem::path& dir, T& state, int rank, int num_ranks, format fmt) {
     if (fmt == format::binary) {
-        read_checkpoint(dir, state, rank, num_ranks, Binary{});
+        distributed_read(dir, state, rank, num_ranks, Binary{});
     } else {
-        read_checkpoint(dir, state, rank, num_ranks, Ascii{});
+        distributed_read(dir, state, rank, num_ranks, Ascii{});
     }
 }
 
