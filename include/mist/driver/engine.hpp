@@ -87,14 +87,14 @@ public:
     auto data_socket_port() const -> int { return data_socket.port(); }
 
     // Direct write methods - session handles I/O, engine handles data
-    void write_physics(std::ostream& os, output_format fmt);
-    void write_initial(std::ostream& os, output_format fmt);
-    void write_driver(std::ostream& os, output_format fmt);
-    void write_profiler(std::ostream& os, output_format fmt);
-    void write_timeseries(std::ostream& os, output_format fmt);
-    void write_checkpoint(std::ostream& os, output_format fmt);
-    void write_products(std::ostream& os, output_format fmt);
-    void write_iteration(std::ostream& os, output_format fmt);
+    void write_physics(std::ostream& os, format fmt);
+    void write_initial(std::ostream& os, format fmt);
+    void write_driver(std::ostream& os, format fmt);
+    void write_profiler(std::ostream& os, format fmt);
+    void write_timeseries(std::ostream& os, format fmt);
+    void write_checkpoint(std::ostream& os, format fmt);
+    void write_products(std::ostream& os, format fmt);
+    void write_iteration(std::ostream& os, format fmt);
 
     // Human-readable info methods (for show commands / REPL display)
     void write_iteration_info(std::ostream& os, const color::scheme_t& c);
@@ -120,6 +120,8 @@ private:
     auto make_iteration_info() const -> resp::iteration_info;
     auto time_to_next_task() const -> double;
     void write_to_socket(const std::function<void(std::ostream&)>& writer, emit_fn emit);
+    void handle_simple_write(const std::optional<std::string>& dest, const char* default_name,
+                             std::function<void(std::ostream&, format)> writer, emit_fn emit);
 
     void do_timestep(double dt_max);
     void execute_repeating_commands(emit_fn emit);
@@ -157,6 +159,7 @@ private:
     void handle(const cmd::show_profiler& c, emit_fn emit);
     void handle(const cmd::show_driver& c, emit_fn emit);
     void handle(const cmd::show_exec& c, emit_fn emit);
+    void handle(const cmd::show_build& c, emit_fn emit);
     void handle(const cmd::help& c, emit_fn emit);
     void handle(const cmd::help_schema& c, emit_fn emit);
     void handle(const cmd::stop& c, emit_fn emit);

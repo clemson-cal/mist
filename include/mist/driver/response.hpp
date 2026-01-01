@@ -245,22 +245,57 @@ inline auto fields(profiler_info& s) {
 }
 
 struct exec_info {
-    int num_threads;
+    int threads;
     int mpi_rank;
     int mpi_size;
 };
 inline auto fields(const exec_info& s) {
     return std::make_tuple(
-        field("num_threads", s.num_threads),
+        field("threads", s.threads),
         field("mpi_rank", s.mpi_rank),
         field("mpi_size", s.mpi_size)
     );
 }
 inline auto fields(exec_info& s) {
     return std::make_tuple(
-        field("num_threads", s.num_threads),
+        field("threads", s.threads),
         field("mpi_rank", s.mpi_rank),
         field("mpi_size", s.mpi_size)
+    );
+}
+
+struct build_info {
+    std::string version;
+    std::string build_type;
+    std::string compiler;
+    std::string platform;
+    std::string git_commit;
+    std::string git_branch;
+    bool git_dirty;
+    bool with_mpi;
+};
+inline auto fields(const build_info& s) {
+    return std::make_tuple(
+        field("version", s.version),
+        field("build_type", s.build_type),
+        field("compiler", s.compiler),
+        field("platform", s.platform),
+        field("git_commit", s.git_commit),
+        field("git_branch", s.git_branch),
+        field("git_dirty", s.git_dirty),
+        field("with_mpi", s.with_mpi)
+    );
+}
+inline auto fields(build_info& s) {
+    return std::make_tuple(
+        field("version", s.version),
+        field("build_type", s.build_type),
+        field("compiler", s.compiler),
+        field("platform", s.platform),
+        field("git_commit", s.git_commit),
+        field("git_branch", s.git_branch),
+        field("git_dirty", s.git_dirty),
+        field("with_mpi", s.with_mpi)
     );
 }
 
@@ -304,26 +339,26 @@ inline auto fields(socket_cancelled&) { return std::make_tuple(); }
 } // namespace resp
 
 // =============================================================================
-// Format functions for human-readable output
+// Print functions for human-readable output
 // =============================================================================
 
-inline void format(std::ostream& os, const color::scheme_t& c, const resp::ok& r) {
+inline void print(std::ostream& os, const color::scheme_t& c, const resp::ok& r) {
     os << c.info << r.message << c.reset << "\n";
 }
 
-inline void format(std::ostream& os, const color::scheme_t& c, const resp::error& r) {
+inline void print(std::ostream& os, const color::scheme_t& c, const resp::error& r) {
     os << c.error << "error: " << c.reset << r.what << "\n";
 }
 
-inline void format(std::ostream& os, const color::scheme_t& c, const resp::interrupted&) {
+inline void print(std::ostream& os, const color::scheme_t& c, const resp::interrupted&) {
     os << "\n" << c.warning << "interrupted" << c.reset << "\n";
 }
 
-inline void format(std::ostream& os, const color::scheme_t& c, const resp::stopped&) {
+inline void print(std::ostream& os, const color::scheme_t& c, const resp::stopped&) {
     os << "\n" << c.header << "=== Session Complete ===" << c.reset << "\n";
 }
 
-inline void format(std::ostream& os, const color::scheme_t& c, const resp::state_info& r) {
+inline void print(std::ostream& os, const color::scheme_t& c, const resp::state_info& r) {
     os << c.label << "physics state: " << c.reset;
     if (r.initialized) {
         os << c.selected << "initialized" << c.reset;
@@ -338,7 +373,7 @@ inline void format(std::ostream& os, const color::scheme_t& c, const resp::state
     os << "\n";
 }
 
-inline void format(std::ostream& os, const color::scheme_t& c, const resp::iteration_info& r) {
+inline void print(std::ostream& os, const color::scheme_t& c, const resp::iteration_info& r) {
     os << c.iteration << "[" << std::setw(6) << std::setfill('0')
        << r.n << std::setfill(' ') << "]" << c.reset << " ";
 
@@ -354,7 +389,7 @@ inline void format(std::ostream& os, const color::scheme_t& c, const resp::itera
        << c.value << std::scientific << std::setprecision(2) << r.zps << c.reset << "\n";
 }
 
-inline void format(std::ostream& os, const color::scheme_t& c, const resp::timeseries_sample& r) {
+inline void print(std::ostream& os, const color::scheme_t& c, const resp::timeseries_sample& r) {
     os << c.info << "recorded sample" << c.reset << " (";
     auto first = true;
     for (const auto& [name, value] : r) {
@@ -366,23 +401,23 @@ inline void format(std::ostream& os, const color::scheme_t& c, const resp::times
     os << ")\n";
 }
 
-inline void format(std::ostream& os, const color::scheme_t& c, const resp::physics_config& r) {
+inline void print(std::ostream& os, const color::scheme_t& c, const resp::physics_config& r) {
     os << r.text;
 }
 
-inline void format(std::ostream& os, const color::scheme_t& c, const resp::initial_config& r) {
+inline void print(std::ostream& os, const color::scheme_t& c, const resp::initial_config& r) {
     os << r.text;
 }
 
-inline void format(std::ostream& os, const color::scheme_t& c, const resp::driver_state& r) {
+inline void print(std::ostream& os, const color::scheme_t& c, const resp::driver_state& r) {
     os << r.text;
 }
 
-inline void format(std::ostream& os, const color::scheme_t&, const resp::help_text& r) {
+inline void print(std::ostream& os, const color::scheme_t&, const resp::help_text& r) {
     os << r.text << "\n";
 }
 
-inline void format(std::ostream& os, const color::scheme_t& c, const resp::timeseries_info& r) {
+inline void print(std::ostream& os, const color::scheme_t& c, const resp::timeseries_info& r) {
     os << c.header << "Timeseries:" << c.reset << "\n";
     for (const auto& col : r.available) {
         auto it = std::find(r.selected.begin(), r.selected.end(), col);
@@ -399,7 +434,7 @@ inline void format(std::ostream& os, const color::scheme_t& c, const resp::times
     }
 }
 
-inline void format(std::ostream& os, const color::scheme_t& c, const resp::products_info& r) {
+inline void print(std::ostream& os, const color::scheme_t& c, const resp::products_info& r) {
     os << c.header << "Products:" << c.reset << "\n";
     for (const auto& prod : r.available) {
         auto is_selected = std::find(r.selected.begin(), r.selected.end(), prod) != r.selected.end();
@@ -412,13 +447,32 @@ inline void format(std::ostream& os, const color::scheme_t& c, const resp::produ
     }
 }
 
-inline void format(std::ostream& os, const color::scheme_t& c, const resp::exec_info& r) {
+inline void print(std::ostream& os, const color::scheme_t& c, const resp::exec_info& r) {
     os << c.header << "Execution context:" << c.reset << "\n";
-    os << "  " << c.label << "threads: " << c.reset << c.value << r.num_threads << c.reset << "\n";
+    os << "  " << c.label << "threads: " << c.reset << c.value << r.threads << c.reset << "\n";
     os << "  " << c.label << "mpi_size: " << c.reset << c.value << r.mpi_size << c.reset << "\n";
 }
 
-inline void format(std::ostream& os, const color::scheme_t& c, const resp::profiler_info& r) {
+inline void print(std::ostream& os, const color::scheme_t& c, const resp::build_info& r) {
+    os << c.header << "Build info:" << c.reset << "\n";
+    os << "  " << c.label << "version: " << c.reset << c.value << r.version << c.reset << "\n";
+    if (!r.build_type.empty()) {
+        os << "  " << c.label << "build_type: " << c.reset << c.value << r.build_type << c.reset << "\n";
+    }
+    os << "  " << c.label << "compiler: " << c.reset << c.value << r.compiler << c.reset << "\n";
+    os << "  " << c.label << "platform: " << c.reset << c.value << r.platform << c.reset << "\n";
+    os << "  " << c.label << "git: " << c.reset << c.value << r.git_commit << c.reset;
+    if (!r.git_branch.empty() && r.git_branch != "unknown") {
+        os << " (" << c.value << r.git_branch << c.reset << ")";
+    }
+    if (r.git_dirty) {
+        os << " " << c.warning << "[dirty]" << c.reset;
+    }
+    os << "\n";
+    os << "  " << c.label << "mpi: " << c.reset << c.value << (r.with_mpi ? "enabled" : "disabled") << c.reset << "\n";
+}
+
+inline void print(std::ostream& os, const color::scheme_t& c, const resp::profiler_info& r) {
     if (r.entries.empty()) return;
 
     const int col_stage = 24;
@@ -468,20 +522,20 @@ inline void format(std::ostream& os, const color::scheme_t& c, const resp::profi
     os << c.unselected << sep << c.reset << "\n\n";
 }
 
-inline void format(std::ostream& os, const color::scheme_t& c, const resp::wrote_file& r) {
+inline void print(std::ostream& os, const color::scheme_t& c, const resp::wrote_file& r) {
     os << c.info << "wrote " << c.value << r.filename
        << c.reset << " (" << r.bytes << " bytes)\n";
 }
 
-inline void format(std::ostream& os, const color::scheme_t& c, const resp::socket_listening& r) {
+inline void print(std::ostream& os, const color::scheme_t& c, const resp::socket_listening& r) {
     os << c.info << "listening on port " << c.value << r.port << c.reset << "...\n";
 }
 
-inline void format(std::ostream& os, const color::scheme_t& c, const resp::socket_sent& r) {
+inline void print(std::ostream& os, const color::scheme_t& c, const resp::socket_sent& r) {
     os << c.info << "sent " << c.value << r.bytes << c.reset << " bytes\n";
 }
 
-inline void format(std::ostream& os, const color::scheme_t&, const resp::socket_cancelled&) {
+inline void print(std::ostream& os, const color::scheme_t&, const resp::socket_cancelled&) {
     os << "cancelled\n";
 }
 
@@ -509,6 +563,7 @@ using response_t = std::variant<
     resp::products_info,
     resp::profiler_info,
     resp::exec_info,
+    resp::build_info,
     // Write
     resp::wrote_file,
     // Socket

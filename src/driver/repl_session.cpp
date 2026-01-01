@@ -79,6 +79,9 @@ auto parse_command(std::string_view input) -> parsed_command_t {
             if (key == "output") {
                 return {cmd::set_output{value}, {}, {}};
             }
+            if (key == "threads") {
+                return {cmd::set_exec{"threads", value}, {}, {}};
+            }
             return {{}, {}, "unknown setting: " + key};
         }
         return {{}, {}, "set requires format: set key=value or set physics/initial/exec key=value"};
@@ -220,6 +223,7 @@ auto parse_command(std::string_view input) -> parsed_command_t {
         if (what == "profiler") return {cmd::show_profiler{}, {}, {}};
         if (what == "driver") return {cmd::show_driver{}, {}, {}};
         if (what == "exec") return {cmd::show_exec{}, {}, {}};
+        if (what == "build") return {cmd::show_build{}, {}, {}};
         return {{}, {}, "unknown: show " + what};
     }
 
@@ -231,6 +235,12 @@ auto parse_command(std::string_view input) -> parsed_command_t {
         return {cmd::help{}, {}, {}};
     }
     if (first == "stop" || first == "quit" || first == "q") return {cmd::stop{}, {}, {}};
+
+    // threads=N shortcut
+    if (first.starts_with("threads=")) {
+        auto value = first.substr(8);
+        return {cmd::set_exec{"threads", value}, {}, {}};
+    }
 
     return {{}, {}, "unknown command: " + first};
 }
@@ -451,15 +461,15 @@ void repl_session_t::format_response(const response_t& r) {
     std::visit([this](const auto& resp) {
         using T = std::decay_t<decltype(resp)>;
         if constexpr (std::is_same_v<T, resp::error>) {
-            format(err_, err_colors_, resp);
+            print(err_, err_colors_, resp);
             had_error_ = true;
         } else if constexpr (std::is_same_v<T, resp::interrupted>) {
-            format(err_, err_colors_, resp);
+            print(err_, err_colors_, resp);
         } else if constexpr (std::is_same_v<T, resp::stopped>) {
-            format(out_, colors_, resp);
+            print(out_, colors_, resp);
             should_stop_ = true;
         } else {
-            format(out_, colors_, resp);
+            print(out_, colors_, resp);
         }
     }, r);
 }

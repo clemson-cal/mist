@@ -1,6 +1,7 @@
 // engine.cpp - implementation of engine_t
 
 #include <filesystem>
+#include "mist/build_info.hpp"
 #include "mist/driver/engine.hpp"
 
 namespace mist::driver {
@@ -29,7 +30,7 @@ const char* help_text = R"(
     set output=ascii               - Set output format (ascii|binary|hdf5)
     set physics key=val            - Set physics config parameter
     set initial key=val            - Set initial data parameter
-    set exec key=val               - Set execution parameter (e.g. num_threads)
+    set exec key=val               - Set execution parameter (e.g. threads)
     select products [prod1 ...]    - Select products (no args = all)
     select timeseries [col1 ...]   - Select timeseries columns (no args = all)
 
@@ -124,7 +125,7 @@ Responses:
   timeseries_info   { available: [string], selected: [string], counts: {string: int} }
   products_info     { available: [string], selected: [string] }
   profiler_info     { entries: [{name, count, time}], total_time: double }
-  exec_info         { num_threads: int, mpi_rank: int, mpi_size: int }
+  exec_info         { threads: int, mpi_rank: int, mpi_size: int }
   wrote_file        { filename: string, bytes: int }
 )";
 
@@ -380,32 +381,41 @@ void engine_t::write_to_socket(const std::function<void(std::ostream&)>& writer,
 }
 
 // -----------------------------------------------------------------------------
-// Format conversion helper
+// Helper functions
 // -----------------------------------------------------------------------------
 
-auto to_archive_format(output_format fmt) -> archive::format {
-    return fmt == output_format::binary ? archive::format::binary : archive::format::ascii;
+auto numbered_filename(const char* prefix, int count, format fmt) -> std::string {
+    auto oss = std::ostringstream{};
+    oss << prefix << "." << std::setw(4) << std::setfill('0') << count << file_extension(fmt);
+    return oss.str();
+}
+
+auto strip_extension(const std::string& path) -> std::string {
+    if (auto dot = path.rfind('.'); dot != std::string::npos) {
+        return path.substr(0, dot);
+    }
+    return path;
 }
 
 // -----------------------------------------------------------------------------
 // Direct write methods
 // -----------------------------------------------------------------------------
 
-void engine_t::write_physics(std::ostream& os, output_format fmt) {
+void engine_t::write_physics(std::ostream& os, format fmt) {
     physics.write_physics(os, fmt);
 }
 
-void engine_t::write_initial(std::ostream& os, output_format fmt) {
+void engine_t::write_initial(std::ostream& os, format fmt) {
     physics.write_initial(os, fmt);
 }
 
-void engine_t::write_driver(std::ostream& os, output_format fmt) {
-    archive::with_sink(os, to_archive_format(fmt), [&](auto& sink) { write(sink, "driver_state", state_ref); });
+void engine_t::write_driver(std::ostream& os, format fmt) {
+    archive::with_sink(os, fmt, [&](auto& sink) { write(sink, "driver_state", state_ref); });
 }
 
-void engine_t::write_profiler(std::ostream& os, output_format fmt) {
+void engine_t::write_profiler(std::ostream& os, format fmt) {
     auto data = physics.profiler_data();
-    archive::with_sink(os, to_archive_format(fmt), [&](auto& sink) { write(sink, "profiler", data); });
+    archive::with_sink(os, fmt, [&](auto& sink) { write(sink, "profiler", data); });
 }
 
 void engine_t::write_profiler_info(std::ostream& os, const color::scheme_t& c) {
@@ -418,11 +428,11 @@ void engine_t::write_profiler_info(std::ostream& os, const color::scheme_t& c) {
         total_time += entry.time;
     }
 
-    format(os, c, resp::profiler_info{entries, total_time});
+    print(os, c, resp::profiler_info{entries, total_time});
 }
 
-void engine_t::write_timeseries(std::ostream& os, output_format fmt) {
-    archive::with_sink(os, to_archive_format(fmt), [&](auto& sink) { write(sink, "timeseries", state_ref.timeseries); });
+void engine_t::write_timeseries(std::ostream& os, format fmt) {
+    archive::with_sink(os, fmt, [&](auto& sink) { write(sink, "timeseries", state_ref.timeseries); });
 }
 
 void engine_t::write_timeseries_info(std::ostream& os, const color::scheme_t& c) {
@@ -437,25 +447,25 @@ void engine_t::write_timeseries_info(std::ostream& os, const color::scheme_t& c)
         info.counts[col] = values.size();
     }
 
-    format(os, c, info);
+    print(os, c, info);
 }
 
-void engine_t::write_checkpoint(std::ostream& os, output_format fmt) {
-    archive::with_sink(os, to_archive_format(fmt), [&](auto& sink) { write(sink, "driver_state", state_ref); });
+void engine_t::write_checkpoint(std::ostream& os, format fmt) {
+    archive::with_sink(os, fmt, [&](auto& sink) { write(sink, "driver_state", state_ref); });
     physics.write_state(os, fmt);
 }
 
-void engine_t::write_products(std::ostream& os, output_format fmt) {
+void engine_t::write_products(std::ostream& os, format fmt) {
     physics.write_products(os, fmt, state_ref.selected_products);
 }
 
-void engine_t::write_iteration(std::ostream& os, output_format fmt) {
+void engine_t::write_iteration(std::ostream& os, format fmt) {
     auto info = make_iteration_info();
-    archive::with_sink(os, to_archive_format(fmt), [&](auto& sink) { write(sink, "iteration", info); });
+    archive::with_sink(os, fmt, [&](auto& sink) { write(sink, "iteration", info); });
 }
 
 void engine_t::write_iteration_info(std::ostream& os, const color::scheme_t& c) {
-    format(os, c, make_iteration_info());
+    print(os, c, make_iteration_info());
 }
 
 // -----------------------------------------------------------------------------
@@ -482,7 +492,7 @@ void engine_t::handle(const cmd::advance_to& c, emit_fn emit) {
 }
 
 void engine_t::handle(const cmd::set_output& c, emit_fn emit) {
-    state_ref.format = from_string(std::type_identity<output_format>{}, c.format);
+    state_ref.format = from_string(std::type_identity<format>{}, c.format);
     emit(resp::ok{"output format set to " + c.format});
 }
 
@@ -501,7 +511,7 @@ void engine_t::handle(const cmd::set_initial& c, emit_fn emit) {
 }
 
 void engine_t::handle(const cmd::set_exec& c, emit_fn emit) {
-    if (c.key == "num_threads") {
+    if (c.key == "threads") {
         auto n = std::stoul(c.value);
         exec_context.set_num_threads(n);
         emit(resp::ok{"exec " + c.key + " set to " + c.value});
@@ -563,80 +573,45 @@ void engine_t::handle(const cmd::do_timeseries&, emit_fn emit) {
     emit(sample);
 }
 
-void engine_t::handle(const cmd::write_physics& c, emit_fn emit) {
-    if (c.dest && *c.dest == "socket") {
-        write_to_socket([this](std::ostream& os) {
-            write_physics(os, output_format::binary);
-        }, emit);
+void engine_t::handle_simple_write(
+    const std::optional<std::string>& dest,
+    const char* default_name,
+    std::function<void(std::ostream&, format)> writer,
+    emit_fn emit)
+{
+    if (dest && *dest == "socket") {
+        write_to_socket([&](std::ostream& os) { writer(os, format::binary); }, emit);
         return;
     }
-
-    auto filename = c.dest.value_or("physics.cfg");
-    auto fmt = infer_format_from_filename(filename);
+    auto filename = dest.value_or(default_name);
+    auto fmt = infer_format(filename);
     auto file = std::ofstream{filename, std::ios::binary};
     if (!file) {
         emit(resp::error{"failed to open " + filename});
         return;
     }
-    write_physics(file, fmt);
+    writer(file, fmt);
     emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
+}
+
+void engine_t::handle(const cmd::write_physics& c, emit_fn emit) {
+    handle_simple_write(c.dest, "physics.cfg",
+        [this](auto& os, auto fmt) { write_physics(os, fmt); }, emit);
 }
 
 void engine_t::handle(const cmd::write_initial& c, emit_fn emit) {
-    if (c.dest && *c.dest == "socket") {
-        write_to_socket([this](std::ostream& os) {
-            write_initial(os, output_format::binary);
-        }, emit);
-        return;
-    }
-
-    auto filename = c.dest.value_or("initial.cfg");
-    auto fmt = infer_format_from_filename(filename);
-    auto file = std::ofstream{filename, std::ios::binary};
-    if (!file) {
-        emit(resp::error{"failed to open " + filename});
-        return;
-    }
-    write_initial(file, fmt);
-    emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
+    handle_simple_write(c.dest, "initial.cfg",
+        [this](auto& os, auto fmt) { write_initial(os, fmt); }, emit);
 }
 
 void engine_t::handle(const cmd::write_driver& c, emit_fn emit) {
-    if (c.dest && *c.dest == "socket") {
-        write_to_socket([this](std::ostream& os) {
-            write_driver(os, output_format::binary);
-        }, emit);
-        return;
-    }
-
-    auto filename = c.dest.value_or("driver.cfg");
-    auto fmt = infer_format_from_filename(filename);
-    auto file = std::ofstream{filename, std::ios::binary};
-    if (!file) {
-        emit(resp::error{"failed to open " + filename});
-        return;
-    }
-    write_driver(file, fmt);
-    emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
+    handle_simple_write(c.dest, "driver.cfg",
+        [this](auto& os, auto fmt) { write_driver(os, fmt); }, emit);
 }
 
 void engine_t::handle(const cmd::write_profiler& c, emit_fn emit) {
-    if (c.dest && *c.dest == "socket") {
-        write_to_socket([this](std::ostream& os) {
-            write_profiler(os, output_format::binary);
-        }, emit);
-        return;
-    }
-
-    auto filename = c.dest.value_or("profiler.dat");
-    auto fmt = infer_format_from_filename(filename);
-    auto file = std::ofstream{filename, std::ios::binary};
-    if (!file) {
-        emit(resp::error{"failed to open " + filename});
-        return;
-    }
-    write_profiler(file, fmt);
-    emit(resp::wrote_file{filename, static_cast<std::size_t>(file.tellp())});
+    handle_simple_write(c.dest, "profiler.dat",
+        [this](auto& os, auto fmt) { write_profiler(os, fmt); }, emit);
 }
 
 void engine_t::handle(const cmd::write_timeseries& c, emit_fn emit) {
@@ -644,29 +619,12 @@ void engine_t::handle(const cmd::write_timeseries& c, emit_fn emit) {
         emit(resp::error{"no timeseries selected; use 'select timeseries'"});
         return;
     }
-
     if (c.dest && *c.dest == "socket") {
-        write_to_socket([this](std::ostream& os) {
-            write_timeseries(os, output_format::binary);
-        }, emit);
+        write_to_socket([this](auto& os) { write_timeseries(os, format::binary); }, emit);
         return;
     }
-
-    auto filename = std::string{};
-    auto fmt = output_format{};
-
-    if (c.dest) {
-        filename = *c.dest;
-        fmt = infer_format_from_filename(filename);
-    } else {
-        fmt = state_ref.format;
-        auto ext = (fmt == output_format::ascii) ? ".dat" : ".bin";
-        auto oss = std::ostringstream{};
-        oss << "timeseries." << std::setw(4) << std::setfill('0') << state_ref.timeseries_count << ext;
-        filename = oss.str();
-        state_ref.timeseries_count++;
-    }
-
+    auto filename = c.dest.value_or(numbered_filename("timeseries", state_ref.timeseries_count++, state_ref.format));
+    auto fmt = infer_format(filename);
     auto file = std::ofstream{filename, std::ios::binary};
     if (!file) {
         emit(resp::error{"failed to open " + filename});
@@ -678,34 +636,17 @@ void engine_t::handle(const cmd::write_timeseries& c, emit_fn emit) {
 
 void engine_t::handle(const cmd::write_checkpoint& c, emit_fn emit) {
     if (c.dest && *c.dest == "socket") {
-        write_to_socket([this](std::ostream& os) {
-            write_checkpoint(os, output_format::binary);
-        }, emit);
+        write_to_socket([this](auto& os) { write_checkpoint(os, format::binary); }, emit);
         return;
     }
 
-    auto fmt = output_format{};
-
     if (comm.size() > 1) {
-        // Distributed checkpoint: create directory with header + patches
-        auto dirname = std::string{};
-        if (c.dest) {
-            dirname = *c.dest;
-            // Strip extension if present for directory name
-            if (auto dot = dirname.rfind('.'); dot != std::string::npos) {
-                dirname = dirname.substr(0, dot);
-            }
-            fmt = infer_format_from_filename(*c.dest);
-        } else {
-            fmt = state_ref.format;
-            auto oss = std::ostringstream{};
-            oss << "chkpt." << std::setw(4) << std::setfill('0') << state_ref.checkpoint_count;
-            dirname = oss.str();
-            state_ref.checkpoint_count++;
-        }
-
-        // Rank 0 creates directory and writes driver state
+        auto dirname = c.dest ? strip_extension(*c.dest)
+                              : numbered_filename("chkpt", state_ref.checkpoint_count++, state_ref.format);
+        dirname = strip_extension(dirname); // ensure no extension for directory
+        auto fmt = c.dest ? infer_format(*c.dest) : state_ref.format;
         auto dir = fs::path{dirname};
+
         if (comm.rank() == 0) {
             std::error_code ec;
             fs::create_directories(dir, ec);
@@ -714,40 +655,21 @@ void engine_t::handle(const cmd::write_checkpoint& c, emit_fn emit) {
                 comm.barrier();
                 return;
             }
-
-            auto driver_filename = dir / (fmt == output_format::ascii ? "driver.dat" : "driver.bin");
-            auto driver_file = std::ofstream{driver_filename, std::ios::binary};
+            auto driver_file = std::ofstream{dir / ("driver" + std::string(file_extension(fmt))), std::ios::binary};
             if (!driver_file) {
                 emit(resp::error{"failed to open driver state file"});
                 comm.barrier();
                 return;
             }
-            archive::with_sink(driver_file, to_archive_format(fmt), [&](auto& sink) { write(sink, "driver_state", state_ref); });
+            archive::with_sink(driver_file, fmt, [&](auto& sink) { write(sink, "driver_state", state_ref); });
         }
         comm.barrier();
-
-        // All ranks write physics state (header + patches)
         physics.write_state(dir, fmt);
         comm.barrier();
-
-        if (comm.rank() == 0) {
-            emit(resp::wrote_file{dirname, 0});
-        }
+        if (comm.rank() == 0) emit(resp::wrote_file{dirname, 0});
     } else {
-        // Single-rank checkpoint: write single file
-        auto filename = std::string{};
-        if (c.dest) {
-            filename = *c.dest;
-            fmt = infer_format_from_filename(filename);
-        } else {
-            fmt = state_ref.format;
-            auto ext = (fmt == output_format::ascii) ? ".dat" : ".bin";
-            auto oss = std::ostringstream{};
-            oss << "chkpt." << std::setw(4) << std::setfill('0') << state_ref.checkpoint_count << ext;
-            filename = oss.str();
-            state_ref.checkpoint_count++;
-        }
-
+        auto filename = c.dest.value_or(numbered_filename("chkpt", state_ref.checkpoint_count++, state_ref.format));
+        auto fmt = infer_format(filename);
         auto file = std::ofstream{filename, std::ios::binary};
         if (!file) {
             emit(resp::error{"failed to open " + filename});
@@ -767,34 +689,18 @@ void engine_t::handle(const cmd::write_products& c, emit_fn emit) {
         emit(resp::error{"no products selected; use 'select products'"});
         return;
     }
-
     if (c.dest && *c.dest == "socket") {
-        write_to_socket([this](std::ostream& os) {
-            write_products(os, output_format::binary);
-        }, emit);
+        write_to_socket([this](auto& os) { write_products(os, format::binary); }, emit);
         return;
     }
 
-    auto fmt = output_format{};
-
     if (comm.size() > 1) {
-        // Distributed products: create directory with header + patches
-        auto dirname = std::string{};
-        if (c.dest) {
-            dirname = *c.dest;
-            if (auto dot = dirname.rfind('.'); dot != std::string::npos) {
-                dirname = dirname.substr(0, dot);
-            }
-            fmt = infer_format_from_filename(*c.dest);
-        } else {
-            fmt = state_ref.format;
-            auto oss = std::ostringstream{};
-            oss << "prods." << std::setw(4) << std::setfill('0') << state_ref.products_count;
-            dirname = oss.str();
-            state_ref.products_count++;
-        }
-
+        auto dirname = c.dest ? strip_extension(*c.dest)
+                              : numbered_filename("prods", state_ref.products_count++, state_ref.format);
+        dirname = strip_extension(dirname);
+        auto fmt = c.dest ? infer_format(*c.dest) : state_ref.format;
         auto dir = fs::path{dirname};
+
         if (comm.rank() == 0) {
             std::error_code ec;
             fs::create_directories(dir, ec);
@@ -805,28 +711,12 @@ void engine_t::handle(const cmd::write_products& c, emit_fn emit) {
             }
         }
         comm.barrier();
-
         physics.write_products(dir, fmt, state_ref.selected_products);
         comm.barrier();
-
-        if (comm.rank() == 0) {
-            emit(resp::wrote_file{dirname, 0});
-        }
+        if (comm.rank() == 0) emit(resp::wrote_file{dirname, 0});
     } else {
-        // Single-rank products: write single file
-        auto filename = std::string{};
-        if (c.dest) {
-            filename = *c.dest;
-            fmt = infer_format_from_filename(filename);
-        } else {
-            fmt = state_ref.format;
-            auto ext = (fmt == output_format::ascii) ? ".dat" : ".bin";
-            auto oss = std::ostringstream{};
-            oss << "prods." << std::setw(4) << std::setfill('0') << state_ref.products_count << ext;
-            filename = oss.str();
-            state_ref.products_count++;
-        }
-
+        auto filename = c.dest.value_or(numbered_filename("prods", state_ref.products_count++, state_ref.format));
+        auto fmt = infer_format(filename);
         auto file = std::ofstream{filename, std::ios::binary};
         if (!file) {
             emit(resp::error{"failed to open " + filename});
@@ -845,13 +735,13 @@ void engine_t::handle(const cmd::write_iteration& c, emit_fn emit) {
 
     if (c.dest && *c.dest == "socket") {
         write_to_socket([this](std::ostream& os) {
-            write_iteration(os, output_format::binary);
+            write_iteration(os, format::binary);
         }, emit);
         return;
     }
 
     if (c.dest) {
-        auto fmt = infer_format_from_filename(*c.dest);
+        auto fmt = infer_format(*c.dest);
         auto file = std::ofstream{*c.dest, std::ios::binary};
         if (!file) {
             emit(resp::error{"failed to open " + *c.dest});
@@ -929,7 +819,7 @@ void engine_t::handle(const cmd::load& c, emit_fn emit) {
     // Check if path is a directory (distributed checkpoint)
     if (fs::is_directory(path)) {
         // Distributed checkpoint: header + patches structure
-        auto fmt = output_format{};
+        auto fmt = format{};
 
         // Detect format from driver file
         auto dir = fs::path{path};
@@ -938,10 +828,10 @@ void engine_t::handle(const cmd::load& c, emit_fn emit) {
         fs::path driver_file;
         if (fs::exists(driver_bin)) {
             driver_file = driver_bin;
-            fmt = output_format::binary;
+            fmt = format::binary;
         } else if (fs::exists(driver_dat)) {
             driver_file = driver_dat;
-            fmt = output_format::ascii;
+            fmt = format::ascii;
         } else {
             comm.barrier();
             if (comm.rank() == 0) {
@@ -961,7 +851,7 @@ void engine_t::handle(const cmd::load& c, emit_fn emit) {
                 }
                 return;
             }
-            success = archive::with_source(file, to_archive_format(fmt), [&](auto& source) {
+            success = archive::with_source(file, fmt, [&](auto& source) {
                 return read(source, "driver_state", state_ref);
             });
         }
@@ -986,7 +876,7 @@ void engine_t::handle(const cmd::load& c, emit_fn emit) {
     }
 
     // Single file: try various formats
-    auto fmt = infer_format_from_filename(c.filename);
+    auto fmt = infer_format(c.filename);
 
     auto file = std::ifstream{c.filename, std::ios::binary};
     if (!file) {
@@ -994,7 +884,7 @@ void engine_t::handle(const cmd::load& c, emit_fn emit) {
         return;
     }
 
-    auto loaded = archive::with_source(file, to_archive_format(fmt), [&](auto& source) {
+    auto loaded = archive::with_source(file, fmt, [&](auto& source) {
         return read(source, "driver_state", state_ref);
     });
     if (loaded && physics.load_state(file, fmt)) {
@@ -1034,6 +924,7 @@ void engine_t::handle(const cmd::show_state&, emit_fn emit) {
 }
 
 void engine_t::handle(const cmd::show_all&, emit_fn emit) {
+    handle(cmd::show_build{}, emit);
     handle(cmd::show_exec{}, emit);
     handle(cmd::show_products{}, emit);
     handle(cmd::show_timeseries{}, emit);
@@ -1044,13 +935,13 @@ void engine_t::handle(const cmd::show_all&, emit_fn emit) {
 
 void engine_t::handle(const cmd::show_physics&, emit_fn emit) {
     auto oss = std::ostringstream{};
-    physics.write_physics(oss, output_format::ascii);
+    physics.write_physics(oss, format::ascii);
     emit(resp::physics_config{oss.str()});
 }
 
 void engine_t::handle(const cmd::show_initial&, emit_fn emit) {
     auto oss = std::ostringstream{};
-    physics.write_initial(oss, output_format::ascii);
+    physics.write_initial(oss, format::ascii);
     emit(resp::initial_config{oss.str()});
 }
 
@@ -1106,6 +997,19 @@ void engine_t::handle(const cmd::show_exec&, emit_fn emit) {
         static_cast<int>(exec_context.num_threads()),
         exec_context.mpi_rank(),
         exec_context.mpi_size()
+    });
+}
+
+void engine_t::handle(const cmd::show_build&, emit_fn emit) {
+    emit(resp::build_info{
+        build_info.version,
+        build_info.build_type,
+        std::string(build_info.compiler_id) + " " + build_info.compiler_version,
+        std::string(build_info.system_name) + "/" + build_info.system_processor,
+        build_info.git_commit,
+        build_info.git_branch,
+        build_info.git_dirty,
+        build_info.with_mpi
     });
 }
 

@@ -39,6 +39,26 @@ enum class format {
     binary
 };
 
+inline auto to_string(format fmt) -> const char* {
+    return fmt == format::binary ? "binary" : "ascii";
+}
+
+inline auto from_string(std::type_identity<format>, const std::string& s) -> format {
+    if (s == "ascii") return format::ascii;
+    if (s == "binary") return format::binary;
+    throw std::runtime_error("unknown format: " + s);
+}
+
+inline auto infer_format(std::string_view filename) -> format {
+    if (filename.ends_with(".dat") || filename.ends_with(".cfg")) return format::ascii;
+    if (filename.ends_with(".bin")) return format::binary;
+    throw std::runtime_error(std::string("cannot infer format from: ") + std::string(filename));
+}
+
+inline auto file_extension(format fmt) -> const char* {
+    return fmt == format::binary ? ".bin" : ".dat";
+}
+
 // ============================================================================
 // Format dispatch helpers
 // ============================================================================

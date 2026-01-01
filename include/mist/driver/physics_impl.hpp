@@ -10,36 +10,6 @@ namespace mist::driver {
 
 namespace fs = std::filesystem;
 
-inline auto to_archive_format(output_format fmt) -> archive::format {
-    return fmt == output_format::binary ? archive::format::binary : archive::format::ascii;
-}
-
-// =============================================================================
-// Physics concept (defines what a physics module must provide)
-// =============================================================================
-
-// =============================================================================
-// ParallelPhysics concept - physics that supports checkpoint-based parallel IO
-// =============================================================================
-
-template<typename P>
-concept ParallelPhysics = requires(
-    const typename P::state_t& cs,
-    typename P::state_t& s,
-    binary_sink& sink,
-    binary_source& source,
-    int rank,
-    int num_ranks
-) {
-    typename P::state_t::patch_key_type;
-    { emit(sink, cs) };
-    { load(source, s) };
-    { patch_keys(cs) };
-    { patch_data(cs, std::declval<typename P::state_t::patch_key_type>()) };
-    { patch_affinity(s, std::declval<typename P::state_t::patch_key_type>(), rank, num_ranks) } -> std::same_as<bool>;
-    { emplace_patch(s, std::declval<typename P::state_t::patch_key_type>(), source) };
-};
-
 // =============================================================================
 // Checkpoint wrapper - combines config, initial, and state for checkpointing
 // =============================================================================
@@ -197,6 +167,28 @@ concept Physics = requires(
 };
 
 // =============================================================================
+// DistributedPhysics concept - physics that supports distributed parallel IO
+// =============================================================================
+
+template<typename P>
+concept DistributedPhysics = Physics<P> && requires(
+    const typename P::state_t& cs,
+    typename P::state_t& s,
+    binary_sink& sink,
+    binary_source& source,
+    int rank,
+    int num_ranks
+) {
+    typename P::state_t::patch_key_type;
+    { emit(sink, cs) };
+    { load(source, s) };
+    { patch_keys(cs) };
+    { patch_data(cs, std::declval<typename P::state_t::patch_key_type>()) };
+    { patch_affinity(s, std::declval<typename P::state_t::patch_key_type>(), rank, num_ranks) } -> std::same_as<bool>;
+    { emplace_patch(s, std::declval<typename P::state_t::patch_key_type>(), source) };
+};
+
+// =============================================================================
 // ADL helper functions (avoid name collision with member functions)
 // =============================================================================
 
@@ -226,6 +218,25 @@ public:
         , initial(default_initial_config(std::type_identity<P>{}))
     {}
 
+private:
+    auto require_state() -> typename P::state_t& {
+        if (!state.has_value()) throw std::runtime_error("state not initialized");
+        return *state;
+    }
+    auto require_state() const -> const typename P::state_t& {
+        if (!state.has_value()) throw std::runtime_error("state not initialized");
+        return *state;
+    }
+    auto require_context() -> exec_context_t& {
+        if (!exec_context) throw std::runtime_error("exec_context not set");
+        return *exec_context;
+    }
+    auto require_context() const -> const exec_context_t& {
+        if (!exec_context) throw std::runtime_error("exec_context not set");
+        return *exec_context;
+    }
+
+public:
     // -------------------------------------------------------------------------
     // Discovery
     // -------------------------------------------------------------------------
@@ -250,10 +261,7 @@ public:
         if (state.has_value()) {
             throw std::runtime_error("state already initialized");
         }
-        if (!exec_context) {
-            throw std::runtime_error("exec_context not set; engine should set it before init");
-        }
-        state = initial_state(config, initial, *exec_context);
+        state = initial_state(config, initial, require_context());
     }
 
     void reset() override {
@@ -269,30 +277,15 @@ public:
     // -------------------------------------------------------------------------
 
     void advance(double dt_max = std::numeric_limits<double>::infinity()) override {
-        if (!state.has_value()) {
-            throw std::runtime_error("state not initialized");
-        }
-        if (!exec_context) {
-            throw std::runtime_error("exec_context not set");
-        }
-        adl_advance(*state, *exec_context, dt_max);
+        adl_advance(require_state(), require_context(), dt_max);
     }
 
     auto get_time(const std::string& var) const -> double override {
-        if (!state.has_value()) {
-            throw std::runtime_error("state not initialized");
-        }
-        return adl_get_time(*state, var);
+        return adl_get_time(require_state(), var);
     }
 
     auto get_timeseries(const std::string& name) const -> double override {
-        if (!state.has_value()) {
-            throw std::runtime_error("state not initialized");
-        }
-        if (!exec_context) {
-            throw std::runtime_error("exec_context not set");
-        }
-        return adl_get_timeseries(*state, name, *exec_context);
+        return adl_get_timeseries(require_state(), name, require_context());
     }
 
     // -------------------------------------------------------------------------
@@ -318,44 +311,32 @@ public:
     // I/O - write operations
     // -------------------------------------------------------------------------
 
-    void write_physics(std::ostream& os, output_format fmt) override {
-        auto f = to_archive_format(fmt);
+    void write_physics(std::ostream& os, format fmt) override {
+        auto f = fmt;
         archive::with_sink(os, f, [&](auto& sink) { write(sink, "physics", config); });
     }
 
-    void write_initial(std::ostream& os, output_format fmt) override {
-        auto f = to_archive_format(fmt);
+    void write_initial(std::ostream& os, format fmt) override {
+        auto f = fmt;
         archive::with_sink(os, f, [&](auto& sink) { write(sink, "initial", initial); });
     }
 
-    void write_state(std::ostream& os, output_format fmt) override {
-        if (!state.has_value()) {
-            throw std::runtime_error("state not initialized");
-        }
-        auto f = to_archive_format(fmt);
-        archive::with_sink(os, f, [&](auto& sink) { write_state_to(sink); });
+    void write_state(std::ostream& os, format fmt) override {
+        auto& s = require_state();
+        archive::with_sink(os, fmt, [&](auto& sink) {
+            write(sink, "physics", config);
+            write(sink, "initial", initial);
+            write(sink, "physics_state", s);
+        });
     }
 
-    template<typename SinkT>
-    void write_state_to(SinkT& sink) {
-        write(sink, "physics", config);
-        write(sink, "initial", initial);
-        write(sink, "physics_state", *state);
-    }
-
-    void write_products(std::ostream& os, output_format fmt,
+    void write_products(std::ostream& os, format fmt,
                        const std::vector<std::string>& selected) override {
-        if (!state.has_value()) {
-            throw std::runtime_error("state not initialized");
-        }
-        if (!exec_context) {
-            throw std::runtime_error("exec_context not set");
-        }
-        auto f = to_archive_format(fmt);
-        archive::with_sink(os, f, [&](auto& sink) {
+        auto& s = require_state();
+        auto& ctx = require_context();
+        archive::with_sink(os, fmt, [&](auto& sink) {
             for (const auto& name : selected) {
-                auto product = get_product(*state, name, *exec_context);
-                write(sink, name.c_str(), product);
+                write(sink, name.c_str(), get_product(s, name, ctx));
             }
         });
     }
@@ -364,9 +345,9 @@ public:
     // I/O - read operations
     // -------------------------------------------------------------------------
 
-    auto load_physics(std::istream& is, output_format fmt) -> bool override {
+    auto load_physics(std::istream& is, format fmt) -> bool override {
         try {
-            auto f = to_archive_format(fmt);
+            auto f = fmt;
             return archive::with_source(is, f, [&](auto& source) {
                 return read(source, "physics", config);
             });
@@ -375,9 +356,9 @@ public:
         }
     }
 
-    auto load_initial(std::istream& is, output_format fmt) -> bool override {
+    auto load_initial(std::istream& is, format fmt) -> bool override {
         try {
-            auto f = to_archive_format(fmt);
+            auto f = fmt;
             return archive::with_source(is, f, [&](auto& source) {
                 return read(source, "initial", initial);
             });
@@ -386,9 +367,9 @@ public:
         }
     }
 
-    auto load_state(std::istream& is, output_format fmt) -> bool override {
+    auto load_state(std::istream& is, format fmt) -> bool override {
         try {
-            auto f = to_archive_format(fmt);
+            auto f = fmt;
             return archive::with_source(is, f, [&](auto& source) {
                 return read_statefrom(source);
             });
@@ -417,117 +398,81 @@ public:
     // Parallel I/O - directory-based operations
     // -------------------------------------------------------------------------
 
-    void write_state(const fs::path& path, output_format fmt) override {
-        if (!state.has_value()) {
-            throw std::runtime_error("state not initialized");
-        }
-        if (!exec_context) {
-            throw std::runtime_error("exec_context not set");
-        }
+    void write_state(const fs::path& path, format fmt) override {
+        auto& s = require_state();
+        auto& ctx = require_context();
 
-        auto is_distributed = exec_context->comm && exec_context->comm->size() > 1;
-
-        if (is_distributed) {
-            if constexpr (ParallelPhysics<P>) {
+        if (ctx.comm && ctx.comm->size() > 1) {
+            if constexpr (DistributedPhysics<P>) {
                 auto cp = checkpoint_t<typename P::config_t, typename P::initial_t, typename P::state_t>{
-                    config, initial, *state
+                    config, initial, s
                 };
-                distributed_write(path, cp, to_archive_format(fmt));
+                distributed_write(path, cp, fmt);
             } else {
-                throw std::runtime_error("this physics module does not support parallel IO");
+                throw std::runtime_error("physics module does not support parallel IO");
             }
         } else {
-            // Single-file IO for non-distributed case
-            auto mode = fmt == output_format::binary ? std::ios::binary : std::ios::out;
-            std::ofstream file(path, mode);
-            if (!file) {
-                throw std::runtime_error("failed to open state file for writing");
-            }
+            auto mode = fmt == format::binary ? std::ios::binary : std::ios::out;
+            auto file = std::ofstream{path, mode};
+            if (!file) throw std::runtime_error("failed to open state file");
             write_state(file, fmt);
         }
     }
 
-    auto load_state(const fs::path& path, output_format fmt, item_predicate /* wants_item */) -> bool override {
-        if (!exec_context) {
-            throw std::runtime_error("exec_context not set");
-        }
+    auto load_state(const fs::path& path, format fmt, item_predicate) -> bool override {
+        auto& ctx = require_context();
 
-        // Check if path is a directory (parallel IO) or file (single-file IO)
         if (fs::is_directory(path)) {
-            if constexpr (ParallelPhysics<P>) {
+            if constexpr (DistributedPhysics<P>) {
                 try {
-                    typename P::config_t cfg;
-                    typename P::initial_t ini;
-                    typename P::state_t state;
-
+                    auto cfg = typename P::config_t{};
+                    auto ini = typename P::initial_t{};
+                    auto st = typename P::state_t{};
                     auto cp = mutable_checkpoint_t<typename P::config_t, typename P::initial_t, typename P::state_t>{
-                        cfg, ini, state
+                        cfg, ini, st
                     };
-
-                    auto rank = exec_context->comm ? exec_context->comm->rank() : 0;
-                    auto num_ranks = exec_context->comm ? exec_context->comm->size() : 1;
-
-                    distributed_read(path, cp, rank, num_ranks, to_archive_format(fmt));
-
+                    auto rank = ctx.comm ? ctx.comm->rank() : 0;
+                    auto num_ranks = ctx.comm ? ctx.comm->size() : 1;
+                    distributed_read(path, cp, rank, num_ranks, fmt);
                     config = std::move(cfg);
                     initial = std::move(ini);
-                    state = std::move(state);
+                    state = std::move(st);
                     return true;
                 } catch (...) {
                     return false;
                 }
             } else {
-                throw std::runtime_error("this physics module does not support parallel IO");
+                throw std::runtime_error("physics module does not support parallel IO");
             }
         } else {
-            // Single-file IO
-            auto mode = fmt == output_format::binary ? std::ios::binary : std::ios::in;
-            std::ifstream file(path, mode);
-            if (!file) return false;
-            return load_state(file, fmt);
+            auto mode = fmt == format::binary ? std::ios::binary : std::ios::in;
+            auto file = std::ifstream{path, mode};
+            return file && load_state(file, fmt);
         }
     }
 
-    void write_products(const fs::path& path, output_format fmt,
+    void write_products(const fs::path& path, format fmt,
                         const std::vector<std::string>& selected) override {
-        if (!state.has_value()) {
-            throw std::runtime_error("state not initialized");
-        }
-        if (!exec_context) {
-            throw std::runtime_error("exec_context not set");
-        }
+        auto& s = require_state();
+        auto& ctx = require_context();
 
-        auto is_distributed = exec_context->comm && exec_context->comm->size() > 1;
-
-        if (is_distributed) {
-            if constexpr (ParallelPhysics<P>) {
-                write_products_parallel(path, fmt, selected);
+        if (ctx.comm && ctx.comm->size() > 1) {
+            if constexpr (DistributedPhysics<P>) {
+                auto products = std::map<std::string, typename P::product_t>{};
+                for (const auto& name : selected) {
+                    products[name] = get_product(s, name, ctx);
+                }
+                auto pd = products_data_t<typename P::state_t, typename P::product_t>{s, selected, products};
+                distributed_write(path, pd, fmt);
             } else {
-                throw std::runtime_error("this physics module does not support parallel IO");
+                throw std::runtime_error("physics module does not support parallel IO");
             }
         } else {
-            auto mode = fmt == output_format::binary ? std::ios::binary : std::ios::out;
+            auto mode = fmt == format::binary ? std::ios::binary : std::ios::out;
             auto file = std::ofstream{path, mode};
-            if (!file) {
-                throw std::runtime_error("failed to open products file for writing");
-            }
+            if (!file) throw std::runtime_error("failed to open products file");
             write_products(file, fmt, selected);
         }
-    }
-
-    void write_products_parallel(const fs::path& dir, output_format fmt,
-                                 const std::vector<std::string>& selected)
-        requires ParallelPhysics<P>
-    {
-        auto products = std::map<std::string, typename P::product_t>{};
-        for (const auto& name : selected) {
-            products[name] = get_product(*state, name, *exec_context);
-        }
-
-        auto pd = products_data_t<typename P::state_t, typename P::product_t>{
-            *state, selected, products
-        };
-        distributed_write(dir, pd, to_archive_format(fmt));
     }
 
     // -------------------------------------------------------------------------
@@ -535,17 +480,11 @@ public:
     // -------------------------------------------------------------------------
 
     auto zone_count() const -> std::size_t override {
-        if (!state.has_value()) {
-            return 0;
-        }
-        return adl_zone_count(*state);
+        return state.has_value() ? adl_zone_count(*state) : 0;
     }
 
     auto profiler_data() const -> std::map<std::string, perf::profile_entry_t> override {
-        if (!exec_context) {
-            return {};
-        }
-        return exec_context->profiler.data();
+        return exec_context ? exec_context->profiler.data() : std::map<std::string, perf::profile_entry_t>{};
     }
 
 private:

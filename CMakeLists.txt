@@ -7,6 +7,41 @@ endif()
 
 project(mist VERSION 0.1.0 LANGUAGES CXX)
 
+# Get git information
+find_package(Git QUIET)
+if(GIT_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        OUTPUT_VARIABLE MIST_GIT_COMMIT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} rev-parse --abbrev-ref HEAD
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        OUTPUT_VARIABLE MIST_GIT_BRANCH
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} status --porcelain
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        OUTPUT_VARIABLE GIT_STATUS_OUTPUT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+    if(GIT_STATUS_OUTPUT)
+        set(MIST_GIT_DIRTY true)
+    else()
+        set(MIST_GIT_DIRTY false)
+    endif()
+else()
+    set(MIST_GIT_COMMIT "unknown")
+    set(MIST_GIT_BRANCH "unknown")
+    set(MIST_GIT_DIRTY false)
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -16,12 +51,23 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(MIST_WITH_MPI "Enable MPI support for distributed communication" OFF)
 if(MIST_WITH_MPI)
     find_package(MPI REQUIRED)
+    set(MIST_WITH_MPI_01 1)
+else()
+    set(MIST_WITH_MPI_01 0)
 endif()
+
+# Generate build_info.hpp from template
+configure_file(
+    ${CMAKE_SOURCE_DIR}/include/mist/build_info.hpp.in
+    ${CMAKE_BINARY_DIR}/include/mist/build_info.hpp
+    @ONLY
+)
 
 # Header-only core library
 add_library(mist INTERFACE)
 target_include_directories(mist INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
 if(MIST_WITH_MPI)

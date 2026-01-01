@@ -1,0 +1,35 @@
+#pragma once
+
+namespace mist {
+
+struct build_info_t {
+    // Version
+    static constexpr int version_major = @PROJECT_VERSION_MAJOR@;
+    static constexpr int version_minor = @PROJECT_VERSION_MINOR@;
+    static constexpr int version_patch = @PROJECT_VERSION_PATCH@;
+    static constexpr const char* version = "@PROJECT_VERSION@";
+
+    // Build configuration
+    static constexpr const char* build_type = "@CMAKE_BUILD_TYPE@";
+    static constexpr const char* cxx_standard = "@CMAKE_CXX_STANDARD@";
+
+    // Compiler
+    static constexpr const char* compiler_id = "@CMAKE_CXX_COMPILER_ID@";
+    static constexpr const char* compiler_version = "@CMAKE_CXX_COMPILER_VERSION@";
+
+    // Platform
+    static constexpr const char* system_name = "@CMAKE_SYSTEM_NAME@";
+    static constexpr const char* system_processor = "@CMAKE_SYSTEM_PROCESSOR@";
+
+    // Git info
+    static constexpr const char* git_commit = "@MIST_GIT_COMMIT@";
+    static constexpr const char* git_branch = "@MIST_GIT_BRANCH@";
+    static constexpr bool git_dirty = @MIST_GIT_DIRTY@;
+
+    // Features
+    static constexpr bool with_mpi = @MIST_WITH_MPI_01@ != 0;
+};
+
+inline constexpr build_info_t build_info{};
+
+} // namespace mist

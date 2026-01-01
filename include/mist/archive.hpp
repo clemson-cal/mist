@@ -30,7 +30,7 @@ using archive::ascii_source;
 using archive::binary_sink;
 using archive::binary_source;
 
-// Checkpoint concepts and functions
+// Distributed IO concepts and functions
 using archive::Checkpointable;
 using archive::Emittable;
 using archive::Gatherable;
@@ -41,6 +41,11 @@ using archive::Binary;
 using archive::Ascii;
 using archive::distributed_write;
 using archive::distributed_read;
+
+// Format enum and helpers
+using archive::format;
+using archive::infer_format;
+using archive::file_extension;
 
 // =============================================================================
 // Type traits for mist-specific types

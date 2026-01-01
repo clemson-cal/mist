@@ -52,30 +52,30 @@ struct physics_interface_t {
     // -------------------------------------------------------------------------
     // I/O - write operations
     // -------------------------------------------------------------------------
-    virtual void write_physics(std::ostream& os, output_format fmt) = 0;
-    virtual void write_initial(std::ostream& os, output_format fmt) = 0;
-    virtual void write_state(std::ostream& os, output_format fmt) = 0;
-    virtual void write_products(std::ostream& os, output_format fmt,
+    virtual void write_physics(std::ostream& os, format fmt) = 0;
+    virtual void write_initial(std::ostream& os, format fmt) = 0;
+    virtual void write_state(std::ostream& os, format fmt) = 0;
+    virtual void write_products(std::ostream& os, format fmt,
                                 const std::vector<std::string>& selected) = 0;
 
     // -------------------------------------------------------------------------
     // I/O - read operations
     // -------------------------------------------------------------------------
-    virtual auto load_physics(std::istream& is, output_format fmt) -> bool = 0;
-    virtual auto load_initial(std::istream& is, output_format fmt) -> bool = 0;
-    virtual auto load_state(std::istream& is, output_format fmt) -> bool = 0;
+    virtual auto load_physics(std::istream& is, format fmt) -> bool = 0;
+    virtual auto load_initial(std::istream& is, format fmt) -> bool = 0;
+    virtual auto load_state(std::istream& is, format fmt) -> bool = 0;
 
     // -------------------------------------------------------------------------
     // Parallel I/O - directory-based operations
     // -------------------------------------------------------------------------
     using item_predicate = std::function<bool(const std::string&)>;
 
-    virtual void write_state(const std::filesystem::path& path, output_format fmt) = 0;
-    virtual auto load_state(const std::filesystem::path& path, output_format fmt, item_predicate wants_item) -> bool = 0;
-    virtual void write_products(const std::filesystem::path& path, output_format fmt,
+    virtual void write_state(const std::filesystem::path& path, format fmt) = 0;
+    virtual auto load_state(const std::filesystem::path& path, format fmt, item_predicate wants_item) -> bool = 0;
+    virtual void write_products(const std::filesystem::path& path, format fmt,
                                 const std::vector<std::string>& selected) = 0;
 
-    auto load_state(const std::filesystem::path& path, output_format fmt) -> bool {
+    auto load_state(const std::filesystem::path& path, format fmt) -> bool {
         return load_state(path, fmt, [](const std::string&) { return true; });
     }
 

@@ -179,6 +179,10 @@ struct show_exec {};
 inline auto fields(const show_exec&) { return std::make_tuple(); }
 inline auto fields(show_exec&) { return std::make_tuple(); }
 
+struct show_build {};
+inline auto fields(const show_build&) { return std::make_tuple(); }
+inline auto fields(show_build&) { return std::make_tuple(); }
+
 struct help {};
 inline auto fields(const help&) { return std::make_tuple(); }
 inline auto fields(help&) { return std::make_tuple(); }
@@ -229,6 +233,7 @@ using command_t = std::variant<
     cmd::show_profiler,
     cmd::show_driver,
     cmd::show_exec,
+    cmd::show_build,
     cmd::help,
     cmd::help_schema,
     cmd::stop
@@ -289,7 +294,8 @@ inline auto is_repeatable(const command_t& cmd) -> bool {
             || std::is_same_v<T, cmd::show_products>
             || std::is_same_v<T, cmd::show_profiler>
             || std::is_same_v<T, cmd::show_driver>
-            || std::is_same_v<T, cmd::show_exec>;
+            || std::is_same_v<T, cmd::show_exec>
+            || std::is_same_v<T, cmd::show_build>;
     }, cmd);
 }
 
