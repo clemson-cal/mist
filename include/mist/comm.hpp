@@ -253,8 +253,9 @@ auto make_tag(const index_space_t<S>& overlap) -> int {
         h ^= std::hash<int>{}(start(overlap).data[i]) + 0x9e3779b9 + (h << 6) + (h >> 2);
         h ^= std::hash<unsigned int>{}(shape(overlap).data[i]) + 0x9e3779b9 + (h << 6) + (h >> 2);
     }
-    // MPI tags must be non-negative and fit in int
-    return static_cast<int>(h & 0x7FFFFFFF);
+    // MPI_TAG_UB is at least 32767 per MPI standard, but typically higher.
+    // MPICH uses 2^28-1, OpenMPI uses 2^31-1. Use conservative value.
+    return static_cast<int>(h % 32768);
 }
 
 } // namespace detail
